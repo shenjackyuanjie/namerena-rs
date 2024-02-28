@@ -3,6 +3,12 @@
 version = 3
 
 [[package]]
+name = "base16384"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c81fb0b757d33aa2a07ee0f07800e5e529aac2a78a474f1816174516e23a1d62"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -39,6 +45,7 @@ checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 name = "namerena-rs"
 version = "0.1.0"
 dependencies = [
+ "base16384",
  "tracing",
  "tracing-subscriber",
 ]

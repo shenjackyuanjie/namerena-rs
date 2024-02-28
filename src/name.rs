@@ -29,8 +29,8 @@ impl Namer {
         }
         let mut name_base = [0_u8; 128];
         let mut name_prop = [0_u32; 8];
-        let mut skl_id = [0_u8; 40];
-        let mut skl_freq = [0_u8; 40];
+        let skl_id = [0_u8; 40];
+        let skl_freq = [0_u8; 40];
 
         // name@team
         // name
@@ -89,27 +89,24 @@ impl Namer {
             let m = ((val[i] as u32 * 181) + 160) % 256;
             if m >= 89 && m < 217 {
                 name_base[s as usize] = (m & 63) as u8;
-				s +=1;
+                s += 1;
             }
         }
 
-		// 计算 name_prop
+        // 计算 name_prop
         let mut prop_cnt = 0;
         let mut r = name_base[0..32].to_vec();
         for i in (10..31).step_by(3) {
+            r[i..i + 3].sort_unstable();
             name_prop[prop_cnt] = median(r[i], r[i + 1], r[i + 2]) as u32;
             prop_cnt += 1;
         }
-		println!("r:{:?}", r);
-        r[0..10].sort();
-		println!("r:{:?} {}", r, prop_cnt);
+        r[0..10].sort_unstable();
         name_prop[prop_cnt] = 154;
         prop_cnt += 1;
-		println!("name_prop:{:?}", name_prop);
         for i in 3..7 {
             name_prop[prop_cnt - 1] += r[i] as u32;
         }
-		println!("name_prop:{:?}", name_prop);
         for i in 0..7 {
             name_prop[i] += 36;
         }
@@ -127,13 +124,12 @@ impl Namer {
         })
     }
 
-    pub fn name_len(&self) -> usize {
-        self.name.len() + 1
-    }
-
-    pub fn team_len(&self) -> usize {
-        self.team.len() + 1
-    }
+	pub fn get_property(&self) -> f32 {
+		// 除 prop[7] 外 加起来  + prop[7] / 3
+		let sum1 = self.name_prop[0..7].iter().sum::<u32>();
+		let sum2 = self.name_prop[7] as u32;
+		sum1 as f32 + (sum2 as f32 / 3_f32)
+	}
 }
 
 #[cfg(test)]
@@ -143,18 +139,19 @@ mod test {
     #[test]
     fn basic_new_test() {
         let namer = Namer::new(&"x@x".to_string());
+
         assert!(namer.is_some());
+
         let namer = namer.unwrap();
-        // println!("{:#?}", namer);
-        assert_eq!(namer.name, "x");
-        assert_eq!(namer.team, "x");
-        println!("val: {:?}", namer.val);
-        println!("name_base: {:?}", namer.name_base);
-        println!("name_bytes: {:?}", namer.name_bytes);
-        println!("team_bytes: {:?}", namer.team_bytes);
-        println!("name_prop: {:?}", namer.name_prop);
-        println!("skl_id: {:?}", namer.skl_id);
-        println!("skl_freq: {:?}", namer.skl_freq);
+
+        let base_name_vec: Vec<u8> = vec![
+            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
+            57, 34, 22, 37, 35, 6, 12, 25, 50, 49, 59, 23, 49, 27, 51, 58, 39, 28, 60, 20, 31, 36,
+            41, 11, 7, 29, 24, 24, 61, 62, 57, 4, 28, 48, 55, 50, 38, 29, 10, 40, 42, 15, 23, 47,
+            42, 62, 47, 1, 60, 5, 43, 21, 1, 46, 45, 9, 9, 14, 38, 13, 56, 0, 31, 59, 39, 6, 35,
+            41, 55, 5, 34, 3, 7, 33, 33, 45, 16, 16, 32, 43, 18, 44, 22, 14, 17, 10, 11, 53, 18,
+            44, 19, 52, 2, 32, 12, 8, 2, 54, 26, 48, 8, 3, 63, 54, 19, 25,
+        ];
         let val_vec: Vec<u8> = vec![
             225, 96, 49, 232, 20, 47, 115, 245, 234, 23, 111, 178, 231, 100, 118, 197, 42, 98, 137,
             196, 209, 86, 114, 184, 167, 129, 164, 239, 205, 211, 82, 173, 189, 153, 198, 67, 4, 3,
@@ -171,9 +168,11 @@ mod test {
             53, 68, 218, 0, 252, 16, 136, 179, 158, 248, 2, 154, 12, 125, 126, 255, 18, 146, 104,
             77, 152, 208, 214, 72, 55, 195, 62, 7, 217, 56, 181,
         ];
+        let prop_vec: Vec<u32> = vec![57, 53, 66, 72, 70, 71, 61, 344];
+        assert_eq!(namer.name, "x");
+        assert_eq!(namer.team, "x");
         assert_eq!(namer.val.to_vec(), val_vec);
-        // 57 53 66 72 70 71 61 344
-        let prop_vel: Vec<u32> = vec![57, 53, 66, 72, 70, 71, 61, 344];
-        assert_eq!(namer.name_prop.to_vec(), prop_vel);
+        assert_eq!(namer.name_prop.to_vec(), prop_vec);
+        assert_eq!(namer.name_base.to_vec(), base_name_vec);
     }
 }

@@ -11,6 +11,8 @@ edition = "2021"
 # serde = { version = "1.0", features = ["derive"] }
 # md-5 = "0.10.6"
 # toml = "0.8.10"
+# base64 = "0.21.7"
+base16384 = "0.1.0"
 
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["time"] }
