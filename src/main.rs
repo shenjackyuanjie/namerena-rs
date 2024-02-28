@@ -54,11 +54,11 @@ pub struct Command {
     pub team: String,
 }
 
-fn cacl(max: u64, step: usize, top: u32, id: u64, team: &String) {
+fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
     let mut top = top;
-    for i in (0+id..max).step_by(step) {
+    for i in (start+id..max).step_by(step) {
         let name = gen_name(i as u64);
         // let full_name = format!("{}@shenjack", name);
         // let namer = name::Namer::new(&full_name);
@@ -99,13 +99,14 @@ fn main() {
     for i in 0..cli_arg.thread_count {
         let top = cli_arg.top;
         let max = cli_arg.end;
+        let start = cli_arg.start;
         n += 1;
         let thread_name = format!("thread_{}", i);
         let thread_count = cli_arg.thread_count;
         let team = cli_arg.team.clone();
         threads.push(std::thread::spawn(move || {
             info!("线程 {} 开始计算", thread_name);
-            cacl(max as u64, thread_count as usize, top as u32, n as u64, &team);
+            cacl(start, max as u64, thread_count as usize, top as u32, n as u64, &team);
             info!("线程 {} 结束计算", thread_name);
         }));
     }

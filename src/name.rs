@@ -1,5 +1,6 @@
 use tracing::warn;
 
+#[inline(always)]
 pub fn median<T>(x: T, y: T, z: T) -> T
 where
     T: std::cmp::Ord + std::marker::Copy,
@@ -112,7 +113,13 @@ impl Namer {
         let mut r = name_base[0..32].to_vec();
         for i in (10..31).step_by(3) {
             r[i..i + 3].sort_unstable();
-            name_prop[prop_cnt] = median(r[i], r[i + 1], r[i + 2]) as u32;
+            let med = median(r[i], r[i + 1], r[i + 2]);
+            // let max_ = r[i].max(r[i + 1]).max(r[i + 2]);
+            // let min_ = r[i].min(r[i + 1]).min(r[i + 2]);
+            // r[i] = min_;
+            // r[i + 1] = med;
+            // r[i + 2] = max_;
+            name_prop[prop_cnt] = med as u32;
             prop_cnt += 1;
         }
         r[0..10].sort_unstable();
