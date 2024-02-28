@@ -91,14 +91,14 @@ fn main() {
 
     // 将数据量处理成可被 thread_count 整除
     let left = cli_arg.start % cli_arg.thread_count as u64;
-    cli_arg.end += left;
+    cli_arg.end = cli_arg.end.wrapping_add(left);
 
     
     let mut n = 0;
     let mut threads = Vec::with_capacity(cli_arg.thread_count as usize);
     for i in 0..cli_arg.thread_count {
         let top = cli_arg.top;
-        let max = cli_arg.end / cli_arg.thread_count as u64;
+        let max = cli_arg.end;
         n += 1;
         let thread_name = format!("thread_{}", i);
         let thread_count = cli_arg.thread_count;
