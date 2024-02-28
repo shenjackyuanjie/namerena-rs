@@ -97,19 +97,19 @@ impl Namer {
         let mut prop_cnt = 0;
         let mut r = name_base[0..32].to_vec();
         for i in (10..31).step_by(3) {
-            // props[p_cnt++] = max(min(a[this.p], a[this.p + 1]),
-            //    min(max(a[this.p], a[this.p + 1]), a[this.p + 2]))
-            // name_prop[prop_cnt] = r[i + 1] as u32;
             name_prop[prop_cnt] = median(r[i], r[i + 1], r[i + 2]) as u32;
             prop_cnt += 1;
         }
-		println!("r:{:?} name base{:?}", r, name_base);
+		println!("r:{:?}", r);
         r[0..10].sort();
+		println!("r:{:?} {}", r, prop_cnt);
         name_prop[prop_cnt] = 154;
         prop_cnt += 1;
+		println!("name_prop:{:?}", name_prop);
         for i in 3..7 {
             name_prop[prop_cnt - 1] += r[i] as u32;
         }
+		println!("name_prop:{:?}", name_prop);
         for i in 0..7 {
             name_prop[i] += 36;
         }
