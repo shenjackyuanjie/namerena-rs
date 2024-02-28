@@ -1,134 +1,149 @@
+use tracing::warn;
+
+use crate::name;
+
 
 pub fn median(x: u8, y: u8, z: u8) -> u8 {
     // std::max(std::min(x, y), std::min(std::max(x, y), z))
     x.max(y).max(x.min(y).min(z))
 }
 
-/*
-function Poly(x) {
-    var xp = new Array()
-    for (let y = 0; y < 1034; y++) {
-        var l = 44
-        var i = 0, p = 0, q = 0, r = 0
-        var j = y
-        for (let k = 0; k < 45; k++) {
-            i++;
-            if (i > 2) p++;
-            q = j;
-            j = j - l + p;
-            if (j < 0) break;
-        }
-        if (i == 1) r = x[q]
-        if (i > 1) {
-            r = x[p] * x[p + q]
-        }
-        xp[y] = r
-    }
-    return xp
+#[derive(Debug, Clone)]
+pub struct Namer {
+	pub name: String,
+	pub team: String,
+	pub val: [u8; 256],
+	pub name_base: [u8; 128],
+	pub name_bytes: [u8; 256],
+	pub team_bytes: [u8; 256],
+	pub name_prop: [u8; 8],
+	pub skl_id: [u8; 40],
+	pub skl_freq: [u8; 40],
 }
-function onStart() {
-    var tmp1 = document.getElementById("input").value.trim()
-    var names = Array.prototype.slice.call(tmp1.split('\n'));
 
-    var output = document.getElementById("output")
-    var dis = document.getElementById("dis")
-    output.value = ''
+impl Namer {
+	pub fn new(raw_name: &String) -> Option<Self> {
+		let mut val = [0_u8; 256];
+		for i in 0..256 {
+			val[i] = i as u8;
+		}
+		let mut name_base = [0_u8; 128];
+		let mut name_prop = [0_u8; 8];
+		let mut skl_id = [0_u8; 40];
+		let mut skl_freq = [0_u8; 40];
 
-    var tmpsize = parseInt(document.getElementById("tmpsize").value.trim())
-    var lim = parseInt(document.getElementById("lim").value.trim())
-    if (isNaN(lim)) lim = 0
+		// name@team
+		// name
+		let (name, team) = raw_name.split_once('@').unwrap_or((raw_name, ""));
+		// len < 256
+		if name.len() > 255 {
+			warn!("Name too long({}): {}", name.len(), name);
+			return None;
+		}
+		let name_len = name.len();
+		if team.len() > 255 {
+			warn!("Team too long({}): {}", team.len(), team);
+			return None;
+		}
+		let team_len = team.len();
 
-    var x = new Array(43)
-    var name = new Name()
-    var s = 0, tmp2 = 0, tmp3 = ''
-    var length = names.length
-    var Loop = setInterval(function () {
-        tmp3 = ''
-        for (let ii = 0; ii < tmpsize; ii++) {
-            s = tmp2 + ii
-            var nametmp = Array.prototype.slice.call(names[s].split('@'));
-            if (nametmp.length < 2) nametmp[1] = nametmp[0]
-            name.load_team(nametmp[1])
-            name.load_name(nametmp[0])
-            if (nametmp[1] == "!") name.TV()
-            var props = name.calc_props()
-            name.calc_skills()
-            for (let j = 0; j < 7; j++)props[j] += 36;
-            x = new Array(44)
+		let name_bytes = name.as_bytes();
+		let team_bytes = team.as_bytes();
+		// 转到 256 长度 的 u8 数组
+		let name_bytes = {
+			let mut bytes = [0_u8; 256];
+			for i in 0..name_len {
+				bytes[i] = name_bytes[i];
+			}
+			bytes
+		};
+		let team_bytes = {
+			let mut bytes = [0_u8; 256];
+			for i in 0..team_len {
+				bytes[i] = team_bytes[i];
+			}
+			bytes
+		};
 
-            x[0] = props[7]
-            for (let i = 0; i < 7; i++) {
-                x[i + 1] = props[i]
-            }
-            for (let i = 0; i < 35; i++) {
-                var cf = 0;
-                for (let k = 0; k < 16; k++) {
-                    if (name.skill[k] == i) {
-                        x[i + 8] = name.freq[k]
-                        cf = 1;
-                    }
-                }
-                if (cf == 0) {
-                    x[i + 8] = 0
-                }
-            }
-            if (x[32] > 0) {//x[32]>48
-                name.load_name(nametmp[0] + '?shadow')
-                props = name.calc_props()
-                var shadow_sum = props[7] / 3
-                for (let j = 0; j < 7; j++)shadow_sum += props[j]
+		let mut s = 0_u32;
+		for i in 0..256 {
+			s += name_bytes[i] as u32 + val[i] as u32;
+			s %= 256;
+			let tmp = val[i];
+			val[i] = val[s as usize];
+			val[s as usize] = tmp;
+		}
+		for _ in 0..2 {
+			s = 0;
+			for j in 0..256 {
+				s += name_bytes[j % name_len] as u32 + val[j] as u32;
+				s %= 256;
+				let tmp = val[j];
+				val[j] = val[s as usize];
+				val[s as usize] = tmp;
+			}
+		}
+		s = 0;
+		for i in 0..256 {
+			let m = ((val[i] as u32 * 181 + 160) % 256) as u8;
+			if m >= 89 && m < 217 {
+				name_base[s as usize] = m & 63;
+			}
+		}
 
-                //更新部分
-                shadow_sum -= props[6] * 3
-                var shadowi = shadow_sum - 210
+		let mut prop_cnt = 0;
+		let mut r = name_base[0..32].to_vec();
+		for i in (10..31).step_by(3) {
+			r[i..i + 3].sort();
+			name_prop[prop_cnt] = r[i + 1];
+			prop_cnt += 1;
+		}
+		r[0..10].sort();
+		name_prop[prop_cnt] = 154;
+		prop_cnt += 1;
+		for i in 3..7 {
+			name_prop[prop_cnt - 1] += r[i];
+		}
+		for i in 0..7 {
+			name_prop[i] += 36;
+		}
 
-                //更新部分
-                shadowi = shadowi * x[32] / 100
-                x[43] = shadowi.toFixed(3)
-            } else {
-                x[43] = 0
-            }
-            if (x[42] > 0) x[42] += 20
+		Some(Self {
+			name: name.to_string(),
+			team: team.to_string(),
+			val,
+			name_base,
+			name_bytes,
+			team_bytes,
+			name_prop,
+			skl_id,
+			skl_freq,
+		})
+	}
 
-            var xp = Poly(x)
-            var score = model[0]
-            var scoreQD = modelQD[0]
-            for (let i = 0; i < 1034; i++) {
-                score += xp[i] * model[i + 1]
-            }
-            for (let i = 0; i < 1034; i++) {
-                scoreQD += xp[i] * modelQD[i + 1]
-            }
+	pub fn name_len(&self) -> usize { self.name.len() + 1 }
 
-            if (score >= lim && x[32] > 48) {
-                tmp3 += names[s] + ' ' + parseInt(score) + ' ' + parseInt(scoreQD) + ' !幻术\n'
-            } else if (score >= lim && x[26] > 48) {
-                tmp3 += names[s] + ' ' + parseInt(score) + ' ' + parseInt(scoreQD) + ' !铁壁\n'
-            } else if (score >= lim && x[29] > 48) {
-                tmp3 += names[s] + ' ' + parseInt(score) + ' ' + parseInt(scoreQD) + ' !背刺\n'
-            } else if (score >= lim && x[11] > 48) {
-                tmp3 += names[s] + ' ' + parseInt(score) + ' ' + parseInt(scoreQD) + ' !地裂\n'
-            } else if (score >= lim && x[20] > 48) {
-                tmp3 += names[s] + ' ' + parseInt(score) + ' ' + parseInt(scoreQD) + ' !加速\n'
-            } else if (score >= lim) { tmp3 += names[s] + ' ' + parseInt(score) + ' ' + parseInt(scoreQD) + '\n' }
-
-            names[s] = null
-            s++
-            if (ii == tmpsize - 1 || s == length) {
-                dis.innerText = (s) + ' / ' + length
-                output.value += tmp3
-            }
-            if (s == length) {
-                dis.innerText = "测试完成"
-                clearInterval(Loop)
-                break
-            }
-        }
-        tmp2 += tmpsize
-    }, 0)
+	pub fn team_len(&self) -> usize { self.team.len() + 1 }
 }
-function LoadVersion() {
-    var dis = document.getElementById("dis")
-    dis.innerText = "模型版本： " + version
+
+#[cfg(test)]
+mod test {
+	use super::*;
+
+	#[test]
+	fn basic_new_test() {
+		let namer = Namer::new(&"x@x".to_string());
+		assert!(namer.is_some());
+		let namer = namer.unwrap();
+		// println!("{:#?}", namer);
+		assert_eq!(namer.name, "x");
+		assert_eq!(namer.team, "x");
+		println!("val: {:?}", namer.val);
+		println!("name_base: {:?}", namer.name_base);
+		println!("name_bytes: {:?}", namer.name_bytes);
+		println!("team_bytes: {:?}", namer.team_bytes);
+		println!("name_prop: {:?}", namer.name_prop);
+		println!("skl_id: {:?}", namer.skl_id);
+		println!("skl_freq: {:?}", namer.skl_freq);
+	}
 }
- */
