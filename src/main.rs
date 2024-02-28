@@ -1,4 +1,3 @@
-mod data_struct;
 mod name;
 
 use base16384::Base16384Utf8;
@@ -12,6 +11,7 @@ use tracing::info;
 /// ? , 问号
 /// U2000 - U202F , unicode特殊空格 等
 /// 不可以空格开头
+#[inline(always)]
 pub fn gen_name(id: u64) -> String {
     // u64 -> [u8]
     let id_bytes = id.to_be_bytes();
@@ -54,6 +54,7 @@ pub struct Command {
     pub team: String,
 }
 
+#[inline(always)]
 fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
@@ -62,23 +63,21 @@ fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
         let name = gen_name(i as u64);
         // let full_name = format!("{}@shenjack", name);
         // let namer = name::Namer::new(&full_name);
-        let namer = name::Namer::new_raw(name, team);
-        if let Some(namer) = namer {
-            let prop = namer.get_property();
-            if (prop + allow_d as f32) > top as f32 {
-                if prop > top as f32 {
-                    info!("新的最高属性 {}", prop);
-                    top = prop as u32;
-                }
-                let name = gen_name(i as u64);
-                let full_name = format!("{}@{}", name, team);
-                info!("{:>20}|{}|{}", i, full_name, show_name(&namer));
+        let namer = name::Namer::new_raw(name.as_str(), team);
+        let prop = namer.get_property();
+        if (prop + allow_d as f32) > top as f32 {
+            if prop > top as f32 {
+                info!("新的最高属性 {}", prop);
+                top = prop as u32;
             }
+            let name = gen_name(i as u64);
+            let full_name = format!("{}@{}", name, team);
+            info!("{:>15}|{}|{}", i, full_name, show_name(&namer));
         }
         k += 1;
-        if k > report_interval as u64 {
+        if k >= report_interval as u64 {
             let now = std::time::Instant::now();
-            info!("{:>20} {} {}/s", i, id, k / now.duration_since(start_time).as_secs());
+            info!("{:>15} {} {}/s", i, id, k as u128 / now.duration_since(start_time).as_millis() * 1000);
             start_time = now;
             k = 0;
         }
