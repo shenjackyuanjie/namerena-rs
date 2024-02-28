@@ -9,7 +9,7 @@ edition = "2021"
 tokio = { version = "1.35.1", features = ["full"] }
 
 serde = { version = "1.0", features = ["derive"] }
-md-5 = "0.10.6"
+# md-5 = "0.10.6"
 toml = "0.8.10"
 
 tracing = "0.1.40"
