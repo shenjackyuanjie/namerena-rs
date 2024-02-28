@@ -40,7 +40,7 @@ const allow_d: u32 = 10;
 const report_interval: u32 = 1_000_0000;
 
 fn cacl(max: u64, step: usize, top: u32, id: u64) {
-    let start_time = std::time::Instant::now();
+    let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
     let mut top = top;
     for i in (0+id..max).step_by(step) {
@@ -61,6 +61,7 @@ fn cacl(max: u64, step: usize, top: u32, id: u64) {
         if k > report_interval as u64 {
             let now = std::time::Instant::now();
             info!("{} {} {}/s", k, id, k / now.duration_since(start_time).as_secs());
+            start_time = now;
             k = 0;
         }
     }
