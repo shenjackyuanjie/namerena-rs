@@ -35,10 +35,10 @@ impl Namer {
             warn!("Team too long({}): {}", team.len(), team);
             return None;
         }
-        Self::new_raw(name.to_string(), team.to_string())
+        Self::new_raw(name.to_string(), &team.to_string())
     }
 
-    pub fn new_raw(name: String, team: String) -> Option<Self> {
+    pub fn new_raw(name: String, team: &String) -> Option<Self> {
         
         let mut val = [0_u8; 256];
         for i in 0..256 {
