@@ -1,0 +1,16 @@
+[package]
+name = "namerena-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.35.1", features = ["full"] }
+
+serde = { version = "1.0", features = ["derive"] }
+md-5 = "0.10.6"
+toml = "0.8.10"
+
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["time"] }
