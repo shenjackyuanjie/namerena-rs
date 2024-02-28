@@ -23,6 +23,23 @@ pub struct Namer {
 
 impl Namer {
     pub fn new(raw_name: &String) -> Option<Self> {
+        // name@team
+        // name
+        let (name, team) = raw_name.split_once('@').unwrap_or((raw_name, ""));
+        // len < 256
+        if name.len() > 256 {
+            warn!("Name too long({}): {}", name.len(), name);
+            return None;
+        }
+        if team.len() > 256 {
+            warn!("Team too long({}): {}", team.len(), team);
+            return None;
+        }
+        Self::new_raw(name.to_string(), team.to_string())
+    }
+
+    pub fn new_raw(name: String, team: String) -> Option<Self> {
+        
         let mut val = [0_u8; 256];
         for i in 0..256 {
             val[i] = i as u8;
@@ -32,9 +49,6 @@ impl Namer {
         let skl_id = [0_u8; 40];
         let skl_freq = [0_u8; 40];
 
-        // name@team
-        // name
-        let (name, team) = raw_name.split_once('@').unwrap_or((raw_name, ""));
         // len < 256
         if name.len() > 256 {
             warn!("Name too long({}): {}", name.len(), name);

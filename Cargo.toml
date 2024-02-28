@@ -18,5 +18,9 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["time"] }
 
 [profile.release]
-opt-level = 0
+opt-level = 3
 codegen-units = 1
+panic = "abort"
+debug = false
+lto = true
+overflow-checks = false

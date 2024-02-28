@@ -44,8 +44,8 @@ fn cacl(max: u64, step: usize, top: u32, id: u64) {
     let mut k: u64 = 0;
     let mut top = top;
     for i in (0+id..max).step_by(step) {
-        // let name = gen_name(i as u64);
-        let full_name = format!("{}@shenjack", i);
+        let name = gen_name(i as u64);
+        let full_name = format!("{}@shenjack", name);
         let namer = name::Namer::new(&full_name);
         if let Some(namer) = namer {
             let prop = namer.get_property();
