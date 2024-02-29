@@ -138,7 +138,6 @@ impl Namer {
             }
             bytes
         };
-
         // // 计算
         // for i in 0..256 {
         //     s += team_bytes[i % (team_len + 1)] as u32 + val[i] as u32;
@@ -148,6 +147,15 @@ impl Namer {
         //     val[s as usize] = tmp;
         // }
         // s = 0;
+        /*
+        for (int _ = 0; _ < 2; _++) {
+            for (int i = s = 0, j = 0; i < N; i++, j++) {
+                s += name[j];
+                s += val[i];
+                std::swap(val[i], val[s]);
+                if (j == len) j = -1;
+            }
+        } */
         let mut s = 0_u32;
         for _ in 0..2 {
             for j in 0..256 {
@@ -159,6 +167,40 @@ impl Namer {
             }
             s = 0;
         }
+        // for i in 0..256 {
+        //     let m = ((val[i] as u32 * 181) + 160) % 256;
+        //     if m >= 89 && m < 217 {
+        //         name_base[s as usize] = (m & 63) as u8;
+        //         s += 1;
+        //     }
+        // }
+        // for _ in 0..2 {
+        //     for i in 0..256 {
+        //         if i < name_len {
+        //             s = s.overflowing_add(name_bytes[i]).0;
+        //         }
+        //         s = s.overflowing_add(val[i]).0;
+        //         val.swap(i, s as usize);
+        //     }
+        // }
+        /*
+        #define median(x, y, z) std::max(std::min(x, y), std::min(std::max(x, y), z))
+        #define LIM 96
+        #define WK(x) val[i + x] = val[i + x] * 181 + 160;
+        #define a name_base 
+	    for (int i = 0; i < LIM; i += 8) {
+	    	WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
+	    }
+	    for (int i = 0; i < LIM && q_len < 30; i++)
+	    	if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
+
+	    if (q_len < 30) {
+	    	for (int i = LIM; i < N; i += 8) {
+	    		WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
+	    	}
+	    	for (int i = LIM; i < N && q_len < 30; i++)
+	    		if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
+	    }*/
         s = 0;
         for i in 0..256 {
             let m = ((val[i] as u32 * 181) + 160) % 256;
@@ -167,6 +209,47 @@ impl Namer {
                 s += 1;
             }
         }
+        // let mut q_len = 0;
+        // for i in (0..256).step_by(8) {
+        //     val[i] = ((val[i] as u32 * 181 + 160) % 256) as u8;
+        //     val[i+1] = ((val[i+1] as u32 * 181 + 160) % 256) as u8;
+        //     val[i+2] = ((val[i+2] as u32 * 181 + 160) % 256) as u8;
+        //     val[i+3] = ((val[i+3] as u32 * 181 + 160) % 256) as u8;
+        //     val[i+4] = ((val[i+4] as u32 * 181 + 160) % 256) as u8;
+        //     val[i+5] = ((val[i+5] as u32 * 181 + 160) % 256) as u8;
+        //     val[i+6] = ((val[i+6] as u32 * 181 + 160) % 256) as u8;
+        //     val[i+7] = ((val[i+7] as u32 * 181 + 160) % 256) as u8;
+        // }
+        // for i in 0..256 {
+        //     if val[i] >= 89 && val[i] < 217 {
+        //         name_base[q_len] = (val[i] & 63) as u8;
+        //         q_len += 1;
+        //         if q_len >= 30 {
+        //             break;
+        //         }
+        //     }
+        // }
+        // if q_len < 30 {
+        //     for i in (96..256).step_by(8) {
+        //         val[i] = ((val[i] as u32 * 181 + 160) % 256) as u8;
+        //         val[i+1] = ((val[i+1] as u32 * 181 + 160) % 256) as u8;
+        //         val[i+2] = ((val[i+2] as u32 * 181 + 160) % 256) as u8;
+        //         val[i+3] = ((val[i+3] as u32 * 181 + 160) % 256) as u8;
+        //         val[i+4] = ((val[i+4] as u32 * 181 + 160) % 256) as u8;
+        //         val[i+5] = ((val[i+5] as u32 * 181 + 160) % 256) as u8;
+        //         val[i+6] = ((val[i+6] as u32 * 181 + 160) % 256) as u8;
+        //         val[i+7] = ((val[i+7] as u32 * 181 + 160) % 256) as u8;
+        //     }
+        //     for i in 96..256 {
+        //         if val[i] >= 89 && val[i] < 217 {
+        //             name_base[q_len] = (val[i] & 63) as u8;
+        //             q_len += 1;
+        //             if q_len >= 30 {
+        //                 break;
+        //             }
+        //         }
+        //     }
+        // }
 
         // 计算 name_prop
         let mut prop_cnt = 0;
