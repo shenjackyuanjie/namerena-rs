@@ -127,7 +127,6 @@ impl Namer {
     #[inline(always)]
     pub fn new_from_team_namer_unchecked(team_namer: &TeamNamer, name: &str) -> Self {
         let mut val: [u8; 256] = team_namer.clone_vals();
-        // let mut val: [u8; 256] = (0..=255).collect::<Vec<u8>>().try_into().unwrap();
         let mut name_base = [0_u8; 128];
         let mut name_prop = [0_u32; 8];
         let skl_id = [0_u8; 40];
@@ -275,10 +274,6 @@ impl Namer {
         name_prop[4] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
         name_prop[5] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
         name_prop[6] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
-        // [0, 4, 37, 40, 46,| 51, 53, 56, 58, 61,| 20, 21, 27, 15, 17, 26, 13, 30, 52, 30, 36, 63, 22, 34, 57, 6, 35, 37, 12, 25, 50, 0]
-        
-        // 
-        println!("{:?}", prop_name);
 
         Self {
             name: name.to_string(),

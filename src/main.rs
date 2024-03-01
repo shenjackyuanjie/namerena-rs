@@ -2,7 +2,7 @@
 
 mod name;
 
-use std::path::PathBuf;
+use std::{io::Write, path::PathBuf};
 
 use base16384::Base16384Utf8;
 use clap::Parser;
@@ -41,58 +41,86 @@ pub fn show_name(namer: &name::Namer) -> String {
 #[allow(non_upper_case_globals)]
 const allow_d: u32 = 10;
 
-#[allow(non_upper_case_globals)]
-const report_interval: u64 = 1_00_0000;
-
 #[derive(Parser, Debug, Clone)]
 pub struct Command {
+    /// 开始的 id
     #[arg(long, default_value_t = 0)]
     pub start: u64,
+    /// 结束的 id
     #[arg(long, default_value_t = u64::MAX)]
     pub end: u64,
+    /// 线程数
     #[arg(long, short = 't', default_value_t = 10)]
     pub thread_count: u32,
-    #[arg(long, default_value_t = 750)]
-    pub top: u32,
+    /// 八围预期值
+    #[arg(long = "prop-expected", short = 'p', default_value_t = 740)]
+    pub prop_expect: u32,
+    /// 队伍名称
     #[arg(long)]
     pub team: String,
+    /// 预期状态输出时间间隔 (秒)
+    #[arg(long, default_value_t = 10)]
+    pub report_interval: u64,
 }
 
+pub const GUESS_SPEED: u64 = 623772;
+
 #[inline(always)]
-fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String, outfile: &PathBuf) {
+fn cacl(config: Command, id: u64, outfile: &PathBuf) {
+    // 初始猜测的时间间隔
+    let mut report_interval = config.report_interval * GUESS_SPEED;
+    let mut run_speed = GUESS_SPEED as f64;
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
-    let mut top = top;
-    let team_namer = name::TeamNamer::new_unchecked(team.as_str());
-    for i in (start + id..max).step_by(step) {
+    // 提前准备好 team_namer
+    let team_namer = name::TeamNamer::new_unchecked(&config.team);
+
+    for i in (config.start + id..config.end).step_by(config.thread_count as usize) {
         let name = gen_name(i as u64);
         let namer = name::Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
         let prop = namer.get_property();
-        if (prop + allow_d as f32) > top as f32 {
-            if prop > top as f32 {
-                info!("新的最高属性 {}", prop);
-                top = prop as u32;
-            }
+
+        if (prop + allow_d as f32) > config.prop_expect as f32 {
             let name = gen_name(i as u64);
-            let full_name = format!("{}@{}", name, team);
+            let full_name = format!("{}@{}", name, config.team);
             info!("{:>15}|{}|{}", i, full_name, show_name(&namer));
-            // 写入
-            if let Err(e) = std::fs::write(outfile, full_name) {
-                warn!("写入文件<{:?}>失败: {}", outfile, e);
+            // 写入 (写到最后一行)
+            match std::fs::OpenOptions::new()
+                .append(true)
+                .open(outfile)
+                .and_then(|mut file| file.write(format!("{}\n", full_name).as_bytes()))
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("写入文件<{:?}>失败: {}", outfile, e);
+                }
             }
         }
         k += 1;
         if k >= report_interval as u64 {
             let now = std::time::Instant::now();
             let d_t: std::time::Duration = now.duration_since(start_time);
-            let speed = k as f64 / d_t.as_secs_f64();
+            let new_run_speed = k as f64 / d_t.as_secs_f64();
+            // 根据实际运行速率来调整 report_interval
+            report_interval = report_interval * run_speed as u64;
             info!(
-                "count:{:>15} {:>2} {:.2}/s {:.2}E/d",
+                "Id:{:>15} {:>2} {:.2}/s {:.3}E/d {:.2} {}",
                 i,
                 id,
-                speed,
-                speed * 8.64 / 1_0000.0
+                run_speed,
+                run_speed * 8.64 / 1_0000.0,
+                d_t.as_secs_f64(),
+                // 根据对比上一段运行速度 输出 emoji
+                // ⬆️ ➡️ ⬇️
+                if new_run_speed > run_speed {
+                    "⬆️"
+                } else if new_run_speed < run_speed {
+                    "⬇️"
+                } else {
+                    "➡️"
+                }
             );
+            run_speed = new_run_speed;
             start_time = std::time::Instant::now();
             k = 0;
         }
@@ -112,10 +140,7 @@ fn main() {
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     // namerena-<team>-<time>.txt
     // <time>: %Y-%m-%d-%H-%M-%S
-    let output_filename = format!(
-        "namerena-{}-{}.txt",
-        cli_arg.team, now
-    );
+    let output_filename = format!("namerena-{}-{}.txt", cli_arg.team, now);
     let out_path = PathBuf::from(format!("./namerena/{}", output_filename));
     info!("输出文件: {:?}", out_path);
     // 先创建文件夹
