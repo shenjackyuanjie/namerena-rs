@@ -6,8 +6,8 @@ use std::{io::Write, path::PathBuf};
 
 use base16384::Base16384Utf8;
 use clap::Parser;
-use tracing::{info, warn};
 use colored::Colorize;
+use tracing::{info, warn};
 
 /// 根据 u64 生成对应的 name
 /// 转换成 base 16384
@@ -86,7 +86,7 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
         if (prop + allow_d as f32) > config.prop_expect as f32 {
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, config.team);
-            info!("{:>15}|{}|{}", i, full_name, show_name(&namer));
+            info!("Id:{:>15}|{}|{}", i, full_name, show_name(&namer));
             // 写入 (写到最后一行)
             match std::fs::OpenOptions::new()
                 .append(true)
@@ -104,10 +104,14 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
             let now = std::time::Instant::now();
             let d_t: std::time::Duration = now.duration_since(start_time);
             let new_run_speed = k as f64 / d_t.as_secs_f64();
+            // 预估剩余时间
+            let wait_time = (config.end - i) / config.thread_count as u64 / new_run_speed as u64;
+            let wait_time = chrono::Duration::seconds(wait_time as i64);
+            // 转换成 时:分:秒
             // 根据实际运行速率来调整 report_interval
             report_interval = config.report_interval * new_run_speed as u64;
             info!(
-                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2} {}",
+                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2} {} 预计:{}:{}:{}|",
                 id,
                 i,
                 new_run_speed,
@@ -122,7 +126,10 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
                     "⬇️".red()
                 } else {
                     "➡️".blue()
-                }
+                },
+                wait_time.num_hours(),
+                wait_time.num_minutes() % 60,
+                wait_time.num_seconds() % 60
             );
             run_speed = new_run_speed;
             start_time = std::time::Instant::now();
@@ -156,11 +163,11 @@ fn main() {
         warn!("创建文件失败: {}", e);
     }
 
-    info!("start: {} end: {}", cli_arg.start, cli_arg.end);
-    info!("thread_count: {}", cli_arg.thread_count);
+    info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
+    info!("线程数: {}", cli_arg.thread_count);
     info!("八围预期: {}", cli_arg.prop_expect);
-    info!("team: {}", cli_arg.team);
-    info!("output: {:?}", out_path);
+    info!("队伍名: {}", cli_arg.team);
+    info!("输出文件名: {:?}", out_path);
 
     for i in 0..cli_arg.thread_count {
         n += 1;
