@@ -7,6 +7,7 @@ use std::{io::Write, path::PathBuf};
 use base16384::Base16384Utf8;
 use clap::Parser;
 use tracing::{info, warn};
+use colored::Colorize;
 
 /// 根据 u64 生成对应的 name
 /// 转换成 base 16384
@@ -106,20 +107,21 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
             // 根据实际运行速率来调整 report_interval
             report_interval = config.report_interval * new_run_speed as u64;
             info!(
-                "Id:{:>15} {:>2} {:.2}/s {:.3}E/d {:.2} {}",
-                i,
+                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2} {}",
                 id,
+                i,
                 new_run_speed,
                 new_run_speed * 8.64 / 1_0000.0,
                 d_t.as_secs_f64(),
                 // 根据对比上一段运行速度 输出 emoji
                 // ⬆️ ➡️ ⬇️
                 if new_run_speed > run_speed {
-                    "⬆️"
+                    "⬆️".green()
                 } else if new_run_speed < run_speed {
-                    "⬇️"
+                    // 橙色
+                    "⬇️".red()
                 } else {
-                    "➡️"
+                    "➡️".blue()
                 }
             );
             run_speed = new_run_speed;
