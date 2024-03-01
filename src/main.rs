@@ -63,6 +63,8 @@ pub struct Command {
     pub report_interval: u64,
 }
 
+/// 大概的预计速度
+/// 来自 5600X 的运行效率
 pub const GUESS_SPEED: u64 = 623772;
 
 #[inline(always)]
@@ -102,7 +104,7 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
             let d_t: std::time::Duration = now.duration_since(start_time);
             let new_run_speed = k as f64 / d_t.as_secs_f64();
             // 根据实际运行速率来调整 report_interval
-            report_interval = report_interval * run_speed as u64;
+            report_interval = config.report_interval * new_run_speed as u64;
             info!(
                 "Id:{:>15} {:>2} {:.2}/s {:.3}E/d {:.2} {}",
                 i,
@@ -154,7 +156,7 @@ fn main() {
 
     info!("start: {} end: {}", cli_arg.start, cli_arg.end);
     info!("thread_count: {}", cli_arg.thread_count);
-    info!("top: {}", cli_arg.prop_expect);
+    info!("八围预期: {}", cli_arg.prop_expect);
     info!("team: {}", cli_arg.team);
     info!("output: {:?}", out_path);
 
