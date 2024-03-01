@@ -256,14 +256,7 @@ impl Namer {
         }
 
         // 计算 name_prop
-        let mut prop_cnt = 0;
         let mut prop_name = name_base[0..32].to_vec();
-        // for i in (10..31).step_by(3) {
-        //     prop_name[i..i + 3].sort_unstable();
-        //     let med = median(prop_name[i], prop_name[i + 1], prop_name[i + 2]);
-        //     name_prop[prop_cnt] = med as u32;
-        //     prop_cnt += 1;
-        // }
         prop_name[0..10].sort_unstable();
         /*
     	st[0] = 154 + a[3] + a[4] + a[5] + a[6];
