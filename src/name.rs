@@ -1,3 +1,6 @@
+
+use std::simd::{u32x16, u8x16, u8x64};
+
 use tracing::warn;
 
 #[inline(always)]
@@ -130,6 +133,7 @@ impl Namer {
 
         let name_bytes = name.as_bytes();
         let name_len = name_bytes.len();
+        // let b_name_len = name_len + 1;
         // 转到 256 长度 的 u8 数组
         let name_bytes = {
             let mut bytes = [0_u8; 256];
@@ -156,14 +160,29 @@ impl Namer {
                 if (j == len) j = -1;
             }
         } */
+        // for _ in 0..2 {
+        //     // 手动处理 0 的问题
+        //     // 手动swap
+        //     let mut s = val[0];
+        //     let mut j = 0;
+        //     val.swap(s as usize, 0);
+        //     for i in 1..256 {
+        //         j += 1;
+        //         if j == name_len {
+        //             j = 0;
+        //         }
+        //         s = s.wrapping_add(index_name(j, name_bytes));
+        //         s = s.wrapping_add(val[i]);
+        //         val.swap(i, s as usize);
+        //     }
+        // }
+        // let mut s = 0;
         let mut s = 0_u32;
         for _ in 0..2 {
             for j in 0..256 {
                 s += name_bytes[j % (name_len + 1)] as u32 + val[j] as u32;
                 s %= 256;
-                let tmp = val[j];
-                val[j] = val[s as usize];
-                val[s as usize] = tmp;
+                val.swap(j, s as usize);
             }
             s = 0;
         }
@@ -187,20 +206,20 @@ impl Namer {
         #define median(x, y, z) std::max(std::min(x, y), std::min(std::max(x, y), z))
         #define LIM 96
         #define WK(x) val[i + x] = val[i + x] * 181 + 160;
-        #define a name_base 
-	    for (int i = 0; i < LIM; i += 8) {
-	    	WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
-	    }
-	    for (int i = 0; i < LIM && q_len < 30; i++)
-	    	if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
+        #define a name_base
+        for (int i = 0; i < LIM; i += 8) {
+            WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
+        }
+        for (int i = 0; i < LIM && q_len < 30; i++)
+            if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
 
-	    if (q_len < 30) {
-	    	for (int i = LIM; i < N; i += 8) {
-	    		WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
-	    	}
-	    	for (int i = LIM; i < N && q_len < 30; i++)
-	    		if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
-	    }*/
+        if (q_len < 30) {
+            for (int i = LIM; i < N; i += 8) {
+                WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
+            }
+            for (int i = LIM; i < N && q_len < 30; i++)
+                if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
+        }*/
         s = 0;
         for i in 0..256 {
             let m = ((val[i] as u32 * 181) + 160) % 256;
@@ -209,6 +228,22 @@ impl Namer {
                 s += 1;
             }
         }
+        // simd 优化
+        // let x_a = u32x16::splat(181);
+        // let x_b = u32x16::splat(160);
+        // for i in (0..256).step_by(16) {
+        //     // 一次性加载4个数字
+        //     let mut x: u32x16 = u32x16::from_array(
+        //         val[i..i + 16]
+        //             .to_vec()
+        //             .iter()
+        //             .map(|x| *x as u32)
+        //             .collect::<Vec<u32>>()
+        //             .try_into()
+        //             .unwrap(),
+        //     );
+        //     x = x * x_a + x_b;
+        // }
         // let mut q_len = 0;
         // for i in (0..256).step_by(8) {
         //     val[i] = ((val[i] as u32 * 181 + 160) % 256) as u8;

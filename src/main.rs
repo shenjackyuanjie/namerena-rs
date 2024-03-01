@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 mod name;
 
 use base16384::Base16384Utf8;
