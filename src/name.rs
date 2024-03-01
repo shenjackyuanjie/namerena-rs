@@ -133,18 +133,8 @@ impl Namer {
         let skl_freq = [0_u8; 40];
 
         let name_bytes = name.as_bytes();
-        // let mut name_bytes = name.as_bytes().to_vec();
-        // name_bytes.insert(0, 0);
         let name_len = name_bytes.len();
         let b_name_len = name_len + 1;
-        // 转到 256 长度 的 u8 数组
-        // let name_bytes = {
-        //     let mut bytes = [0_u8; 256];
-        //     for i in 0..name_len {
-        //         bytes[i + 1] = name_bytes[i];
-        //     }
-        //     bytes
-        // };
         // // 计算
         // for i in 0..256 {
         //     s += team_bytes[i % (team_len + 1)] as u32 + val[i] as u32;
@@ -211,7 +201,7 @@ impl Namer {
             }
 
             let mut mod_count = 0;
-            for i in 0..256 {
+            for i in 0..96 {
                 let k = simd_val[i];
                 if k >= 89 && k < 217 {
                     name_base[mod_count as usize] = (k & 63) as u8;
@@ -222,13 +212,6 @@ impl Namer {
                 }
             }
             if mod_count < 31 {
-                // println!("mod_count: {}", mod_count);
-                // for i in (96..256).step_by(64) {
-                //     // 一次性加载4个数字
-                //     let mut x = u8x64::from_slice(&simd_val[i..]);
-                //     x = x * x_a + x_b;
-                //     x.copy_to_slice(&mut simd_val[i..]);
-                // }
                 for i in 96..256 {
                     let k = simd_val[i];
                     if k >= 89 && k < 217 {
@@ -266,14 +249,14 @@ impl Namer {
         st[5] = median(prop_name[22], prop_name[23], prop_name[24]) + 36;
         st[6] = median(prop_name[25], prop_name[26], prop_name[27]) + 36;
         st[7] = median(prop_name[28], prop_name[29], prop_name[30]) + 36; */
-        name_prop[7] = 154 + prop_name[3] as u32 + prop_name[4] as u32 + prop_name[5] as u32 + prop_name[6] as u32;
-        name_prop[0] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
-        name_prop[1] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
-        name_prop[2] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
-        name_prop[3] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
-        name_prop[4] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
-        name_prop[5] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
-        name_prop[6] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
+        name_prop[0] = 154 + prop_name[3] as u32 + prop_name[4] as u32 + prop_name[5] as u32 + prop_name[6] as u32;
+        name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
+        name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
+        name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
+        name_prop[4] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
+        name_prop[5] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
+        name_prop[6] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
+        name_prop[7] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
 
         Self {
             name: name.to_string(),
@@ -288,9 +271,8 @@ impl Namer {
 
     #[inline(always)]
     pub fn get_property(&self) -> f32 {
-        // 除 prop[7] 外 加起来  + prop[7] / 3
-        let sum1 = self.name_prop[0..7].iter().sum::<u32>();
-        let sum2 = self.name_prop[7] as u32;
+        let sum1 = self.name_prop[1..=7].iter().sum::<u32>();
+        let sum2 = self.name_prop[0] as u32;
         sum1 as f32 + (sum2 as f32 / 3_f32)
     }
 }
@@ -353,7 +335,7 @@ mod test {
         let team = TeamNamer::new_unchecked("x");
         let namer = Namer::new_from_team_namer_unchecked(&team, "x");
         
-        let prop_vec: Vec<u32> = vec![57, 53, 66, 72, 70, 71, 61, 344];
+        let prop_vec: Vec<u32> = vec![344, 57, 53, 66, 72, 70, 71, 61];
         assert_eq!(namer.name_prop.to_vec(), prop_vec);
     }
 }

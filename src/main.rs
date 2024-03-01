@@ -18,16 +18,13 @@ use tracing::{info, warn};
 /// 不可以空格开头
 #[inline(always)]
 pub fn gen_name(id: u64) -> String {
-    // u64 -> [u8]
     let id_bytes = id.to_be_bytes();
     Base16384Utf8::encode(id_bytes.as_slice())
 }
 
 pub fn show_name(namer: &name::Namer) -> String {
-    // var attributeNames = ["HP", "攻", "防", "速", "敏", "魔", "抗", "智"]
     format!(
         "HP|{} 攻|{} 防|{} 速|{} 敏|{} 魔|{} 抗|{} 智|{} 八围:{}",
-        namer.name_prop[7],
         namer.name_prop[0],
         namer.name_prop[1],
         namer.name_prop[2],
@@ -35,6 +32,7 @@ pub fn show_name(namer: &name::Namer) -> String {
         namer.name_prop[4],
         namer.name_prop[5],
         namer.name_prop[6],
+        namer.name_prop[7],
         namer.get_property()
     )
 }
@@ -60,7 +58,7 @@ pub struct Command {
     #[arg(long)]
     pub team: String,
     /// 预期状态输出时间间隔 (秒)
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, short = 'r', default_value_t = 10)]
     pub report_interval: u64,
 }
 
@@ -75,6 +73,7 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
     let mut run_speed = GUESS_SPEED as f64;
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
+    let mut get_count: u32 = 0;
     // 提前准备好 team_namer
     let team_namer = name::TeamNamer::new_unchecked(&config.team);
 
@@ -84,6 +83,7 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
         let prop = namer.get_property();
 
         if (prop + allow_d as f32) > config.prop_expect as f32 {
+            get_count += 1;
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, config.team);
             info!("Id:{:>15}|{}|{}", i, full_name, show_name(&namer));
@@ -111,7 +111,7 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
             // 根据实际运行速率来调整 report_interval
             report_interval = config.report_interval * new_run_speed as u64;
             info!(
-                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2} {} 预计:{}:{}:{}|",
+                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2}{}|{:<3}|预计:{}:{}:{}|",
                 id,
                 i,
                 new_run_speed,
@@ -127,6 +127,7 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
                 } else {
                     "➡️".blue()
                 },
+                get_count,
                 wait_time.num_hours(),
                 wait_time.num_minutes() % 60,
                 wait_time.num_seconds() % 60
