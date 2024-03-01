@@ -11,6 +11,7 @@ base16384 = "0.1.0"
 
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["time"] }
+chrono = "0.4.34"
 
 [features]
 default = ["simd"]

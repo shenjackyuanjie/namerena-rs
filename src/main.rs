@@ -2,9 +2,11 @@
 
 mod name;
 
+use std::path::PathBuf;
+
 use base16384::Base16384Utf8;
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 /// 根据 u64 生成对应的 name
 /// 转换成 base 16384
@@ -42,7 +44,7 @@ const allow_d: u32 = 10;
 #[allow(non_upper_case_globals)]
 const report_interval: u64 = 1_00_0000;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct Command {
     #[arg(long, default_value_t = 0)]
     pub start: u64,
@@ -57,7 +59,7 @@ pub struct Command {
 }
 
 #[inline(always)]
-fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
+fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String, outfile: &PathBuf) {
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
     let mut top = top;
@@ -74,6 +76,10 @@ fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, team);
             info!("{:>15}|{}|{}", i, full_name, show_name(&namer));
+            // 写入
+            if let Err(e) = std::fs::write(outfile, full_name) {
+                warn!("写入文件<{:?}>失败: {}", outfile, e);
+            }
         }
         k += 1;
         if k >= report_interval as u64 {
@@ -103,35 +109,47 @@ fn main() {
 
     let mut n = 0;
     let mut threads = Vec::with_capacity(cli_arg.thread_count as usize);
-    let now = std::time::Instant::now();
-    // namerena-<team>-<start>-<end>-<time>.txt
+    let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    // namerena-<team>-<time>.txt
     // <time>: %Y-%m-%d-%H-%M-%S
     let output_filename = format!(
-        "namerena-{}-{}-{}-{:?}.txt",
-        cli_arg.team,
-        cli_arg.start,
-        cli_arg.end,
-        now
+        "namerena-{}-{}.txt",
+        cli_arg.team, now
     );
-    info!("输出文件: {}", output_filename);
-    
+    let out_path = PathBuf::from(format!("./namerena/{}", output_filename));
+    info!("输出文件: {:?}", out_path);
+    // 先创建文件夹
+    if let Err(e) = std::fs::create_dir_all(&out_path.parent().unwrap()) {
+        warn!("创建文件夹失败: {}", e);
+    }
+    // 再创建文件
+    if let Err(e) = std::fs::File::create(&out_path) {
+        warn!("创建文件失败: {}", e);
+    }
+
+    info!("start: {} end: {}", cli_arg.start, cli_arg.end);
+    info!("thread_count: {}", cli_arg.thread_count);
+    info!("top: {}", cli_arg.top);
+    info!("team: {}", cli_arg.team);
+    info!("output: {:?}", out_path);
+
     for i in 0..cli_arg.thread_count {
-        let top = cli_arg.top;
-        let max = cli_arg.end;
-        let start = cli_arg.start;
         n += 1;
+        let cli = cli_arg.clone();
+        let out_path = out_path.clone();
         let thread_name = format!("thread_{}", i);
         let thread_count = cli_arg.thread_count;
         let team = cli_arg.team.clone();
         threads.push(std::thread::spawn(move || {
             info!("线程 {} 开始计算", thread_name);
             cacl(
-                start,
-                max as u64,
+                cli.start,
+                cli.end as u64,
                 thread_count as usize,
-                top as u32,
+                cli.top as u32,
                 n as u64,
                 &team,
+                &out_path,
             );
             info!("线程 {} 结束计算", thread_name);
         }));
