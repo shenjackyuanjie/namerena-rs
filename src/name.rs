@@ -132,16 +132,19 @@ impl Namer {
         let skl_freq = [0_u8; 40];
 
         let name_bytes = name.as_bytes();
+        // let mut name_bytes = name.as_bytes().to_vec();
+        // name_bytes.insert(0, 0);
+        // let name_bytes = name_bytes.as_slice();
         let name_len = name_bytes.len();
-        // let b_name_len = name_len + 1;
+        let b_name_len = name_len + 1;
         // 转到 256 长度 的 u8 数组
-        let name_bytes = {
-            let mut bytes = [0_u8; 256];
-            for i in 0..name_len {
-                bytes[i + 1] = name_bytes[i];
-            }
-            bytes
-        };
+        // let name_bytes = {
+        //     let mut bytes = [0_u8; 256];
+        //     for i in 0..name_len {
+        //         bytes[i + 1] = name_bytes[i];
+        //     }
+        //     bytes
+        // };
         // // 计算
         // for i in 0..256 {
         //     s += team_bytes[i % (team_len + 1)] as u32 + val[i] as u32;
@@ -151,6 +154,7 @@ impl Namer {
         //     val[s as usize] = tmp;
         // }
         // s = 0;
+        // cpp 实现
         /*
         for (int _ = 0; _ < 2; _++) {
             for (int i = s = 0, j = 0; i < N; i++, j++) {
@@ -160,32 +164,35 @@ impl Namer {
                 if (j == len) j = -1;
             }
         } */
-        // for _ in 0..2 {
-        //     // 手动处理 0 的问题
-        //     // 手动swap
-        //     let mut s = val[0];
-        //     let mut j = 0;
-        //     val.swap(s as usize, 0);
-        //     for i in 1..256 {
-        //         j += 1;
-        //         if j == name_len {
-        //             j = 0;
-        //         }
-        //         s = s.wrapping_add(index_name(j, name_bytes));
-        //         s = s.wrapping_add(val[i]);
-        //         val.swap(i, s as usize);
-        //     }
-        // }
-        // let mut s = 0;
-        let mut s = 0_u32;
         for _ in 0..2 {
-            for j in 0..256 {
-                s += name_bytes[j % (name_len + 1)] as u32 + val[j] as u32;
-                s %= 256;
-                val.swap(j, s as usize);
+            // 手动处理 0 的问题
+            // 手动swap
+            let mut s = 0_u8;
+            val.swap(s as usize, 0);
+            for i in 0..256 {
+                // s = s.wrapping_add(name_bytes[i % name_len]);
+                s = s.wrapping_add(
+                    match i % b_name_len {
+                        0 => 0,
+                        k => name_bytes[k - 1],
+                    }
+                );
+                s = s.wrapping_add(val[i]);
+                val.swap(i, s as usize);
             }
-            s = 0;
         }
+        let mut s = 0;
+        // --------
+        // let mut s = 0_u32;
+        // for _ in 0..2 {
+        //     for j in 0..256 {
+        //         s += name_bytes[j % (name_len + 1)] as u32 + val[j] as u32;
+        //         s %= 256;
+        //         val.swap(j, s as usize);
+        //     }
+        //     s = 0;
+        // }
+        // --------
         // for i in 0..256 {
         //     let m = ((val[i] as u32 * 181) + 160) % 256;
         //     if m >= 89 && m < 217 {

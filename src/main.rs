@@ -40,7 +40,7 @@ pub fn show_name(namer: &name::Namer) -> String {
 const allow_d: u32 = 10;
 
 #[allow(non_upper_case_globals)]
-const report_interval: u32 = 1_000_0000;
+const report_interval: u64 = 1_00_0000;
 
 #[derive(Parser, Debug)]
 pub struct Command {
@@ -78,8 +78,10 @@ fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
         k += 1;
         if k >= report_interval as u64 {
             let now = std::time::Instant::now();
-            info!("{:>15} {} {}/s", i, id, k as u128 / now.duration_since(start_time).as_millis() * 1000);
-            start_time = now;
+            let d_t: std::time::Duration = now.duration_since(start_time);
+            let speed = k as f64 / d_t.as_secs_f64();
+            info!("count:{:>15} {:>2} {:.2}/s {:.2}E/d", i, id, speed, speed * 8.64 / 1_0000.0);
+            start_time = std::time::Instant::now();
             k = 0;
         }
     }
