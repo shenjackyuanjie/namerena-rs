@@ -62,7 +62,7 @@ fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
     let mut k: u64 = 0;
     let mut top = top;
     let team_namer = name::TeamNamer::new_unchecked(team.as_str());
-    for i in (start+id..max).step_by(step) {
+    for i in (start + id..max).step_by(step) {
         let name = gen_name(i as u64);
         let namer = name::Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
         let prop = namer.get_property();
@@ -80,7 +80,13 @@ fn cacl(start: u64, max: u64, step: usize, top: u32, id: u64, team: &String) {
             let now = std::time::Instant::now();
             let d_t: std::time::Duration = now.duration_since(start_time);
             let speed = k as f64 / d_t.as_secs_f64();
-            info!("count:{:>15} {:>2} {:.2}/s {:.2}E/d", i, id, speed, speed * 8.64 / 1_0000.0);
+            info!(
+                "count:{:>15} {:>2} {:.2}/s {:.2}E/d",
+                i,
+                id,
+                speed,
+                speed * 8.64 / 1_0000.0
+            );
             start_time = std::time::Instant::now();
             k = 0;
         }
@@ -95,9 +101,20 @@ fn main() {
     let left = cli_arg.start % cli_arg.thread_count as u64;
     cli_arg.end = cli_arg.end.wrapping_add(left);
 
-    
     let mut n = 0;
     let mut threads = Vec::with_capacity(cli_arg.thread_count as usize);
+    let now = std::time::Instant::now();
+    // namerena-<team>-<start>-<end>-<time>.txt
+    // <time>: %Y-%m-%d-%H-%M-%S
+    let output_filename = format!(
+        "namerena-{}-{}-{}-{:?}.txt",
+        cli_arg.team,
+        cli_arg.start,
+        cli_arg.end,
+        now
+    );
+    info!("输出文件: {}", output_filename);
+    
     for i in 0..cli_arg.thread_count {
         let top = cli_arg.top;
         let max = cli_arg.end;
@@ -108,7 +125,14 @@ fn main() {
         let team = cli_arg.team.clone();
         threads.push(std::thread::spawn(move || {
             info!("线程 {} 开始计算", thread_name);
-            cacl(start, max as u64, thread_count as usize, top as u32, n as u64, &team);
+            cacl(
+                start,
+                max as u64,
+                thread_count as usize,
+                top as u32,
+                n as u64,
+                &team,
+            );
             info!("线程 {} 结束计算", thread_name);
         }));
     }

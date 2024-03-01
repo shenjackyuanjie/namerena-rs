@@ -1,5 +1,5 @@
-
-use std::simd::{u32x16, u8x16, u8x64};
+#[cfg(feature = "simd")]
+use std::simd::u8x64;
 
 use tracing::warn;
 
@@ -134,7 +134,6 @@ impl Namer {
         let name_bytes = name.as_bytes();
         // let mut name_bytes = name.as_bytes().to_vec();
         // name_bytes.insert(0, 0);
-        // let name_bytes = name_bytes.as_slice();
         let name_len = name_bytes.len();
         let b_name_len = name_len + 1;
         // 转到 256 长度 的 u8 数组
@@ -171,28 +170,14 @@ impl Namer {
             val.swap(s as usize, 0);
             for i in 0..256 {
                 // s = s.wrapping_add(name_bytes[i % name_len]);
-                s = s.wrapping_add(
-                    match i % b_name_len {
-                        0 => 0,
-                        k => name_bytes[k - 1],
-                    }
-                );
+                s = s.wrapping_add(match i % b_name_len {
+                    0 => 0,
+                    k => name_bytes[k - 1],
+                });
                 s = s.wrapping_add(val[i]);
                 val.swap(i, s as usize);
             }
         }
-        let mut s = 0;
-        // --------
-        // let mut s = 0_u32;
-        // for _ in 0..2 {
-        //     for j in 0..256 {
-        //         s += name_bytes[j % (name_len + 1)] as u32 + val[j] as u32;
-        //         s %= 256;
-        //         val.swap(j, s as usize);
-        //     }
-        //     s = 0;
-        // }
-        // --------
         // for i in 0..256 {
         //     let m = ((val[i] as u32 * 181) + 160) % 256;
         //     if m >= 89 && m < 217 {
@@ -227,86 +212,82 @@ impl Namer {
             for (int i = LIM; i < N && q_len < 30; i++)
                 if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
         }*/
-        s = 0;
-        for i in 0..256 {
-            let m = ((val[i] as u32 * 181) + 160) % 256;
-            if m >= 89 && m < 217 {
-                name_base[s as usize] = (m & 63) as u8;
-                s += 1;
+        // simd 优化
+        #[cfg(feature = "simd")]
+        {
+            let mut simd_val = val.clone();
+            let x_a = u8x64::splat(181);
+            let x_b = u8x64::splat(160);
+            for i in (0..256).step_by(64) {
+                // 一次性加载4个数字
+                let mut x = u8x64::from_slice(&simd_val[i..]);
+                x = x * x_a + x_b;
+                x.copy_to_slice(&mut simd_val[i..]);
+            }
+
+            let mut mod_count = 0;
+            let mut s = 0;
+            for i in 0..256 {
+                let k = simd_val[i];
+                if k >= 89 && k < 217 {
+                    name_base[s as usize] = (k & 63) as u8;
+                    s += 1;
+                    mod_count += 1;
+                }
+                if mod_count >= 30 {
+                    break;
+                }
+            }
+            if mod_count < 30 {
+                for i in 96..256 {
+                    let k = simd_val[i];
+                    if k >= 89 && k < 217 {
+                        name_base[s as usize] = (k & 63) as u8;
+                        s += 1;
+                        mod_count += 1;
+                    }
+                    if mod_count >= 30 {
+                        break;
+                    }
+                }
             }
         }
-        // simd 优化
-        // let x_a = u32x16::splat(181);
-        // let x_b = u32x16::splat(160);
-        // for i in (0..256).step_by(16) {
-        //     // 一次性加载4个数字
-        //     let mut x: u32x16 = u32x16::from_array(
-        //         val[i..i + 16]
-        //             .to_vec()
-        //             .iter()
-        //             .map(|x| *x as u32)
-        //             .collect::<Vec<u32>>()
-        //             .try_into()
-        //             .unwrap(),
-        //     );
-        //     x = x * x_a + x_b;
-        // }
-        // let mut q_len = 0;
-        // for i in (0..256).step_by(8) {
-        //     val[i] = ((val[i] as u32 * 181 + 160) % 256) as u8;
-        //     val[i+1] = ((val[i+1] as u32 * 181 + 160) % 256) as u8;
-        //     val[i+2] = ((val[i+2] as u32 * 181 + 160) % 256) as u8;
-        //     val[i+3] = ((val[i+3] as u32 * 181 + 160) % 256) as u8;
-        //     val[i+4] = ((val[i+4] as u32 * 181 + 160) % 256) as u8;
-        //     val[i+5] = ((val[i+5] as u32 * 181 + 160) % 256) as u8;
-        //     val[i+6] = ((val[i+6] as u32 * 181 + 160) % 256) as u8;
-        //     val[i+7] = ((val[i+7] as u32 * 181 + 160) % 256) as u8;
-        // }
-        // for i in 0..256 {
-        //     if val[i] >= 89 && val[i] < 217 {
-        //         name_base[q_len] = (val[i] & 63) as u8;
-        //         q_len += 1;
-        //         if q_len >= 30 {
-        //             break;
-        //         }
-        //     }
-        // }
-        // if q_len < 30 {
-        //     for i in (96..256).step_by(8) {
-        //         val[i] = ((val[i] as u32 * 181 + 160) % 256) as u8;
-        //         val[i+1] = ((val[i+1] as u32 * 181 + 160) % 256) as u8;
-        //         val[i+2] = ((val[i+2] as u32 * 181 + 160) % 256) as u8;
-        //         val[i+3] = ((val[i+3] as u32 * 181 + 160) % 256) as u8;
-        //         val[i+4] = ((val[i+4] as u32 * 181 + 160) % 256) as u8;
-        //         val[i+5] = ((val[i+5] as u32 * 181 + 160) % 256) as u8;
-        //         val[i+6] = ((val[i+6] as u32 * 181 + 160) % 256) as u8;
-        //         val[i+7] = ((val[i+7] as u32 * 181 + 160) % 256) as u8;
-        //     }
-        //     for i in 96..256 {
-        //         if val[i] >= 89 && val[i] < 217 {
-        //             name_base[q_len] = (val[i] & 63) as u8;
-        //             q_len += 1;
-        //             if q_len >= 30 {
-        //                 break;
-        //             }
-        //         }
-        //     }
-        // }
+
+        #[cfg(not(feature = "simd"))]
+        {
+            let mut s = 0;
+            for i in 0..256 {
+                let m = ((val[i] as u32 * 181) + 160) % 256;
+                if m >= 89 && m < 217 {
+                    name_base[s as usize] = (m & 63) as u8;
+                    s += 1;
+                }
+            }
+        }
 
         // 计算 name_prop
         let mut prop_cnt = 0;
-        let mut r = name_base[0..32].to_vec();
+        let mut prop_name = name_base[0..32].to_vec();
         for i in (10..31).step_by(3) {
-            r[i..i + 3].sort_unstable();
-            let med = median(r[i], r[i + 1], r[i + 2]);
+            prop_name[i..i + 3].sort_unstable();
+            let med = median(prop_name[i], prop_name[i + 1], prop_name[i + 2]);
             name_prop[prop_cnt] = med as u32;
             prop_cnt += 1;
         }
-        r[0..10].sort_unstable();
+        prop_name[0..10].sort_unstable();
         name_prop[prop_cnt] = 154;
         prop_cnt += 1;
+        /*
+
+        st[1] = median(name_base[10], name_base[11], name_base[12]) + 36;
+        st[2] = median(name_base[13], name_base[14], name_base[15]) + 36;
+        st[3] = median(name_base[16], name_base[17], name_base[18]) + 36;
+        st[4] = median(name_base[19], name_base[20], name_base[21]) + 36;
+        st[5] = median(name_base[22], name_base[23], name_base[24]) + 36;
+        st[6] = median(name_base[25], name_base[26], name_base[27]) + 36;
+        st[7] = median(name_base[28], name_base[29], name_base[30]) + 36; */
         for i in 3..7 {
-            name_prop[prop_cnt - 1] += r[i] as u32;
+            name_prop[prop_cnt - 1] += prop_name[i] as u32;
         }
         for i in 0..7 {
             name_prop[i] += 36;

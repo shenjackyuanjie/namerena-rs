@@ -12,6 +12,10 @@ base16384 = "0.1.0"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["time"] }
 
+[features]
+default = ["simd"]
+simd = []
+
 [profile.release]
 opt-level = 3
 codegen-units = 1
