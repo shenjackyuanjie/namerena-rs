@@ -336,11 +336,7 @@ mod test {
     fn basic_new_test() {
         let team = TeamNamer::new_unchecked("x");
         let namer = Namer::new_from_team_namer_unchecked(&team, "x");
-        // let namer = Namer::new(&"x@x".to_string());
-
-        // assert!(namer.is_some());
-
-        // let namer = namer.unwrap();
+        
         println!("team val: {:?}", team.val);
         println!("namer: {:?}", crate::show_name(&namer));
 
