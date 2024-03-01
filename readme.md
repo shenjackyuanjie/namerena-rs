@@ -2,7 +2,7 @@
 
 [https://deepmess.com/namerena/](https://deepmess.com/namerena/)
 
-## 用法:
+## 用法
 
 ```text
 Usage: namerena-rs.exe [OPTIONS] --team <TEAM>

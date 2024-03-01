@@ -239,6 +239,13 @@ impl Namer {
                 }
             }
             if mod_count < 30 {
+                // println!("mod_count: {}", mod_count);
+                // for i in (96..256).step_by(64) {
+                //     // 一次性加载4个数字
+                //     let mut x = u8x64::from_slice(&simd_val[i..]);
+                //     x = x * x_a + x_b;
+                //     x.copy_to_slice(&mut simd_val[i..]);
+                // }
                 for i in 96..256 {
                     let k = simd_val[i];
                     if k >= 89 && k < 217 {
@@ -277,21 +284,29 @@ impl Namer {
         prop_name[0..10].sort_unstable();
         name_prop[prop_cnt] = 154;
         prop_cnt += 1;
-        /*
-
-        st[1] = median(name_base[10], name_base[11], name_base[12]) + 36;
-        st[2] = median(name_base[13], name_base[14], name_base[15]) + 36;
-        st[3] = median(name_base[16], name_base[17], name_base[18]) + 36;
-        st[4] = median(name_base[19], name_base[20], name_base[21]) + 36;
-        st[5] = median(name_base[22], name_base[23], name_base[24]) + 36;
-        st[6] = median(name_base[25], name_base[26], name_base[27]) + 36;
-        st[7] = median(name_base[28], name_base[29], name_base[30]) + 36; */
         for i in 3..7 {
             name_prop[prop_cnt - 1] += prop_name[i] as u32;
         }
         for i in 0..7 {
             name_prop[i] += 36;
         }
+        /*
+    	st[0] = 154 + a[3] + a[4] + a[5] + a[6];
+        st[1] = median(prop_name[10], prop_name[11], prop_name[12]) + 36;
+        st[2] = median(prop_name[13], prop_name[14], prop_name[15]) + 36;
+        st[3] = median(prop_name[16], prop_name[17], prop_name[18]) + 36;
+        st[4] = median(prop_name[19], prop_name[20], prop_name[21]) + 36;
+        st[5] = median(prop_name[22], prop_name[23], prop_name[24]) + 36;
+        st[6] = median(prop_name[25], prop_name[26], prop_name[27]) + 36;
+        st[7] = median(prop_name[28], prop_name[29], prop_name[30]) + 36; */
+        // name_prop[0] = 154 + prop_name[3] as u32 + prop_name[4] as u32 + prop_name[5] as u32 + prop_name[6] as u32;
+        // name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
+        // name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
+        // name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
+        // name_prop[4] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
+        // name_prop[5] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
+        // name_prop[6] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
+        // name_prop[7] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
 
         Self {
             name: name.to_string(),
