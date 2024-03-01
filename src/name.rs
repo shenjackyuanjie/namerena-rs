@@ -8,7 +8,9 @@ pub fn median<T>(x: T, y: T, z: T) -> T
 where
     T: std::cmp::Ord + std::marker::Copy,
 {
-    x.max(y).max(x.min(y).min(z))
+    // std::max(std::min(x, y), std::min(std::max(x, y), z))
+    // x.max(y).max(x.min(y).min(z))
+    x.min(y).max(x.max(y).min(z))
 }
 
 #[derive(Debug, Clone)]
@@ -178,22 +180,6 @@ impl Namer {
                 val.swap(i, s as usize);
             }
         }
-        // for i in 0..256 {
-        //     let m = ((val[i] as u32 * 181) + 160) % 256;
-        //     if m >= 89 && m < 217 {
-        //         name_base[s as usize] = (m & 63) as u8;
-        //         s += 1;
-        //     }
-        // }
-        // for _ in 0..2 {
-        //     for i in 0..256 {
-        //         if i < name_len {
-        //             s = s.overflowing_add(name_bytes[i]).0;
-        //         }
-        //         s = s.overflowing_add(val[i]).0;
-        //         val.swap(i, s as usize);
-        //     }
-        // }
         /*
         #define median(x, y, z) std::max(std::min(x, y), std::min(std::max(x, y), z))
         #define LIM 96
@@ -272,21 +258,13 @@ impl Namer {
         // 计算 name_prop
         let mut prop_cnt = 0;
         let mut prop_name = name_base[0..32].to_vec();
-        for i in (10..31).step_by(3) {
-            prop_name[i..i + 3].sort_unstable();
-            let med = median(prop_name[i], prop_name[i + 1], prop_name[i + 2]);
-            name_prop[prop_cnt] = med as u32;
-            prop_cnt += 1;
-        }
+        // for i in (10..31).step_by(3) {
+        //     prop_name[i..i + 3].sort_unstable();
+        //     let med = median(prop_name[i], prop_name[i + 1], prop_name[i + 2]);
+        //     name_prop[prop_cnt] = med as u32;
+        //     prop_cnt += 1;
+        // }
         prop_name[0..10].sort_unstable();
-        name_prop[prop_cnt] = 154;
-        prop_cnt += 1;
-        for i in 3..7 {
-            name_prop[prop_cnt - 1] += prop_name[i] as u32;
-        }
-        for i in 0..7 {
-            name_prop[i] += 36;
-        }
         /*
     	st[0] = 154 + a[3] + a[4] + a[5] + a[6];
         st[1] = median(prop_name[10], prop_name[11], prop_name[12]) + 36;
@@ -296,14 +274,18 @@ impl Namer {
         st[5] = median(prop_name[22], prop_name[23], prop_name[24]) + 36;
         st[6] = median(prop_name[25], prop_name[26], prop_name[27]) + 36;
         st[7] = median(prop_name[28], prop_name[29], prop_name[30]) + 36; */
-        // name_prop[0] = 154 + prop_name[3] as u32 + prop_name[4] as u32 + prop_name[5] as u32 + prop_name[6] as u32;
-        // name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
-        // name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
-        // name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
-        // name_prop[4] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
-        // name_prop[5] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
-        // name_prop[6] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
-        // name_prop[7] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
+        name_prop[7] = 154 + prop_name[3] as u32 + prop_name[4] as u32 + prop_name[5] as u32 + prop_name[6] as u32;
+        name_prop[0] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
+        name_prop[1] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
+        name_prop[2] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
+        name_prop[3] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
+        name_prop[4] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
+        name_prop[5] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
+        name_prop[6] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
+        // [0, 4, 37, 40, 46,| 51, 53, 56, 58, 61,| 20, 21, 27, 15, 17, 26, 13, 30, 52, 30, 36, 63, 22, 34, 57, 6, 35, 37, 12, 25, 50, 0]
+        
+        // 
+        println!("{:?}", prop_name);
 
         Self {
             name: name.to_string(),
