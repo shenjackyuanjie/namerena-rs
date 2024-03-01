@@ -154,7 +154,7 @@ fn main() {
 
     info!("start: {} end: {}", cli_arg.start, cli_arg.end);
     info!("thread_count: {}", cli_arg.thread_count);
-    info!("top: {}", cli_arg.top);
+    info!("top: {}", cli_arg.prop_expect);
     info!("team: {}", cli_arg.team);
     info!("output: {:?}", out_path);
 
@@ -163,17 +163,11 @@ fn main() {
         let cli = cli_arg.clone();
         let out_path = out_path.clone();
         let thread_name = format!("thread_{}", i);
-        let thread_count = cli_arg.thread_count;
-        let team = cli_arg.team.clone();
         threads.push(std::thread::spawn(move || {
             info!("线程 {} 开始计算", thread_name);
             cacl(
-                cli.start,
-                cli.end as u64,
-                thread_count as usize,
-                cli.top as u32,
-                n as u64,
-                &team,
+                cli,
+                n,
                 &out_path,
             );
             info!("线程 {} 结束计算", thread_name);
