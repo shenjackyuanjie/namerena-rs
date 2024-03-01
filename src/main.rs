@@ -109,8 +109,8 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
                 "Id:{:>15} {:>2} {:.2}/s {:.3}E/d {:.2} {}",
                 i,
                 id,
-                run_speed,
-                run_speed * 8.64 / 1_0000.0,
+                new_run_speed,
+                new_run_speed * 8.64 / 1_0000.0,
                 d_t.as_secs_f64(),
                 // 根据对比上一段运行速度 输出 emoji
                 // ⬆️ ➡️ ⬇️
@@ -167,11 +167,7 @@ fn main() {
         let thread_name = format!("thread_{}", i);
         threads.push(std::thread::spawn(move || {
             info!("线程 {} 开始计算", thread_name);
-            cacl(
-                cli,
-                n,
-                &out_path,
-            );
+            cacl(cli, n, &out_path);
             info!("线程 {} 结束计算", thread_name);
         }));
     }
