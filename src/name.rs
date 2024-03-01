@@ -226,19 +226,17 @@ impl Namer {
             }
 
             let mut mod_count = 0;
-            let mut s = 0;
             for i in 0..256 {
                 let k = simd_val[i];
                 if k >= 89 && k < 217 {
-                    name_base[s as usize] = (k & 63) as u8;
-                    s += 1;
+                    name_base[mod_count as usize] = (k & 63) as u8;
                     mod_count += 1;
                 }
-                if mod_count >= 30 {
+                if mod_count >= 31 {
                     break;
                 }
             }
-            if mod_count < 30 {
+            if mod_count < 31 {
                 // println!("mod_count: {}", mod_count);
                 // for i in (96..256).step_by(64) {
                 //     // 一次性加载4个数字
@@ -249,8 +247,7 @@ impl Namer {
                 for i in 96..256 {
                     let k = simd_val[i];
                     if k >= 89 && k < 217 {
-                        name_base[s as usize] = (k & 63) as u8;
-                        s += 1;
+                        name_base[mod_count as usize] = (k & 63) as u8;
                         mod_count += 1;
                     }
                     if mod_count >= 30 {
@@ -333,21 +330,19 @@ mod test {
     use super::*;
 
     #[test]
-    fn basic_new_test() {
+    fn new_test() {
+        let namer = Namer::new(&"x@x".to_string());
+        assert!(namer.is_some());
+        let namer = namer.unwrap();
+        assert_eq!(namer.name, "x");
+        assert_eq!(namer.team, "x");
+    }
+    
+    #[test]
+    fn val_test() {
         let team = TeamNamer::new_unchecked("x");
         let namer = Namer::new_from_team_namer_unchecked(&team, "x");
-        
-        println!("team val: {:?}", team.val);
-        println!("namer: {:?}", crate::show_name(&namer));
 
-        let base_name_vec: Vec<u8> = vec![
-            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
-            57, 34, 22, 37, 35, 6, 12, 25, 50, 49, 59, 23, 49, 27, 51, 58, 39, 28, 60, 20, 31, 36,
-            41, 11, 7, 29, 24, 24, 61, 62, 57, 4, 28, 48, 55, 50, 38, 29, 10, 40, 42, 15, 23, 47,
-            42, 62, 47, 1, 60, 5, 43, 21, 1, 46, 45, 9, 9, 14, 38, 13, 56, 0, 31, 59, 39, 6, 35,
-            41, 55, 5, 34, 3, 7, 33, 33, 45, 16, 16, 32, 43, 18, 44, 22, 14, 17, 10, 11, 53, 18,
-            44, 19, 52, 2, 32, 12, 8, 2, 54, 26, 48, 8, 3, 63, 54, 19, 25,
-        ];
         let val_vec: Vec<u8> = vec![
             225, 96, 49, 232, 20, 47, 115, 245, 234, 23, 111, 178, 231, 100, 118, 197, 42, 98, 137,
             196, 209, 86, 114, 184, 167, 129, 164, 239, 205, 211, 82, 173, 189, 153, 198, 67, 4, 3,
@@ -364,11 +359,31 @@ mod test {
             53, 68, 218, 0, 252, 16, 136, 179, 158, 248, 2, 154, 12, 125, 126, 255, 18, 146, 104,
             77, 152, 208, 214, 72, 55, 195, 62, 7, 217, 56, 181,
         ];
-        let prop_vec: Vec<u32> = vec![57, 53, 66, 72, 70, 71, 61, 344];
-        assert_eq!(namer.name, "x");
-        assert_eq!(namer.team, "x");
         assert_eq!(namer.val.to_vec(), val_vec);
-        assert_eq!(namer.name_prop.to_vec(), prop_vec);
+    }
+
+    #[test]
+    fn base_name_test() {
+        let team = TeamNamer::new_unchecked("x");
+        let namer = Namer::new_from_team_namer_unchecked(&team, "x");
+
+        let base_name_vec: Vec<u8> = vec![
+            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
+            57, 34, 22, 37, 35, 6, 12, 25, 50, 49, 59, 23, 49, 27, 51, 58, 39, 28, 60, 20, 31, 36,
+            41, 11, 7, 29, 24, 24, 61, 62, 57, 4, 28, 48, 55, 50, 38, 29, 10, 40, 42, 15, 23, 47,
+            42, 62, 47, 1, 60, 5, 43, 21, 1, 46, 45, 9, 9, 14, 38, 13, 56, 0, 31, 59, 39, 6, 35,
+            41, 55, 5, 34, 3, 7, 33, 33, 45, 16, 16, 32, 43, 18, 44, 22, 14, 17, 10, 11, 53, 18,
+            44, 19, 52, 2, 32, 12, 8, 2, 54, 26, 48, 8, 3, 63, 54, 19, 25,
+        ];
         assert_eq!(namer.name_base.to_vec(), base_name_vec);
+    }
+
+    #[test]
+    fn prop_test() {
+        let team = TeamNamer::new_unchecked("x");
+        let namer = Namer::new_from_team_namer_unchecked(&team, "x");
+        
+        let prop_vec: Vec<u32> = vec![57, 53, 66, 72, 70, 71, 61, 344];
+        assert_eq!(namer.name_prop.to_vec(), prop_vec);
     }
 }
