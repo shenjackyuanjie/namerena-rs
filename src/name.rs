@@ -231,8 +231,7 @@ impl Namer {
             }
             if mod_count < 31 {
                 for i in 96..256 {
-                    let k = simd_val[i];
-                    if k >= 89 && k < 217 {
+                    if simd_target[i] {
                         name_base[mod_count as usize] = simd_val_b[i];
                         mod_count += 1;
                     }
