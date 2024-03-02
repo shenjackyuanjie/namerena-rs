@@ -1,5 +1,7 @@
 #[cfg(feature = "simd")]
 use std::simd::u8x64;
+#[cfg(feature = "simd")]
+use std::simd::cmp::SimdPartialOrd;
 
 use tracing::warn;
 
@@ -191,20 +193,30 @@ impl Namer {
         #[cfg(feature = "simd")]
         {
             let mut simd_val = val.clone();
-            let x_a = u8x64::splat(181);
-            let x_b = u8x64::splat(160);
+            let mut simd_val_b = [0_u8; 256];
+            // let mut simd_target = [false; 256];
+            let simd_181 = u8x64::splat(181);
+            let simd_160 = u8x64::splat(160);
+            let simd_63 = u8x64::splat(63);
+            let simd_88 = u8x64::splat(88);
+            let simd_217 = u8x64::splat(217);
+            
             for i in (0..256).step_by(64) {
-                // 一次性加载4个数字
+                // 一次性加载64个数字
                 let mut x = u8x64::from_slice(&simd_val[i..]);
-                x = x * x_a + x_b;
+                x = x * simd_181 + simd_160;
+                // 写入到 simd_val
                 x.copy_to_slice(&mut simd_val[i..]);
+
+                x = x & simd_63;
+                x.copy_to_slice(&mut simd_val_b[i..]);
             }
 
             let mut mod_count = 0;
             for i in 0..96 {
                 let k = simd_val[i];
                 if k >= 89 && k < 217 {
-                    name_base[mod_count as usize] = (k & 63) as u8;
+                    name_base[mod_count as usize] = simd_val_b[i];
                     mod_count += 1;
                 }
                 if mod_count >= 31 {
@@ -215,7 +227,7 @@ impl Namer {
                 for i in 96..256 {
                     let k = simd_val[i];
                     if k >= 89 && k < 217 {
-                        name_base[mod_count as usize] = (k & 63) as u8;
+                        name_base[mod_count as usize] = simd_val_b[i];
                         mod_count += 1;
                     }
                     if mod_count >= 30 {
@@ -267,6 +279,75 @@ impl Namer {
             skl_id,
             skl_freq,
         }
+    }
+
+    #[inline(always)]
+    pub fn update_skill(&mut self) {
+        /*
+        template <int len>
+        void calc_skills() {
+        	//  q_len = -1;
+        	//  memcpy(val, val_base, sizeof val);
+        	//  for (int _ = 0; _ < 2; _++)
+        	//  	for (int i = s = 0, j = 0; i < N; i++, j++) {
+        	//  		s += name[j];
+        	//  		s += val[i];
+        	//  		std::swap(val[i], val[s]);
+        	//  		if (j == len) j = -1;
+        	//  	}
+        	for (int i = 0; i < N; i++)
+        		if (val[i] * 181 + 199 & 128) name_base[++q_len] = val[i] * 53 & 63 ^ 32;
+            
+        	u8_t *a = name_base + K;
+        	for (int i = 0; i < skill_cnt; i++) skill[i] = i;
+        	p = q = s = 0;
+        	for (int _ = 0; _ < 2; _++)
+        		for (int i = 0; i < skill_cnt; i++) {
+        			s = (s + rnd() + skill[i]) % skill_cnt;
+        			std::swap(skill[i], skill[s]);
+        		}
+        	int last = -1;
+        	for (int i = 0, j = 0; j < 16; i += 4, j++) {
+        		u8_t p = std::min(std::min(a[i], a[i + 1]), std::min(a[i + 2], a[i + 3]));
+        		if (p > 10 && skill[j] < 35) {
+        			freq[j] = p - 10;
+        			if (skill[j] < 25) last = j;
+        		} else
+        			freq[j] = 0;
+        	}
+        	if (last != -1) freq[last] <<= 1;
+        	if (freq[14] && last != 14)
+        		freq[14] += std::min(std::min(name_base[60], name_base[61]), freq[14]);
+        	if (freq[15] && last != 15)
+        		freq[15] += std::min(std::min(name_base[62], name_base[63]), freq[15]);
+        } */
+        #[cfg(feature = "simd")]
+        {
+            let mut simd_val = self.val.clone();
+            let mut simd_val_b = self.val.clone();
+            let simd_181 = u8x64::splat(181);
+            let simd_199 = u8x64::splat(199);
+            let simd_128 = u8x64::splat(128);
+            let simd_53 = u8x64::splat(53);
+            let simd_63 = u8x64::splat(63);
+            let simd_32 = u8x64::splat(32);
+
+            for i in (0..256).step_by(64) {
+                let mut x = u8x64::from_slice(&simd_val[i..]);
+                let mut y = u8x64::from_slice(&simd_val_b[i..]);
+                x = x * simd_181 + simd_199 & simd_128;
+                y = y * simd_53 & simd_63 ^ simd_32;
+                x.copy_to_slice(&mut simd_val[i..]);
+                y.copy_to_slice(&mut simd_val_b[i..]);
+            }
+        }
+
+        #[cfg(not(feature = "simd"))]
+        {
+
+        }
+
+        
     }
 
     #[inline(always)]
