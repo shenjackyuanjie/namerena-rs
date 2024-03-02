@@ -138,25 +138,6 @@ impl Namer {
         let name_bytes = name.as_bytes();
         let name_len = name_bytes.len();
         let b_name_len = name_len + 1;
-        // // 计算
-        // for i in 0..256 {
-        //     s += team_bytes[i % (team_len + 1)] as u32 + val[i] as u32;
-        //     s %= 256;
-        //     let tmp = val[i];
-        //     val[i] = val[s as usize];
-        //     val[s as usize] = tmp;
-        // }
-        // s = 0;
-        // cpp 实现
-        /*
-        for (int _ = 0; _ < 2; _++) {
-            for (int i = s = 0, j = 0; i < N; i++, j++) {
-                s += name[j];
-                s += val[i];
-                std::swap(val[i], val[s]);
-                if (j == len) j = -1;
-            }
-        } */
         for _ in 0..2 {
             // 手动处理 0 的问题
             // 手动swap
@@ -172,24 +153,6 @@ impl Namer {
                 val.swap(i, s as usize);
             }
         }
-        /*
-        #define median(x, y, z) std::max(std::min(x, y), std::min(std::max(x, y), z))
-        #define LIM 96
-        #define WK(x) val[i + x] = val[i + x] * 181 + 160;
-        #define a name_base
-        for (int i = 0; i < LIM; i += 8) {
-            WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
-        }
-        for (int i = 0; i < LIM && q_len < 30; i++)
-            if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
-
-        if (q_len < 30) {
-            for (int i = LIM; i < N; i += 8) {
-                WK(0) WK(1) WK(2) WK(3) WK(4) WK(5) WK(6) WK(7)
-            }
-            for (int i = LIM; i < N && q_len < 30; i++)
-                if (val[i] >= 89 && val[i] < 217) a[++q_len] = val[i] & 63;
-        }*/
         // simd 优化
         #[cfg(feature = "simd")]
         {
@@ -282,110 +245,59 @@ impl Namer {
 
     #[inline(always)]
     pub fn update_skill(&mut self) {
-        /*
-        template <int len>
-        void calc_skills() {
-            //  q_len = -1;
-            //  memcpy(val, val_base, sizeof val);
-            //  for (int _ = 0; _ < 2; _++)
-            //  	for (int i = s = 0, j = 0; i < N; i++, j++) {
-            //  		s += name[j];
-            //  		s += val[i];
-            //  		std::swap(val[i], val[s]);
-            //  		if (j == len) j = -1;
-            //  	}
-            for (int i = 0; i < N; i++)
-                if (val[i] * 181 + 199 & 128) name_base[++q_len] = val[i] * 53 & 63 ^ 32;
-
-            u8_t *a = name_base + K;
-            for (int i = 0; i < skill_cnt; i++) skill[i] = i;
-            p = q = s = 0;
-            for (int _ = 0; _ < 2; _++)
-                for (int i = 0; i < skill_cnt; i++) {
-                    s = (s + rnd() + skill[i]) % skill_cnt;
-                    std::swap(skill[i], skill[s]);
-                }
-            int last = -1;
-            for (int i = 0, j = 0; j < 16; i += 4, j++) {
-                u8_t p = std::min(std::min(a[i], a[i + 1]), std::min(a[i + 2], a[i + 3]));
-                if (p > 10 && skill[j] < 35) {
-                    freq[j] = p - 10;
-                    if (skill[j] < 25) last = j;
-                } else
-                    freq[j] = 0;
-            }
-            if (last != -1) freq[last] <<= 1;
-            if (freq[14] && last != 14)
-                freq[14] += std::min(std::min(name_base[60], name_base[61]), freq[14]);
-            if (freq[15] && last != 15)
-                freq[15] += std::min(std::min(name_base[62], name_base[63]), freq[15]);
-        } */
-
         let skill_id = self.skl_id.as_mut();
         for i in 0..40 {
             skill_id[i] = i as u8
         }
 
-        let mut name_base = self.name_base.clone();
         #[cfg(feature = "simd")]
         {
-            // let mut simd_val = self.val.clone();
-            // let mut simd_val_b = self.val.clone();
-            // let simd_181 = u8x64::splat(181);
-            // let simd_199 = u8x64::splat(199);
-            // let simd_128 = u8x64::splat(128);
-            // let simd_53 = u8x64::splat(53);
-            // let simd_63 = u8x64::splat(63);
-            // let simd_32 = u8x64::splat(32);
+            let mut simd_val = self.val.clone();
+            let mut simd_val_b = self.val.clone();
+            let simd_181 = u8x64::splat(181);
+            let simd_199 = u8x64::splat(199);
+            let simd_128 = u8x64::splat(128);
+            let simd_53 = u8x64::splat(53);
+            let simd_63 = u8x64::splat(63);
+            let simd_32 = u8x64::splat(32);
 
-            // for i in (0..256).step_by(64) {
-            //     let mut x = u8x64::from_slice(&simd_val[i..]);
-            //     let mut y = u8x64::from_slice(&simd_val_b[i..]);
-            //     x = x * simd_181 + simd_199 & simd_128;
-            //     y = y * simd_53 & simd_63 ^ simd_32;
-            //     x.copy_to_slice(&mut simd_val[i..]);
-            //     y.copy_to_slice(&mut simd_val_b[i..]);
-            // }
+            for i in (0..256).step_by(64) {
+                let mut x = u8x64::from_slice(&simd_val[i..]);
+                let mut y = u8x64::from_slice(&simd_val_b[i..]);
+                x = x * simd_181 + simd_199 & simd_128;
+                y = y * simd_53 & simd_63 ^ simd_32;
+                x.copy_to_slice(&mut simd_val[i..]);
+                y.copy_to_slice(&mut simd_val_b[i..]);
+            }
 
-            // let mut mod_count = 0;
-            // for i in 0..256 {
-            //     if simd_val[i] != 0 {
-            //         name_base[mod_count as usize] = simd_val_b[i];
-            //         mod_count += 1;
-            //     }
-            // }
+            let mut mod_count = 0;
+            for i in 0..256 {
+                if simd_val[i] != 0 {
+                    self.name_base[mod_count as usize] = simd_val_b[i];
+                    mod_count += 1;
+                }
+            }
             // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
-            let mut p: u8 = 0;
-            let mut q: u8 = 0;
+            let mut a: u8 = 0;
+            let mut b: u8 = 0;
             let mut s: u8 = 0;
-            println!("val: {:?}", self.val);
-            println!("name_base: {:?}", name_base);
             for _ in 0..2 {
                 for i in 0..40 {
-                    /*
-                    inline u8_t rnd() {
-                    q += val[++p];
-                    std::swap(val[p], val[q]);
-                    u8_t u = val[(val[p] + val[q]) & 255];
-                    q += val[++p];
-                    std::swap(val[p], val[q]);
-                    return (u << 8 | val[(val[p] + val[q]) & 255]) % skill_cnt;
-                    } */
                     let rnd = {
-                        q = q.wrapping_add(self.val[p as usize]);
-                        p += 1;
-                        self.val.swap(p as usize, q as usize);
-                        let u: u8 = self.val
-                            [((self.val[p as usize] as u16 + self.val[q as usize] as u16) & 255) as usize];
-                        q = q.wrapping_add(self.val[p as usize]);
-                        p += 1;
-                        self.val.swap(p as usize, q as usize);
-                        let t = self.val
-                            [((self.val[p as usize] as u16 + self.val[q as usize] as u16) & 255) as usize];
+                        a += 1;
+                        b = b.wrapping_add(self.val[a as usize]);
+                        self.val.swap(a as usize, b as usize);
+                        let u: u8 = self.val[((self.val[a as usize] as u16
+                            + self.val[b as usize] as u16)
+                            & 255) as usize];
+                        a += 1;
+                        b = b.wrapping_add(self.val[a as usize]);
+                        self.val.swap(a as usize, b as usize);
+                        let t = self.val[((self.val[a as usize] as u16
+                            + self.val[b as usize] as u16)
+                            & 255) as usize];
                         (((u as u32) << 8 | t as u32) % 40) as u8
                     };
-                    println!("rnd: {} i: {i}", rnd);
-                    // s = (s.wrapping_add(rnd).wrapping_add(skill_id[i])) % 40;
                     s = (s as u16 + rnd as u16 + skill_id[i] as u16) as u8 % 40;
                     skill_id.swap(i as usize, s as usize);
                 }
@@ -393,7 +305,6 @@ impl Namer {
             let mut last = -1;
             let mut j = 0;
             for i in (64..128).step_by(4) {
-                // a[k] == self.name_base[k+10]
                 let p = min(
                     min(self.name_base[i + 0], self.name_base[i + 1]),
                     min(self.name_base[i + 2], self.name_base[i + 3]),
@@ -428,7 +339,7 @@ impl Namer {
 
         #[cfg(not(feature = "simd"))]
         {
-            todo!("none simd 还没写呢")   
+            todo!("none simd 还没写呢")
         }
     }
 
@@ -480,9 +391,19 @@ mod test {
     #[test]
     fn base_name_test() {
         let team = TeamNamer::new_unchecked("x");
-        let namer = Namer::new_from_team_namer_unchecked(&team, "x");
-
+        let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
         let base_name_vec: Vec<u8> = vec![
+            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
+            57, 34, 22, 37, 35, 6, 12, 25, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(namer.name_base.to_vec(), base_name_vec);
+        namer.update_skill();
+        // update skill 之后才会是完整的 name
+
+        let full_base_name_vec: Vec<u8> = vec![
             53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
             57, 34, 22, 37, 35, 6, 12, 25, 50, 49, 59, 23, 49, 27, 51, 58, 39, 28, 60, 20, 31, 36,
             41, 11, 7, 29, 24, 24, 61, 62, 57, 4, 28, 48, 55, 50, 38, 29, 10, 40, 42, 15, 23, 47,
@@ -490,7 +411,7 @@ mod test {
             41, 55, 5, 34, 3, 7, 33, 33, 45, 16, 16, 32, 43, 18, 44, 22, 14, 17, 10, 11, 53, 18,
             44, 19, 52, 2, 32, 12, 8, 2, 54, 26, 48, 8, 3, 63, 54, 19, 25,
         ];
-        assert_eq!(namer.name_base.to_vec(), base_name_vec);
+        assert_eq!(namer.name_base.to_vec(), full_base_name_vec);
     }
 
     #[test]
@@ -499,10 +420,11 @@ mod test {
         let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
 
         namer.update_skill();
-        // println!("namer: {:?}", namer);
-        println!("skill prop {:?}", namer.skl_freq);
-        println!("skill id   {:?}", namer.skl_id);
-        panic!()
+        let skill_prop_vec: Vec<u8> = vec![
+            13, 0, 0, 0, 0, 0, 0, 0, 6, 8, 0, 1, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(namer.skl_freq.to_vec(), skill_prop_vec);
     }
 
     #[test]
