@@ -2,6 +2,8 @@
 use std::simd::u8x64;
 #[cfg(feature = "simd")]
 use std::simd::cmp::SimdPartialOrd;
+#[cfg(feature = "simd")]
+use std::simd::Simd;
 
 use tracing::warn;
 
@@ -194,7 +196,7 @@ impl Namer {
         {
             let mut simd_val = val.clone();
             let mut simd_val_b = [0_u8; 256];
-            // let mut simd_target = [false; 256];
+            let mut simd_target = [false; 256];
             let simd_181 = u8x64::splat(181);
             let simd_160 = u8x64::splat(160);
             let simd_63 = u8x64::splat(63);
@@ -207,6 +209,11 @@ impl Namer {
                 x = x * simd_181 + simd_160;
                 // 写入到 simd_val
                 x.copy_to_slice(&mut simd_val[i..]);
+                // 提前判断 > 88 && < 217
+                let mask = x.simd_ge(simd_88) & x.simd_lt(simd_217);
+                // 写入到 simd_target
+                let mask: [bool; 64] = mask.to_array();
+                simd_target[i..i + 64].copy_from_slice(&mask);
 
                 x = x & simd_63;
                 x.copy_to_slice(&mut simd_val_b[i..]);
@@ -214,12 +221,11 @@ impl Namer {
 
             let mut mod_count = 0;
             for i in 0..96 {
-                let k = simd_val[i];
-                if k >= 89 && k < 217 {
+                if simd_target[i] {
                     name_base[mod_count as usize] = simd_val_b[i];
                     mod_count += 1;
                 }
-                if mod_count >= 31 {
+                if mod_count > 30 {
                     break;
                 }
             }
@@ -230,7 +236,7 @@ impl Namer {
                         name_base[mod_count as usize] = simd_val_b[i];
                         mod_count += 1;
                     }
-                    if mod_count >= 30 {
+                    if mod_count > 30 {
                         break;
                     }
                 }
