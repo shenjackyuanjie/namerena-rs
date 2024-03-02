@@ -1,9 +1,8 @@
-#[cfg(feature = "simd")]
-use std::simd::u8x64;
+use std::cmp::min;
 #[cfg(feature = "simd")]
 use std::simd::cmp::SimdPartialOrd;
 #[cfg(feature = "simd")]
-use std::simd::Simd;
+use std::simd::u8x64;
 
 use tracing::warn;
 
@@ -202,7 +201,7 @@ impl Namer {
             let simd_63 = u8x64::splat(63);
             let simd_88 = u8x64::splat(88);
             let simd_217 = u8x64::splat(217);
-            
+
             for i in (0..256).step_by(64) {
                 // 一次性加载64个数字
                 let mut x = u8x64::from_slice(&simd_val[i..]);
@@ -257,16 +256,11 @@ impl Namer {
         // 计算 name_prop
         let mut prop_name = name_base[0..32].to_vec();
         prop_name[0..10].sort_unstable();
-        /*
-    	st[0] = 154 + a[3] + a[4] + a[5] + a[6];
-        st[1] = median(prop_name[10], prop_name[11], prop_name[12]) + 36;
-        st[2] = median(prop_name[13], prop_name[14], prop_name[15]) + 36;
-        st[3] = median(prop_name[16], prop_name[17], prop_name[18]) + 36;
-        st[4] = median(prop_name[19], prop_name[20], prop_name[21]) + 36;
-        st[5] = median(prop_name[22], prop_name[23], prop_name[24]) + 36;
-        st[6] = median(prop_name[25], prop_name[26], prop_name[27]) + 36;
-        st[7] = median(prop_name[28], prop_name[29], prop_name[30]) + 36; */
-        name_prop[0] = 154 + prop_name[3] as u32 + prop_name[4] as u32 + prop_name[5] as u32 + prop_name[6] as u32;
+        name_prop[0] = 154
+            + prop_name[3] as u32
+            + prop_name[4] as u32
+            + prop_name[5] as u32
+            + prop_name[6] as u32;
         name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
         name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
         name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
@@ -291,41 +285,48 @@ impl Namer {
         /*
         template <int len>
         void calc_skills() {
-        	//  q_len = -1;
-        	//  memcpy(val, val_base, sizeof val);
-        	//  for (int _ = 0; _ < 2; _++)
-        	//  	for (int i = s = 0, j = 0; i < N; i++, j++) {
-        	//  		s += name[j];
-        	//  		s += val[i];
-        	//  		std::swap(val[i], val[s]);
-        	//  		if (j == len) j = -1;
-        	//  	}
-        	for (int i = 0; i < N; i++)
-        		if (val[i] * 181 + 199 & 128) name_base[++q_len] = val[i] * 53 & 63 ^ 32;
-            
-        	u8_t *a = name_base + K;
-        	for (int i = 0; i < skill_cnt; i++) skill[i] = i;
-        	p = q = s = 0;
-        	for (int _ = 0; _ < 2; _++)
-        		for (int i = 0; i < skill_cnt; i++) {
-        			s = (s + rnd() + skill[i]) % skill_cnt;
-        			std::swap(skill[i], skill[s]);
-        		}
-        	int last = -1;
-        	for (int i = 0, j = 0; j < 16; i += 4, j++) {
-        		u8_t p = std::min(std::min(a[i], a[i + 1]), std::min(a[i + 2], a[i + 3]));
-        		if (p > 10 && skill[j] < 35) {
-        			freq[j] = p - 10;
-        			if (skill[j] < 25) last = j;
-        		} else
-        			freq[j] = 0;
-        	}
-        	if (last != -1) freq[last] <<= 1;
-        	if (freq[14] && last != 14)
-        		freq[14] += std::min(std::min(name_base[60], name_base[61]), freq[14]);
-        	if (freq[15] && last != 15)
-        		freq[15] += std::min(std::min(name_base[62], name_base[63]), freq[15]);
+            //  q_len = -1;
+            //  memcpy(val, val_base, sizeof val);
+            //  for (int _ = 0; _ < 2; _++)
+            //  	for (int i = s = 0, j = 0; i < N; i++, j++) {
+            //  		s += name[j];
+            //  		s += val[i];
+            //  		std::swap(val[i], val[s]);
+            //  		if (j == len) j = -1;
+            //  	}
+            for (int i = 0; i < N; i++)
+                if (val[i] * 181 + 199 & 128) name_base[++q_len] = val[i] * 53 & 63 ^ 32;
+
+            u8_t *a = name_base + K;
+            for (int i = 0; i < skill_cnt; i++) skill[i] = i;
+            p = q = s = 0;
+            for (int _ = 0; _ < 2; _++)
+                for (int i = 0; i < skill_cnt; i++) {
+                    s = (s + rnd() + skill[i]) % skill_cnt;
+                    std::swap(skill[i], skill[s]);
+                }
+            int last = -1;
+            for (int i = 0, j = 0; j < 16; i += 4, j++) {
+                u8_t p = std::min(std::min(a[i], a[i + 1]), std::min(a[i + 2], a[i + 3]));
+                if (p > 10 && skill[j] < 35) {
+                    freq[j] = p - 10;
+                    if (skill[j] < 25) last = j;
+                } else
+                    freq[j] = 0;
+            }
+            if (last != -1) freq[last] <<= 1;
+            if (freq[14] && last != 14)
+                freq[14] += std::min(std::min(name_base[60], name_base[61]), freq[14]);
+            if (freq[15] && last != 15)
+                freq[15] += std::min(std::min(name_base[62], name_base[63]), freq[15]);
         } */
+
+        let mut skill_id = [0u8; 40];
+        for i in 0..40 {
+            skill_id[i] = i as u8
+        }
+
+        let mut name_base = self.name_base.clone();
         #[cfg(feature = "simd")]
         {
             let mut simd_val = self.val.clone();
@@ -345,14 +346,87 @@ impl Namer {
                 x.copy_to_slice(&mut simd_val[i..]);
                 y.copy_to_slice(&mut simd_val_b[i..]);
             }
+
+            let mut mod_count = 0;
+            for i in 0..256 {
+                if simd_val[i] != 0 {
+                    name_base[mod_count as usize] = simd_val_b[i];
+                    mod_count += 1;
+                }
+            }
+            // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
+            let mut p: u8 = 0;
+            let mut q: u8 = 0;
+            let mut s: u8 = 0;
+            for _ in 0..2 {
+                for i in 0..40 {
+                    /*
+                    inline u8_t rnd() {
+                    q += val[++p];
+                    std::swap(val[p], val[q]);
+                    u8_t u = val[(val[p] + val[q]) & 255];
+                    q += val[++p];
+                    std::swap(val[p], val[q]);
+                    return (u << 8 | val[(val[p] + val[q]) & 255]) % skill_cnt;
+                    } */
+                    let rnd = {
+                        q = q.wrapping_add(self.val[p as usize]);
+                        p += 1;
+                        self.val.swap(p as usize, q as usize);
+                        let u: u8 = self.val
+                            [((self.val[p as usize] as u16 + self.val[q as usize] as u16) & 255) as usize];
+                        q = q.wrapping_add(self.val[p as usize]);
+                        p += 1;
+                        self.val.swap(p as usize, q as usize);
+                        let t = self.val
+                            [((self.val[p as usize] as u16 + self.val[q as usize] as u16) & 255) as usize];
+                        (((u as u32) << 8 | t as u32) % 40) as u8
+                    };
+                    // s = (s.wrapping_add(rnd).wrapping_add(skill_id[i])) % 40;
+                    s = (s as u16 + rnd as u16 + skill_id[i] as u16) as u8 % 40;
+                    skill_id.swap(i as usize, s as usize);
+                }
+            }
+            let mut last = -1;
+            let mut j = 0;
+            for i in (64..128).step_by(4) {
+                // a[k] == self.name_base[k+10]
+                let p = min(
+                    min(self.name_base[i + 0], self.name_base[i + 1]),
+                    min(self.name_base[i + 2], self.name_base[i + 3]),
+                );
+                if p > 10 && skill_id[j] < 35 {
+                    self.skl_freq[j] = p - 10;
+                    if skill_id[j] < 25 {
+                        last = j as i32;
+                    };
+                } else {
+                    self.skl_freq[j] = 0
+                }
+                j += 1;
+            }
+            if last != -1 {
+                self.skl_freq[last as usize] <<= 1;
+                // *= 2
+            }
+            if (self.skl_freq[14] != 0) && (last != 14) {
+                self.skl_freq[14] += min(
+                    min(self.name_base[60], self.name_base[61]),
+                    self.skl_freq[14],
+                );
+            }
+            if (self.skl_freq[15] != 0) && (last != 15) {
+                self.skl_freq[15] += min(
+                    min(self.name_base[62], self.name_base[63]),
+                    self.skl_freq[15],
+                );
+            }
         }
 
         #[cfg(not(feature = "simd"))]
         {
-
+            todo!("none simd 还没写呢")   
         }
-
-        
     }
 
     #[inline(always)]
@@ -375,7 +449,7 @@ mod test {
         assert_eq!(namer.name, "x");
         assert_eq!(namer.team, "x");
     }
-    
+
     #[test]
     fn val_test() {
         let team = TeamNamer::new_unchecked("x");
@@ -417,10 +491,20 @@ mod test {
     }
 
     #[test]
+    fn skill_prop_test() {
+        let team = TeamNamer::new_unchecked("x");
+        let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
+
+        namer.update_skill();
+        println!("namer: {:?}", namer);
+        panic!()
+    }
+
+    #[test]
     fn prop_test() {
         let team = TeamNamer::new_unchecked("x");
         let namer = Namer::new_from_team_namer_unchecked(&team, "x");
-        
+
         let prop_vec: Vec<u32> = vec![344, 57, 53, 66, 72, 70, 71, 61];
         assert_eq!(namer.name_prop.to_vec(), prop_vec);
     }

@@ -90,6 +90,7 @@ fn cacl(config: Command, id: u64, outfile: &PathBuf) {
             // 写入 (写到最后一行)
             match std::fs::OpenOptions::new()
                 .append(true)
+                .create(true)
                 .open(outfile)
                 .and_then(|mut file| file.write(format!("{}\n", full_name).as_bytes()))
             {
@@ -158,10 +159,6 @@ fn main() {
     // 先创建文件夹
     if let Err(e) = std::fs::create_dir_all(&out_path.parent().unwrap()) {
         warn!("创建文件夹失败: {}", e);
-    }
-    // 再创建文件
-    if let Err(e) = std::fs::File::create(&out_path) {
-        warn!("创建文件失败: {}", e);
     }
 
     info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
