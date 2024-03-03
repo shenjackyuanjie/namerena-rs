@@ -1,9 +1,10 @@
 use std::cmp::min;
 #[cfg(feature = "simd")]
+use std::simd::cmp::SimdPartialOrd;
+#[cfg(feature = "simd")]
 use std::simd::u8x64;
 
 use tracing::warn;
-
 
 #[inline(always)]
 pub fn median<T>(x: T, y: T, z: T) -> T
