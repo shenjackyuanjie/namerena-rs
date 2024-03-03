@@ -1,42 +1,18 @@
 #![feature(portable_simd)]
+#![feature(slice_swap_unchecked)]
 
+mod cacluate;
 mod evaluate;
+mod generate;
 mod name;
 
-use std::{io::Write, path::PathBuf};
+use std::path::PathBuf;
 
-use base16384::Base16384Utf8;
 use clap::Parser;
-use colored::Colorize;
 use tracing::{info, warn};
 
-/// 根据 u64 生成对应的 name
-/// 转换成 base 16384
-/// 禁用:
-/// U00 ~ U1F ，换行，制表符 等
-/// ? , 问号
-/// U2000 - U202F , unicode特殊空格 等
-/// 不可以空格开头
-#[inline(always)]
-pub fn gen_name(id: u64) -> String {
-    let id_bytes = id.to_be_bytes();
-    Base16384Utf8::encode(id_bytes.as_slice())
-}
+use crate::cacluate::CacluateConfig;
 
-pub fn show_name(namer: &name::Namer) -> String {
-    format!(
-        "HP|{} 攻|{} 防|{} 速|{} 敏|{} 魔|{} 抗|{} 智|{} 八围:{}",
-        namer.name_prop[0],
-        namer.name_prop[1],
-        namer.name_prop[2],
-        namer.name_prop[3],
-        namer.name_prop[4],
-        namer.name_prop[5],
-        namer.name_prop[6],
-        namer.name_prop[7],
-        namer.get_property()
-    )
-}
 
 #[allow(non_upper_case_globals)]
 const allow_d: u32 = 10;
@@ -63,80 +39,16 @@ pub struct Command {
     pub report_interval: u64,
 }
 
-/// 大概的预计速度
-/// 来自 5600X 的运行效率
-pub const GUESS_SPEED: u64 = 623772;
-
-#[inline(always)]
-fn cacl(config: Command, id: u64, outfile: &PathBuf) {
-    // 初始猜测的时间间隔
-    let mut report_interval = config.report_interval * GUESS_SPEED;
-    let mut run_speed = GUESS_SPEED as f64;
-    let mut start_time = std::time::Instant::now();
-    let mut k: u64 = 0;
-    let mut get_count: u32 = 0;
-    // 提前准备好 team_namer
-    let team_namer = name::TeamNamer::new_unchecked(&config.team);
-
-    for i in (config.start + id..config.end).step_by(config.thread_count as usize) {
-        let name = gen_name(i as u64);
-        let namer = name::Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
-        let prop = namer.get_property();
-
-        if (prop + allow_d as f32) > config.prop_expect as f32 {
-            get_count += 1;
-            let name = gen_name(i as u64);
-            let full_name = format!("{}@{}", name, config.team);
-            info!("Id:{:>15}|{}|{}", i, full_name, show_name(&namer));
-            // 写入 (写到最后一行)
-            match std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(outfile)
-                .and_then(|mut file| file.write(format!("{}\n", full_name).as_bytes()))
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    warn!("写入文件<{:?}>失败: {}", outfile, e);
-                }
-            }
-        }
-        k += 1;
-        if k >= report_interval as u64 {
-            let now = std::time::Instant::now();
-            let d_t: std::time::Duration = now.duration_since(start_time);
-            let new_run_speed = k as f64 / d_t.as_secs_f64();
-            // 预估剩余时间
-            let wait_time = (config.end - i) / config.thread_count as u64 / new_run_speed as u64;
-            let wait_time = chrono::Duration::seconds(wait_time as i64);
-            // 转换成 时:分:秒
-            // 根据实际运行速率来调整 report_interval
-            report_interval = config.report_interval * new_run_speed as u64;
-            info!(
-                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2}{}|{:<3}|预计:{}:{}:{}|",
-                id,
-                i,
-                new_run_speed,
-                new_run_speed * 8.64 / 1_0000.0,
-                d_t.as_secs_f64(),
-                // 根据对比上一段运行速度 输出 emoji
-                // ⬆️ ➡️ ⬇️
-                if new_run_speed > run_speed {
-                    "⬆️".green()
-                } else if new_run_speed < run_speed {
-                    // 橙色
-                    "⬇️".red()
-                } else {
-                    "➡️".blue()
-                },
-                get_count,
-                wait_time.num_hours(),
-                wait_time.num_minutes() % 60,
-                wait_time.num_seconds() % 60
-            );
-            run_speed = new_run_speed;
-            start_time = std::time::Instant::now();
-            k = 0;
+impl Command {
+    pub fn as_cacl_config(&self) -> CacluateConfig {
+        CacluateConfig {
+            start: self.start,
+            end: self.end,
+            thread_count: self.thread_count,
+            prop_expect: self.prop_expect,
+            prop_allow: allow_d,
+            team: self.team.clone(),
+            report_interval: self.report_interval,
         }
     }
 }
@@ -170,12 +82,12 @@ fn main() {
 
     for i in 0..cli_arg.thread_count {
         n += 1;
-        let cli = cli_arg.clone();
+        let config = cli_arg.as_cacl_config();
         let out_path = out_path.clone();
         let thread_name = format!("thread_{}", i);
         threads.push(std::thread::spawn(move || {
             info!("线程 {} 开始计算", thread_name);
-            cacl(cli, n, &out_path);
+            cacluate::cacl(config, n, &out_path);
             info!("线程 {} 结束计算", thread_name);
         }));
     }

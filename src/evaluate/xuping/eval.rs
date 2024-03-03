@@ -74,4 +74,32 @@ pub fn predict_13(name: &Namer) -> f64 {
     sum
 }
 
+/*function Poly(x) {
+    var xp = new Array()
+    for (let y = 0; y < 1034; y++) {
+        var l = 44
+        var i = 0, p = 0, q = 0, r = 0
+        var j = y
+        for (let k = 0; k < 45; k++) {
+            i++;
+            if (i > 2) p++;
+            q = j;
+            j = j - l + p;
+            if (j < 0) break;
+        }
+        if (i == 1) r = x[q]
+        if (i > 1) {
+            r = x[p] * x[p + q]
+        }
+        xp[y] = r
+    }
+    return xp
+} */
+pub fn poly(name: &Namer) -> [f64; 1034] {
+    let mut result = [0.0; 1034];
+    
+    
+    result
+}
+
 pub fn predict_20(name: &Namer) -> f64 { 0.0 }

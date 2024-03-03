@@ -468,6 +468,7 @@ dependencies = [
  "chrono",
  "clap",
  "colored",
+ "lazy_static",
  "tracing",
  "tracing-subscriber",
 ]

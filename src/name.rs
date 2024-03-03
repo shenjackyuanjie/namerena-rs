@@ -1,10 +1,26 @@
 use std::cmp::min;
 #[cfg(feature = "simd")]
-use std::simd::cmp::SimdPartialOrd;
-#[cfg(feature = "simd")]
 use std::simd::u8x64;
 
 use tracing::warn;
+use lazy_static::lazy_static;
+
+
+            // let simd_181 = u8x64::splat(181);
+            // let simd_199 = u8x64::splat(199);
+            // let simd_128 = u8x64::splat(128);
+            // let simd_53 = u8x64::splat(53);
+            // let simd_63 = u8x64::splat(63);
+            // let simd_32 = u8x64::splat(32);
+lazy_static! {
+    static ref SIMD_199: u8x64 = u8x64::splat(199);
+    static ref SIMD_181: u8x64 = u8x64::splat(181);
+    static ref SIMD_160: u8x64 = u8x64::splat(160);
+    static ref SIMD_128: u8x64 = u8x64::splat(128);
+    static ref SIMD_63: u8x64 = u8x64::splat(63);
+    static ref SIMD_53: u8x64 = u8x64::splat(53);
+    static ref SIMD_32: u8x64 = u8x64::splat(32);
+}
 
 #[inline(always)]
 pub fn median<T>(x: T, y: T, z: T) -> T
@@ -137,18 +153,14 @@ impl Namer {
         let name_len = name_bytes.len();
         let b_name_len = name_len + 1;
         for _ in 0..2 {
-            // 手动处理 0 的问题
-            // 手动swap
             let mut s = 0_u8;
-            val.swap(s as usize, 0);
+            unsafe { val.swap_unchecked(s as usize, 0) };
+            let mut k = 0;
             for i in 0..256 {
-                // s = s.wrapping_add(name_bytes[i % name_len]);
-                s = s.wrapping_add(match i % b_name_len {
-                    0 => 0,
-                    k => name_bytes[k - 1],
-                });
+                s = s.wrapping_add(if k == 0 { 0 } else { name_bytes[k - 1] });
                 s = s.wrapping_add(val[i]);
-                val.swap(i, s as usize);
+                unsafe { val.swap_unchecked(i, s as usize) }
+                k = if k == b_name_len - 1 { 0 } else { k + 1 };
             }
         }
         // simd 优化
@@ -156,33 +168,27 @@ impl Namer {
         {
             let mut simd_val = val.clone();
             let mut simd_val_b = [0_u8; 256];
-            let mut simd_target = [false; 256];
-            let simd_181 = u8x64::splat(181);
-            let simd_160 = u8x64::splat(160);
-            let simd_63 = u8x64::splat(63);
-            let simd_88 = u8x64::splat(88);
-            let simd_217 = u8x64::splat(217);
 
             for i in (0..256).step_by(64) {
                 // 一次性加载64个数字
                 let mut x = u8x64::from_slice(&simd_val[i..]);
-                x = x * simd_181 + simd_160;
+                x = x * *SIMD_181 + *SIMD_160;
                 // 写入到 simd_val
                 x.copy_to_slice(&mut simd_val[i..]);
-                // 提前判断 > 88 && < 217
-                let mask = x.simd_ge(simd_88) & x.simd_lt(simd_217);
-                // 写入到 simd_target
-                let mask: [bool; 64] = mask.to_array();
-                simd_target[i..i + 64].copy_from_slice(&mask);
 
-                x = x & simd_63;
-                x.copy_to_slice(&mut simd_val_b[i..]);
+                let y = x & *SIMD_63;
+                y.copy_to_slice(&mut simd_val_b[i..]);
             }
 
             let mut mod_count = 0;
+
             for i in 0..96 {
-                if simd_target[i] {
-                    name_base[mod_count as usize] = simd_val_b[i];
+                if simd_val[i] > 88 && simd_val[i] < 217 {
+                    // name_base[mod_count as usize] = simd_val_b[i];
+                    unsafe {
+                        *name_base.get_unchecked_mut(mod_count as usize) =
+                            *simd_val_b.get_unchecked(i);
+                    }
                     mod_count += 1;
                 }
                 if mod_count > 30 {
@@ -191,8 +197,12 @@ impl Namer {
             }
             if mod_count < 31 {
                 for i in 96..256 {
-                    if simd_target[i] {
-                        name_base[mod_count as usize] = simd_val_b[i];
+                    if simd_val[i] > 88 && simd_val[i] < 217 {
+                        // name_base[mod_count as usize] = simd_val_b[i];
+                        unsafe {
+                            *name_base.get_unchecked_mut(mod_count as usize) =
+                                *simd_val_b.get_unchecked(i);
+                        }
                         mod_count += 1;
                     }
                     if mod_count > 30 {
@@ -252,18 +262,12 @@ impl Namer {
         {
             let mut simd_val = self.val.clone();
             let mut simd_val_b = self.val.clone();
-            let simd_181 = u8x64::splat(181);
-            let simd_199 = u8x64::splat(199);
-            let simd_128 = u8x64::splat(128);
-            let simd_53 = u8x64::splat(53);
-            let simd_63 = u8x64::splat(63);
-            let simd_32 = u8x64::splat(32);
 
             for i in (0..256).step_by(64) {
                 let mut x = u8x64::from_slice(&simd_val[i..]);
                 let mut y = u8x64::from_slice(&simd_val_b[i..]);
-                x = x * simd_181 + simd_199 & simd_128;
-                y = y * simd_53 & simd_63 ^ simd_32;
+                x = x * *SIMD_181 + *SIMD_199 & *SIMD_128;
+                y = y * *SIMD_53 & *SIMD_63 ^ *SIMD_32;
                 x.copy_to_slice(&mut simd_val[i..]);
                 y.copy_to_slice(&mut simd_val_b[i..]);
             }
@@ -393,10 +397,6 @@ mod test {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
-        assert_eq!(namer.name_base.to_vec(), base_name_vec);
-        namer.update_skill();
-        // update skill 之后才会是完整的 name
-
         let full_base_name_vec: Vec<u8> = vec![
             53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
             57, 34, 22, 37, 35, 6, 12, 25, 50, 49, 59, 23, 49, 27, 51, 58, 39, 28, 60, 20, 31, 36,
@@ -405,6 +405,10 @@ mod test {
             41, 55, 5, 34, 3, 7, 33, 33, 45, 16, 16, 32, 43, 18, 44, 22, 14, 17, 10, 11, 53, 18,
             44, 19, 52, 2, 32, 12, 8, 2, 54, 26, 48, 8, 3, 63, 54, 19, 25,
         ];
+        assert_eq!(namer.name_base.to_vec(), base_name_vec);
+        namer.update_skill();
+        // update skill 之后才会是完整的 name
+
         assert_eq!(namer.name_base.to_vec(), full_base_name_vec);
     }
 
