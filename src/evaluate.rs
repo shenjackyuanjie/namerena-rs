@@ -255,6 +255,8 @@ const INTERCEPT: f64 = 743.345708241252;
 
 #[cfg(feature = "simd")]
 use std::simd::f64x64;
+#[cfg(feature = "simd")]
+use std::simd::num::SimdFloat;
 
 use crate::name::Namer;
 
@@ -311,7 +313,15 @@ pub fn predict(name: &Namer) -> f64 {
 			sum += simd_module.0[i] * simd_target.0[i];
 		}
 		// 主! 体!
-
+		let mut tmp = f64x64::splat(0.0);
+		for i in 0..simd_module.1.len() {
+			tmp += simd_module.1[i] * simd_target.1[i];
+		}
+		sum += tmp.reduce_sum();
+		// 后面多出来的
+		for i in 0..simd_module.2.len() {
+			sum += simd_module.2[i] * simd_target.2[i];
+		}
     }
     #[cfg(not(feature = "simd"))]
     {
