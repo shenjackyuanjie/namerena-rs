@@ -97,8 +97,7 @@ pub fn predict_13(name: &Namer) -> f64 {
 } */
 pub fn poly(name: &Namer) -> [f64; 1034] {
     let mut result = [0.0; 1034];
-    
-    
+
     result
 }
 

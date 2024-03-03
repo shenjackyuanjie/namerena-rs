@@ -13,7 +13,6 @@ use tracing::{info, warn};
 
 use crate::cacluate::CacluateConfig;
 
-
 #[allow(non_upper_case_globals)]
 const allow_d: u32 = 10;
 

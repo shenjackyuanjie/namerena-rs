@@ -1,11 +1,10 @@
-
 use crate::name::{Namer, TeamNamer};
 
 use std::{io::Write, path::PathBuf};
 
 use base16384::Base16384Utf8;
-use tracing::{info, warn};
 use colored::Colorize;
+use tracing::{info, warn};
 
 pub fn show_name(namer: &Namer) -> String {
     format!(
