@@ -1,6 +1,7 @@
 #![feature(portable_simd)]
 
 mod name;
+mod evaluate;
 
 use std::{io::Write, path::PathBuf};
 
