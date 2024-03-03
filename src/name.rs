@@ -52,9 +52,7 @@ impl TeamNamer {
         }
     }
     #[inline(always)]
-    pub fn clone_vals(&self) -> [u8; 256] {
-        self.val.clone()
-    }
+    pub fn clone_vals(&self) -> [u8; 256] { self.val.clone() }
 }
 
 #[derive(Debug, Clone)]
@@ -324,16 +322,12 @@ impl Namer {
                 // *= 2
             }
             if (self.skl_freq[14] != 0) && (last != 14) {
-                self.skl_freq[14] += min(
-                    min(self.name_base[60], self.name_base[61]),
-                    self.skl_freq[14],
-                );
+                self.skl_freq[14] +=
+                    min(min(self.name_base[60], self.name_base[61]), self.skl_freq[14]);
             }
             if (self.skl_freq[15] != 0) && (last != 15) {
-                self.skl_freq[15] += min(
-                    min(self.name_base[62], self.name_base[63]),
-                    self.skl_freq[15],
-                );
+                self.skl_freq[15] +=
+                    min(min(self.name_base[62], self.name_base[63]), self.skl_freq[15]);
             }
         }
 

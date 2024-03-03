@@ -1,5 +1,6 @@
 [package]
-name = "namerena-rs"
+name = "tswn"
+description = "tool shenjack work shop namerena"
 version = "0.1.0"
 edition = "2021"
 

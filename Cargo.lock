@@ -243,18 +243,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
-name = "namerena-rs"
-version = "0.1.0"
-dependencies = [
- "base16384",
- "chrono",
- "clap",
- "colored",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -470,6 +458,18 @@ dependencies = [
  "time",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "tswn"
+version = "0.1.0"
+dependencies = [
+ "base16384",
+ "chrono",
+ "clap",
+ "colored",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
