@@ -53,7 +53,7 @@ impl Command {
 }
 
 fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
     let mut cli_arg = Command::parse();
 
     // 将数据量处理成可被 thread_count 整除

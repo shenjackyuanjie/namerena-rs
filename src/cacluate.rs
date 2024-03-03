@@ -1,10 +1,10 @@
-use crate::name::{Namer, TeamNamer};
+use crate::{evaluate::NamerEvaluater, name::{Namer, TeamNamer}};
 
 use std::{io::Write, path::PathBuf};
 
 use base16384::Base16384Utf8;
 use colored::Colorize;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub fn show_name(namer: &Namer) -> String {
     format!(
@@ -59,6 +59,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
     let mut get_count: u32 = 0;
+    let xuping = crate::evaluate::xuping::XuPing1_3_1::new(5000.0);
     // 提前准备好 team_namer
     let team_namer = TeamNamer::new(&config.team).unwrap();
 
@@ -68,9 +69,20 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
         let prop = namer.get_property();
 
         if (prop + config.prop_allow as f32) > config.prop_expect as f32 {
-            get_count += 1;
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, config.team);
+            // 虚评
+            // if crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer) {
+            //     continue;
+            // }
+            let xu = crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer);
+
+            debug!("Id:{:>15}|{:>5}|{}|{}", i, full_name, xu, show_name(&namer));
+            if xu < 5000.0 {
+                continue;
+            }
+
+            get_count += 1;
             info!("Id:{:>15}|{}|{}", i, full_name, show_name(&namer));
             // 写入 (写到最后一行)
             match std::fs::OpenOptions::new()
