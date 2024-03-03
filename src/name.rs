@@ -137,48 +137,19 @@ impl Namer {
         let name_len = name_bytes.len();
         let b_name_len = name_len + 1;
         for _ in 0..2 {
-            // 手动处理 0 的问题
-            // 手动swap
             let mut s = 0_u8;
             unsafe { val.swap_unchecked(s as usize, 0) };
+            let mut k = 0;
             for i in 0..256 {
-                // s = s.wrapping_add(name_bytes[i % name_len]);
-                s = s.wrapping_add(match i % b_name_len {
-                    0 => 0,
-                    k => name_bytes[k - 1],
-                });
+                s = s.wrapping_add(if k == 0 { 0 } else { name_bytes[k - 1] });
                 s = s.wrapping_add(val[i]);
                 unsafe { val.swap_unchecked(i, s as usize) }
+                k = if k == b_name_len - 1 { 0 } else { k + 1 };
             }
         }
         // simd 优化
         #[cfg(feature = "simd")]
         {
-            // let mut simd_val = val.clone();
-            // let mut simd_val_b = val.clone();
-            // let simd_181 = u8x64::splat(181);
-            // let simd_199 = u8x64::splat(199);
-            // let simd_128 = u8x64::splat(128);
-            // let simd_53 = u8x64::splat(53);
-            // let simd_63 = u8x64::splat(63);
-            // let simd_32 = u8x64::splat(32);
-
-            // for i in (0..256).step_by(64) {
-            //     let mut x = u8x64::from_slice(&simd_val[i..]);
-            //     let mut y = u8x64::from_slice(&simd_val_b[i..]);
-            //     x = x * simd_181 + simd_199 & simd_128;
-            //     y = y * simd_53 & simd_63 ^ simd_32;
-            //     x.copy_to_slice(&mut simd_val[i..]);
-            //     y.copy_to_slice(&mut simd_val_b[i..]);
-            // }
-
-            // let mut mod_count = 0;
-            // for i in 0..256 {
-            //     if simd_val[i] != 0 {
-            //         name_base[mod_count as usize] = simd_val_b[i];
-            //         mod_count += 1;
-            //     }
-            // }
             let mut simd_val = val.clone();
             let mut simd_val_b = [0_u8; 256];
             let simd_181 = u8x64::splat(181);
@@ -192,26 +163,19 @@ impl Namer {
                 // 写入到 simd_val
                 x.copy_to_slice(&mut simd_val[i..]);
 
-                x = x & simd_63;
-                x.copy_to_slice(&mut simd_val_b[i..]);
+                let y = x & simd_63;
+                y.copy_to_slice(&mut simd_val_b[i..]);
             }
 
             let mut mod_count = 0;
-            
-            // for i in 0..256 {
-            //     if simd_val[i] > 88 && simd_val[i] < 217 {
-            //         unsafe {
-            //             *name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
-            //         }
-            //         mod_count += 1;
-            //     }
-            //     if mod_count > 30 {
-            //         break;
-            //     }
-            // }
+
             for i in 0..96 {
                 if simd_val[i] > 88 && simd_val[i] < 217 {
-                    name_base[mod_count as usize] = simd_val_b[i];
+                    // name_base[mod_count as usize] = simd_val_b[i];
+                    unsafe {
+                        *name_base.get_unchecked_mut(mod_count as usize) =
+                            *simd_val_b.get_unchecked(i);
+                    }
                     mod_count += 1;
                 }
                 if mod_count > 30 {
@@ -221,7 +185,11 @@ impl Namer {
             if mod_count < 31 {
                 for i in 96..256 {
                     if simd_val[i] > 88 && simd_val[i] < 217 {
-                        name_base[mod_count as usize] = simd_val_b[i];
+                        // name_base[mod_count as usize] = simd_val_b[i];
+                        unsafe {
+                            *name_base.get_unchecked_mut(mod_count as usize) =
+                                *simd_val_b.get_unchecked(i);
+                        }
                         mod_count += 1;
                     }
                     if mod_count > 30 {
