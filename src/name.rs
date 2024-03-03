@@ -3,24 +3,7 @@ use std::cmp::min;
 use std::simd::u8x64;
 
 use tracing::warn;
-use lazy_static::lazy_static;
 
-
-            // let simd_181 = u8x64::splat(181);
-            // let simd_199 = u8x64::splat(199);
-            // let simd_128 = u8x64::splat(128);
-            // let simd_53 = u8x64::splat(53);
-            // let simd_63 = u8x64::splat(63);
-            // let simd_32 = u8x64::splat(32);
-lazy_static! {
-    static ref SIMD_199: u8x64 = u8x64::splat(199);
-    static ref SIMD_181: u8x64 = u8x64::splat(181);
-    static ref SIMD_160: u8x64 = u8x64::splat(160);
-    static ref SIMD_128: u8x64 = u8x64::splat(128);
-    static ref SIMD_63: u8x64 = u8x64::splat(63);
-    static ref SIMD_53: u8x64 = u8x64::splat(53);
-    static ref SIMD_32: u8x64 = u8x64::splat(32);
-}
 
 #[inline(always)]
 pub fn median<T>(x: T, y: T, z: T) -> T
@@ -168,15 +151,18 @@ impl Namer {
         {
             let mut simd_val = val.clone();
             let mut simd_val_b = [0_u8; 256];
+            let simd_181 = u8x64::splat(181);
+            let simd_160 = u8x64::splat(160);
+            let simd_63 = u8x64::splat(63);
 
             for i in (0..256).step_by(64) {
                 // 一次性加载64个数字
                 let mut x = u8x64::from_slice(&simd_val[i..]);
-                x = x * *SIMD_181 + *SIMD_160;
+                x = x * simd_181 + simd_160;
                 // 写入到 simd_val
                 x.copy_to_slice(&mut simd_val[i..]);
 
-                let y = x & *SIMD_63;
+                let y = x & simd_63;
                 y.copy_to_slice(&mut simd_val_b[i..]);
             }
 
@@ -262,12 +248,18 @@ impl Namer {
         {
             let mut simd_val = self.val.clone();
             let mut simd_val_b = self.val.clone();
+            let simd_181 = u8x64::splat(181);
+            let simd_199 = u8x64::splat(199);
+            let simd_128 = u8x64::splat(128);
+            let simd_53 = u8x64::splat(53);
+            let simd_63 = u8x64::splat(63);
+            let simd_32 = u8x64::splat(32);
 
             for i in (0..256).step_by(64) {
                 let mut x = u8x64::from_slice(&simd_val[i..]);
                 let mut y = u8x64::from_slice(&simd_val_b[i..]);
-                x = x * *SIMD_181 + *SIMD_199 & *SIMD_128;
-                y = y * *SIMD_53 & *SIMD_63 ^ *SIMD_32;
+                x = x * simd_181 + simd_199 & simd_128;
+                y = y * simd_53 & simd_63 ^ simd_32;
                 x.copy_to_slice(&mut simd_val[i..]);
                 y.copy_to_slice(&mut simd_val_b[i..]);
             }
