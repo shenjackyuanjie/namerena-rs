@@ -419,6 +419,19 @@ mod test {
     }
 
     #[test]
+    fn skill_id_test() {
+        let team = TeamNamer::new_unchecked("x");
+        let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
+
+        namer.update_skill();
+        let skill_id_vec: Vec<u8> = vec![
+            9, 13, 12, 38, 4, 27, 26, 15, 16, 32, 24, 5, 7, 21, 18, 10, 37, 2, 6, 20, 39, 1, 14, 3,
+            11, 29, 22, 33, 19, 0, 30, 31, 17, 28, 34, 35, 23, 8, 25, 36,
+        ];
+        assert_eq!(namer.skl_id.to_vec(), skill_id_vec);
+    }
+
+    #[test]
     fn prop_test() {
         let team = TeamNamer::new_unchecked("x");
         let namer = Namer::new_from_team_namer_unchecked(&team, "x");

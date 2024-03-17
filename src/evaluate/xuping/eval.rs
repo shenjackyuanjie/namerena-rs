@@ -47,6 +47,8 @@ pub fn predict_13(name: &Namer) -> f64 {
         let mut simds = xuping13::MODULE.clone();
         let simd_module = simds.as_simd_mut::<64>();
         let simd_target = target.as_simd_mut::<64>();
+        println!("module = {:?}", simd_module);
+        println!("target = {:?}", simd_target);
         // 前面多出来的
         for i in 0..simd_module.0.len() - 1 {
             sum += simd_module.0[i] * simd_target.0[i];
@@ -81,11 +83,13 @@ pub fn predict_13(name: &Namer) -> f64 {
         let mut cnt = 0;
         for i in 0..43 {
             sum += st[i] * xuping13::MODULE[cnt];
+            print!("{} ", sum);
             cnt += 1;
         }
         for i in 0..43 {
             for j in i..43 {
                 sum += st[i] * st[j] * xuping13::MODULE[cnt];
+                print!("{} ", sum);
                 cnt += 1;
             }
         }
@@ -121,3 +125,19 @@ pub fn poly(name: &Namer) -> [f64; 1034] {
 }
 
 pub fn predict_20(name: &Namer) -> f64 { 0.0 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::name::Namer;
+
+    #[test]
+    fn xuping_13_test() {
+        let mut namer = Namer::new(&"x@x".to_string()).unwrap();
+
+        namer.update_skill();
+        
+        println!("{:?}", predict_13(&namer));
+        panic!();
+    }
+}
