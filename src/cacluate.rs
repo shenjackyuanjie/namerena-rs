@@ -71,6 +71,44 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
         let mut namer = Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
         let prop = namer.get_property();
 
+        k += 1;
+        if k >= report_interval as u64 {
+            let now = std::time::Instant::now();
+            let d_t: std::time::Duration = now.duration_since(start_time);
+            let new_run_speed = k as f64 / d_t.as_secs_f64();
+            // 预估剩余时间
+            let wait_time = (config.end - i) / config.thread_count as u64 / new_run_speed as u64;
+            let wait_time = chrono::Duration::seconds(wait_time as i64);
+            // 转换成 时:分:秒
+            // 根据实际运行速率来调整 report_interval
+            report_interval = config.report_interval * new_run_speed as u64;
+            info!(
+                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2}{}|{:<3}|预计:{}:{}:{}|",
+                id,
+                i,
+                new_run_speed,
+                new_run_speed * 8.64 / 1_0000.0,
+                d_t.as_secs_f64(),
+                // 根据对比上一段运行速度 输出 emoji
+                // ⬆️ ➡️ ⬇️
+                if new_run_speed > run_speed {
+                    "⬆️".green()
+                } else if new_run_speed < run_speed {
+                    // 橙色
+                    "⬇️".red()
+                } else {
+                    "➡️".blue()
+                },
+                get_count,
+                wait_time.num_hours(),
+                wait_time.num_minutes() % 60,
+                wait_time.num_seconds() % 60
+            );
+            run_speed = new_run_speed;
+            start_time = std::time::Instant::now();
+            k = 0;
+        }
+        
         if (prop + config.prop_allow as f32) > config.prop_expect as f32 {
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, config.team);
@@ -117,43 +155,6 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
                     warn!("写入文件<{:?}>失败: {}", outfile, e);
                 }
             }
-        }
-        k += 1;
-        if k >= report_interval as u64 {
-            let now = std::time::Instant::now();
-            let d_t: std::time::Duration = now.duration_since(start_time);
-            let new_run_speed = k as f64 / d_t.as_secs_f64();
-            // 预估剩余时间
-            let wait_time = (config.end - i) / config.thread_count as u64 / new_run_speed as u64;
-            let wait_time = chrono::Duration::seconds(wait_time as i64);
-            // 转换成 时:分:秒
-            // 根据实际运行速率来调整 report_interval
-            report_interval = config.report_interval * new_run_speed as u64;
-            info!(
-                "|{:>2}|Id:{:>15}|{:6.2}/s {:>3.3}E/d {:>5.2}{}|{:<3}|预计:{}:{}:{}|",
-                id,
-                i,
-                new_run_speed,
-                new_run_speed * 8.64 / 1_0000.0,
-                d_t.as_secs_f64(),
-                // 根据对比上一段运行速度 输出 emoji
-                // ⬆️ ➡️ ⬇️
-                if new_run_speed > run_speed {
-                    "⬆️".green()
-                } else if new_run_speed < run_speed {
-                    // 橙色
-                    "⬇️".red()
-                } else {
-                    "➡️".blue()
-                },
-                get_count,
-                wait_time.num_hours(),
-                wait_time.num_minutes() % 60,
-                wait_time.num_seconds() % 60
-            );
-            run_speed = new_run_speed;
-            start_time = std::time::Instant::now();
-            k = 0;
         }
     }
 }
