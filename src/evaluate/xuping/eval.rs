@@ -80,16 +80,21 @@ pub fn predict_13(name: &Namer) -> f64 {
                 st[name.skl_id[i] as usize + 8] = name.skl_freq[i] as f64;
             }
         }
+        // - st: 名字属性。0~7 是八围，8~42 是技能熟练度。
+        // for i in 0..34 {
+        //     st[i + 8] = name.skl_freq[i] as f64;
+        // }
+
         let mut cnt = 0;
         for i in 0..43 {
             sum += st[i] * xuping13::MODULE[cnt];
-            print!("{} ", sum);
+            // println!("{} {} {} ",st[i], sum, xuping13::MODULE[cnt]);
             cnt += 1;
         }
         for i in 0..43 {
             for j in i..43 {
                 sum += st[i] * st[j] * xuping13::MODULE[cnt];
-                print!("{} ", sum);
+                // println!("{} {} {} ",st[i] * st[j], sum, xuping13::MODULE[cnt]);
                 cnt += 1;
             }
         }
@@ -133,11 +138,13 @@ mod test {
 
     #[test]
     fn xuping_13_test() {
-        let mut namer = Namer::new(&"x@x".to_string()).unwrap();
+        // let mut namer = Namer::new(&"x@x".to_string()).unwrap();
+        let mut namer = Namer::new(&"pi31uXx?shadow@魔".to_string()).unwrap();
 
         namer.update_skill();
-        
+
         println!("{:?}", predict_13(&namer));
+        println!("{:?}", namer.get_info());
         panic!();
     }
 }

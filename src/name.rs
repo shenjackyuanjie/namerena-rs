@@ -340,6 +340,82 @@ impl Namer {
         let sum2 = self.name_prop[0] as u32;
         sum1 as f32 + (sum2 as f32 / 3_f32)
     }
+
+    pub fn get_净化(&self) -> u8 {
+        // self.skl_freq[17]
+        for (i, v) in self.skl_freq.iter().enumerate() {
+            if *v != 0 {
+                if self.skl_id[i] == 17 {
+                    return *v;
+                }
+            }
+        }
+        0
+    }
+
+    pub fn get_分身(&self) -> u8 {
+        // self.skl_freq[23]
+        for (i, v) in self.skl_freq.iter().enumerate() {
+            if *v != 0 {
+                if self.skl_id[i] == 23 {
+                    return *v;
+                }
+            }
+        }
+        0
+    }
+
+    pub fn get_幻术(&self) -> u8 {
+        // self.skl_freq[24]
+        for (i, v) in self.skl_freq.iter().enumerate() {
+            if *v != 0 {
+                if self.skl_id[i] == 24 {
+                    return *v;
+                }
+            }
+        }
+        0
+    }
+
+    pub fn get_info(&self) -> String {
+        let main = format!(
+            "name: {}, team: {} HP|{} 攻|{} 防|{} 速|{} 敏|{} 魔|{} 抗|{} 智|{} 八围:{}",
+            self.name,
+            self.team,
+            self.name_prop[0],
+            self.name_prop[1],
+            self.name_prop[2],
+            self.name_prop[3],
+            self.name_prop[4],
+            self.name_prop[5],
+            self.name_prop[6],
+            self.name_prop[7],
+            self.get_property()
+        );
+        let skills = {
+            let mut base = "".to_string();
+            let skill_names = [
+                "火球", "冰冻", "雷击", "地裂", "吸血", "投毒", "连击", "会心", "瘟疫", "命轮",
+                "狂暴", "魅惑", "加速", "减速", "诅咒", "治愈", "苏生", "净化", "铁壁", "蓄力",
+                "聚气", "潜行", "血祭", "分身", "幻术", "防御", "守护", "反弹", "护符", "护盾",
+                "反击", "吞噬", "亡灵", "垂死", "隐匿", "啧", "啧", "啧", "啧", "啧",
+            ];
+            // 后处理
+            let mut skills = [0; 40];
+            for i in 0..40 {
+                if self.skl_freq[i] != 0 {
+                    skills[self.skl_id[i] as usize] = self.skl_freq[i];
+                }
+            }
+            for (i, v) in skills.iter().enumerate() {
+                if *v > 0 {
+                    base.push_str(format!("{}: {}|", skill_names[i], v).as_str());
+                }
+            }
+            base
+        };
+        format!("{}|{}", main, skills)
+    }
 }
 
 #[cfg(test)]

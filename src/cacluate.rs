@@ -1,4 +1,7 @@
-use crate::{evaluate::NamerEvaluater, name::{Namer, TeamNamer}};
+use crate::{
+    evaluate::NamerEvaluater,
+    name::{Namer, TeamNamer},
+};
 
 use std::{io::Write, path::PathBuf};
 
@@ -65,7 +68,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
 
     for i in (config.start + id..config.end).step_by(config.thread_count as usize) {
         let name = gen_name(i as u64);
-        let namer = Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
+        let mut namer = Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
         let prop = namer.get_property();
 
         if (prop + config.prop_allow as f32) > config.prop_expect as f32 {
@@ -75,15 +78,33 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             // if crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer) {
             //     continue;
             // }
-            let xu = crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer);
+            // let xu = crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer);
 
-            debug!("Id:{:>15}|{:>5}|{}|{}", i, full_name, xu, show_name(&namer));
-            if xu < 5000.0 {
+            // // debug!("Id:{:>15}|{:>5}|{}|{}", i, full_name, xu, show_name(&namer));
+            // if xu < 5000.0 {
+            //     continue;
+            // }
+
+            namer.update_skill();
+            let skill_sum: u32 = {
+                let mut sum: u32 = 0;
+                for i in namer.skl_freq.iter() {
+                    sum += *i as u32;
+                }
+                sum
+            };
+            if namer.get_净化() < 70 {
+                continue;
+            }
+            if namer.get_幻术() < 20 {
+                continue;
+            }
+            if skill_sum < 150 {
                 continue;
             }
 
             get_count += 1;
-            info!("Id:{:>15}|{}|{}", i, full_name, show_name(&namer));
+            info!("Id:{:>15}|{}|{}", i, full_name, namer.get_info());
             // 写入 (写到最后一行)
             match std::fs::OpenOptions::new()
                 .append(true)
