@@ -108,7 +108,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             start_time = std::time::Instant::now();
             k = 0;
         }
-        
+
         if (prop + config.prop_allow as f32) > config.prop_expect as f32 {
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, config.team);
