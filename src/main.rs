@@ -13,9 +13,6 @@ use tracing::{info, warn};
 
 use crate::cacluate::CacluateConfig;
 
-#[allow(non_upper_case_globals)]
-const allow_d: u32 = 10;
-
 #[derive(Parser, Debug, Clone)]
 pub struct Command {
     /// 开始的 id
@@ -28,8 +25,11 @@ pub struct Command {
     #[arg(long, short = 't', default_value_t = 10)]
     pub thread_count: u32,
     /// 八围预期值
-    #[arg(long = "prop-expected", short = 'p', default_value_t = 740)]
+    #[arg(long = "prop-expected", short = 'p', default_value_t = 640)]
     pub prop_expect: u32,
+    /// qp 预期值
+    #[arg(long = "qp-expected", short = 'q', default_value_t = 0)]
+    pub qp_expect: u32,
     /// 队伍名称
     #[arg(long)]
     pub team: String,
@@ -45,7 +45,7 @@ impl Command {
             end: self.end,
             thread_count: self.thread_count,
             prop_expect: self.prop_expect,
-            prop_allow: allow_d,
+            qp_expect: self.qp_expect,
             team: self.team.clone(),
             report_interval: self.report_interval,
         }

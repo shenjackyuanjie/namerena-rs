@@ -46,8 +46,8 @@ pub struct CacluateConfig {
     pub thread_count: u32,
     /// 八围预期值
     pub prop_expect: u32,
-    /// 八围允许范围
-    pub prop_allow: u32,
+    /// qp 预期值
+    pub qp_expect: u32,
     /// 队伍名称
     pub team: String,
     /// 预期状态输出时间间隔 (秒)
@@ -109,7 +109,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             k = 0;
         }
 
-        if (prop + config.prop_allow as f32) > config.prop_expect as f32 {
+        if prop > config.prop_expect as f32 {
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, config.team);
             // 虚评
@@ -118,7 +118,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             // let xu = crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer);
             let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&namer);
 
-            if xu < 5300.0 {
+            if xu < config.qp_expect as f64 {
                 continue;
             }
             // debug!("Id:{:>15}|{:>5}|{}|{}", i, full_name, xu, show_name(&namer));
