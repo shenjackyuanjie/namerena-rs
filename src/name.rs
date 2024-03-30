@@ -73,7 +73,7 @@ impl Namer {
     pub fn new(full_name: &String) -> Option<Self> {
         // name@team
         // name
-        let (name, team) = full_name.split_once('@').unwrap_or((full_name, ""));
+        let (name, team) = full_name.split_once('@').unwrap_or((full_name, full_name));
         if name.len() > 256 {
             warn!("Name too long({}): {}", name.len(), name);
             return None;
@@ -103,7 +103,7 @@ impl Namer {
     /// 依然可以传一个完整的进来
     #[inline(always)]
     pub fn new_unchecked(full_name: &str) -> Self {
-        let (name, team) = full_name.split_once('@').unwrap_or((full_name, ""));
+        let (name, team) = full_name.split_once('@').unwrap_or((full_name, full_name));
         Self::new_raw_unchecked(name, team)
     }
     /// 大部分情况下的实际调用 p1
@@ -416,6 +416,14 @@ impl Namer {
         };
         format!("{}|{}", main, skills)
     }
+
+    pub fn get_fullname(&self) -> String {
+        if self.team.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}@{}", self.name, self.team)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -514,5 +522,13 @@ mod test {
 
         let prop_vec: Vec<u32> = vec![344, 57, 53, 66, 72, 70, 71, 61];
         assert_eq!(namer.name_prop.to_vec(), prop_vec);
+    }
+
+    #[test]
+    fn shadow_test() {
+        let name = Namer::new_unchecked("一一七啺埀㴁?shadow");
+        let prop_vec: Vec<u32> = vec![240, 89, 69, 82, 65, 75, 49, 49];
+        
+        assert_eq!(name.name_prop.to_vec(), prop_vec);
     }
 }

@@ -62,7 +62,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
     let mut get_count: u32 = 0;
-    let xuping = crate::evaluate::xuping::XuPing1_3_1::new(5000.0);
+    // let xuping = crate::evaluate::xuping::XuPing1_3_1::new(5000.0);
     // 提前准备好 team_namer
     let team_namer = TeamNamer::new(&config.team).unwrap();
 
@@ -113,36 +113,35 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             let name = gen_name(i as u64);
             let full_name = format!("{}@{}", name, config.team);
             // 虚评
-            // if crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer) {
-            //     continue;
-            // }
-            // let xu = crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer);
-
-            // // debug!("Id:{:>15}|{:>5}|{}|{}", i, full_name, xu, show_name(&namer));
-            // if xu < 5000.0 {
-            //     continue;
-            // }
-
             namer.update_skill();
-            let skill_sum: u32 = {
-                let mut sum: u32 = 0;
-                for i in namer.skl_freq.iter() {
-                    sum += *i as u32;
-                }
-                sum
-            };
-            if namer.get_净化() < 70 {
+
+            // let xu = crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer);
+            let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&namer);
+
+            if xu < 5300.0 {
                 continue;
             }
-            if namer.get_幻术() < 20 {
-                continue;
-            }
-            if skill_sum < 150 {
-                continue;
-            }
+            // debug!("Id:{:>15}|{:>5}|{}|{}", i, full_name, xu, show_name(&namer));
+
+            // let skill_sum: u32 = {
+            //     let mut sum: u32 = 0;
+            //     for i in namer.skl_freq.iter() {
+            //         sum += *i as u32;
+            //     }
+            //     sum
+            // };
+            // if namer.get_净化() < 70 {
+            //     continue;
+            // }
+            // if namer.get_幻术() < 20 {
+            //     continue;
+            // }
+            // if skill_sum < 150 {
+            //     continue;
+            // }
 
             get_count += 1;
-            info!("Id:{:>15}|{}|{}", i, full_name, namer.get_info());
+            info!("Id:{:>15}|{}|{}|{}", i, full_name, xu, namer.get_info());
             // 写入 (写到最后一行)
             match std::fs::OpenOptions::new()
                 .append(true)

@@ -5,9 +5,9 @@ use std::simd::f64x64;
 #[cfg(feature = "simd")]
 use std::simd::num::SimdFloat;
 
-use tracing::debug;
+use tracing::{debug, info};
 
-use crate::evaluate::xuping::model13 as xuping13;
+use crate::evaluate::xuping::{model13 as xuping13, model20 as xuping20};
 use crate::name::Namer;
 
 pub fn predict_13(name: &Namer) -> f64 {
@@ -17,81 +17,81 @@ pub fn predict_13(name: &Namer) -> f64 {
     for (int i = 0; i < 16; i++)
         if (context::freq[i]) st[context::skill[i] + 8] = context::freq[i]; */
 
+    let mut combined_skills: [f64; 43] = [0.0; 43];
+    // 长度取 64, 方便simd填充
+    for i in 0..8 {
+        combined_skills[i] = name.name_prop[i] as f64;
+    }
+    for i in 0..16 {
+        if name.skl_freq[i] != 0 {
+            combined_skills[name.skl_id[i] as usize + 8] = name.skl_freq[i] as f64;
+        }
+    }
+    let mut check: [f64; 989] = [0.0; 989];
     // use simd
-    // #[cfg(feature = "simd")]
-    #[cfg(not(feature = "simd"))]
+    #[cfg(feature = "simd")]
+    // #[cfg(not(feature = "simd"))]
     {
-        let mut st: [f64; 64] = [0.0; 64];
-        // 长度取 64, 方便simd填充
-        for i in 0..7 {
-            st[i] = name.name_prop[i] as f64;
-        }
-        for i in 0..16 {
-            if name.skl_freq[i] != 0 {
-                st[name.skl_id[i] as usize + 8] = name.skl_freq[i] as f64;
-            }
-        }
         // 先准备数据
         let mut target = [0_f64; 989];
-        target[0..43].copy_from_slice(&st[0..43]);
+        target[0..43].copy_from_slice(&combined_skills[0..43]);
         let mut k = 43;
         // 43 * 43
         for i in 0..43 {
             for j in i..43 {
-                target[k] = st[i] * st[j];
+                target[k] = combined_skills[i] * combined_skills[j];
                 k += 1;
             }
         }
 
         // 准备模型数据
-        let mut simds = xuping13::MODULE.clone();
-        let simd_module = simds.as_simd_mut::<64>();
-        let simd_target = target.as_simd_mut::<64>();
-        println!("module = {:?}", simd_module);
-        println!("target = {:?}", simd_target);
-        // 前面多出来的
-        for i in 0..simd_module.0.len() - 1 {
-            sum += simd_module.0[i] * simd_target.0[i];
-        }
-        debug!("sum = {}", sum);
+        // 989 整除 64 为 15 余 49
+        // let mut aline_target = &mut target[0..15 * 64];
+        let simd_module = {
+            let mut simd_vec = Vec::with_capacity(15);
+            for i in 0..15 {
+                let simd = f64x64::from_slice(&xuping13::MODULE[i * 64..(i + 1) * 64]);
+                simd_vec.push(simd);
+            }
+            simd_vec
+        };
+
+        let simd_target = {
+            let mut simd_vec = Vec::with_capacity(15);
+            for i in 0..15 {
+                let simd = f64x64::from_slice(&target[i * 64..(i + 1) * 64]);
+                simd_vec.push(simd);
+            }
+            simd_vec
+        };
+
         // 主! 体!
         let mut tmp = f64x64::splat(0.0);
-        for i in 0..simd_module.1.len() - 1 {
-            tmp += simd_module.1[i] * simd_target.1[i];
+        for i in 0..simd_module.len() {
+            tmp += simd_module[i] * simd_target[i];
         }
         sum += tmp.reduce_sum();
-        debug!("sum = {}", sum);
-        // 后面多出来的
-        for i in 0..simd_module.2.len() - 1 {
-            sum += simd_module.2[i] * simd_target.2[i];
+
+        // 最后一个不足 64 的部分
+        for i in 15 * 64..989 {
+            sum += target[i] * xuping13::MODULE[i];
+            check[i] = target[i] * xuping13::MODULE[i];
         }
-        debug!("sum = {}", sum);
+
     }
-    // #[cfg(not(feature = "simd"))]
+    #[cfg(not(feature = "simd"))]
     #[cfg(feature = "simd")]
     {
-        let mut st: [f64; 43] = [0.0; 43];
-        // 长度取 64, 方便simd填充
-        for i in 0..=7 {
-            st[i] = name.name_prop[i] as f64;
-        }
-        for i in 0..16 {
-            if name.skl_freq[i] != 0 {
-                st[name.skl_id[i] as usize + 8] = name.skl_freq[i] as f64;
-            }
-        }
         // - st: 名字属性。0~7 是八围，8~42 是技能熟练度。
 
         let mut cnt = 0;
         for i in 0..43 {
             sum += st[i] * xuping13::MODULE[cnt];
-            // println!("{} {} {} ",st[i], sum, xuping13::MODULE[cnt]);
             cnt += 1;
         }
         for i in 0..43 {
             for j in i..43 {
                 sum += st[i] * st[j] * xuping13::MODULE[cnt];
-                // println!("{} {} {} ",st[i] * st[j], sum, xuping13::MODULE[cnt]);
                 cnt += 1;
             }
         }
@@ -120,13 +120,143 @@ pub fn predict_13(name: &Namer) -> f64 {
     }
     return xp
 } */
-pub fn poly(name: &Namer) -> [f64; 1034] {
+pub fn poly(input: &[f64; 44]) -> [f64; 1034] {
     let mut result = [0.0; 1034];
-
+    for index in 0..1034 {
+        let mut l: i32 = 44;
+        let mut i: i32 = 0;
+        let mut p: i32 = 0;
+        let mut q: i32 = 0;
+        let mut getter = 0.0;
+        let mut j: i32 = index;
+        for _ in 0..45 {
+            i += 1;
+            if i > 2 {
+                p += 1;
+            }
+            q = j;
+            j = j - l + p;
+            if j < 0 {
+                break;
+            }
+        }
+        if i == 1 {
+            getter = input[q as usize];
+        }
+        if i > 1 {
+            getter = input[p as usize] * input[(p + q) as usize];
+        }
+        // println!("{} {} {} {} {}", index, i, p, q, getter);
+        result[index as usize] = getter;
+    }
     result
 }
 
-pub fn predict_20(name: &Namer) -> f64 { 0.0 }
+/*
+if (x[32] > 0) {//x[32]>48
+    name.load_name(nametmp[0] + '?shadow')
+    props = name.calc_props()
+    var shadow_sum = props[7] / 3
+    for (let j = 0; j < 7; j++)shadow_sum += props[j]
+    //更新部分
+    shadow_sum -= props[6] * 3
+    var shadowi = shadow_sum - 210
+    //更新部分
+    shadowi = shadowi * x[32] / 100
+    x[43] = parseFloat(shadowi.toFixed(3))
+} else {
+    x[43] = 0
+}
+if (x[42] > 0) x[42] += 20
+
+ */
+pub fn predict_20(name: &Namer) -> f64 {
+    let mut st: [f64; 44] = [0.0; 44];
+    for i in 0..8 {
+        st[i] = name.name_prop[i] as f64;
+    }
+    for i in 0..16 {
+        if name.skl_freq[i] != 0 {
+            st[name.skl_id[i] as usize + 8] = name.skl_freq[i] as f64;
+        }
+    }
+
+    if st[32] > 0.0 {
+        let mut shadow_name = Namer::new_unchecked(&format!("{}?shadow@{}", name.name, name.team));
+        let mut shadow_sum = shadow_name.name_prop[0] as f64 / 3.0;
+
+        for j in 1..8 {
+            shadow_sum += shadow_name.name_prop[j] as f64 - 36.0;
+        }
+        shadow_sum -= (shadow_name.name_prop[7] as f64 - 36.0) * 3.0;
+        let mut shadowi = shadow_sum - 210.0;
+
+        shadowi = shadowi * st[32] as f64 / 100.0;
+        st[43] = shadowi;
+    } else {
+        st[43] = 0.0;
+    }
+
+    if st[42] > 0.0 {
+        st[42] += 20.0;
+    }
+
+    let xp = poly(&st);
+
+    let mut sum = xuping20::BASE;
+    let mut sum_qd = xuping20::BASE_QD;
+
+    for i in 0..1034 {
+        sum += xp[i] * xuping20::MODEL[i];
+    }
+    // for i in 0..1034 {
+    //     sum_qd += xp[i] * xuping20::MODEL_QD[i];
+    // }
+
+    sum
+}
+
+pub fn predict_20_qd(name: &Namer) -> f64 {
+    let mut st: [f64; 44] = [0.0; 44];
+    for i in 0..8 {
+        st[i] = name.name_prop[i] as f64;
+    }
+    for i in 0..16 {
+        if name.skl_freq[i] != 0 {
+            st[name.skl_id[i] as usize + 8] = name.skl_freq[i] as f64;
+        }
+    }
+
+    if st[32] > 0.0 {
+        let mut shadow_name = Namer::new_unchecked(&format!("{}?shadow@{}", name.name, name.team));
+        let mut shadow_sum = shadow_name.name_prop[0] as f64 / 3.0;
+
+        for j in 1..8 {
+            shadow_sum += shadow_name.name_prop[j] as f64 - 36.0;
+        }
+        shadow_sum -= (shadow_name.name_prop[7] as f64 - 36.0) * 3.0;
+        let mut shadowi = shadow_sum - 210.0;
+
+        shadowi = shadowi * st[32] as f64 / 100.0;
+        st[43] = shadowi;
+    } else {
+        st[43] = 0.0;
+    }
+
+    if st[42] > 0.0 {
+        st[42] += 20.0;
+    }
+
+    let xp = poly(&st);
+
+    let mut sum_qd = xuping20::BASE_QD;
+
+    for i in 0..1034 {
+        sum_qd += xp[i] * xuping20::MODEL_QD[i];
+    }
+
+    sum_qd
+}
 
 #[cfg(test)]
 mod test {
@@ -141,7 +271,27 @@ mod test {
         namer.update_skill();
 
         println!("{:?}", namer.get_info());
+        #[cfg(not(feature = "simd"))]
         assert_eq!(predict_13(&namer), 5799.586821819173);
+        #[cfg(feature = "simd")]
+        assert_eq!(predict_13(&namer), 5799.586821819176);
+    }
 
+    fn xp_20(name: &str) -> f64 {
+        let mut namer = Namer::new(&name.to_string()).unwrap();
+        namer.update_skill();
+        predict_20(&namer)
+    }
+
+    #[test]
+    fn xuping_20_1015_test() {
+        // let mut namer = Namer::new(&"pi31uXx?shadow@魔".to_string()).unwrap();
+        let mut namer = Namer::new(&"一一七啺埀㴁@shenjack".to_string()).unwrap();
+        // 5971 7226
+        namer.update_skill();
+
+        println!("{:?}", namer.get_info());
+        // println!("{:?}", xp_20("一一七啺埀㴁@shenjack"));
+        assert_eq!(predict_20(&namer), 3603.4389333619297);
     }
 }
