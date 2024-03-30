@@ -72,7 +72,7 @@ pub fn predict_13(name: &Namer) -> f64 {
     {
         let mut st: [f64; 43] = [0.0; 43];
         // 长度取 64, 方便simd填充
-        for i in 0..7 {
+        for i in 0..=7 {
             st[i] = name.name_prop[i] as f64;
         }
         for i in 0..16 {
@@ -81,9 +81,6 @@ pub fn predict_13(name: &Namer) -> f64 {
             }
         }
         // - st: 名字属性。0~7 是八围，8~42 是技能熟练度。
-        // for i in 0..34 {
-        //     st[i + 8] = name.skl_freq[i] as f64;
-        // }
 
         let mut cnt = 0;
         for i in 0..43 {
@@ -143,8 +140,8 @@ mod test {
 
         namer.update_skill();
 
-        println!("{:?}", predict_13(&namer));
         println!("{:?}", namer.get_info());
-        panic!();
+        assert_eq!(predict_13(&namer), 5799.586821819173);
+
     }
 }
