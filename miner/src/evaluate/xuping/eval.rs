@@ -77,7 +77,6 @@ pub fn predict_13(name: &Namer) -> f64 {
             sum += target[i] * xuping13::MODULE[i];
             check[i] = target[i] * xuping13::MODULE[i];
         }
-
     }
     #[cfg(not(feature = "simd"))]
     #[cfg(feature = "simd")]

@@ -528,7 +528,7 @@ mod test {
     fn shadow_test() {
         let name = Namer::new_unchecked("一一七啺埀㴁?shadow");
         let prop_vec: Vec<u32> = vec![240, 89, 69, 82, 65, 75, 49, 49];
-        
+
         assert_eq!(name.name_prop.to_vec(), prop_vec);
     }
 }

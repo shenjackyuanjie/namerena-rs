@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use thirtyfour::prelude::*;
+
+use crate::CliArg;
 
 const INSERT_JS: &str = include_str!("../insert.js");
 
@@ -22,6 +25,17 @@ impl WinData {
             self.winners, self.first_kill, self.all
         )
     }
+
+    pub fn cli_str(&self) -> String {
+        let json_string = json!(
+            {
+                "winners": self.winners,
+                "first_kill": self.first_kill,
+                "all": self.all
+            }
+        );
+        json_string.to_string()
+    }
 }
 
 #[derive(Debug)]
@@ -40,16 +54,14 @@ pub struct WebDriverRunner {
 }
 
 impl std::fmt::Display for WebDriverRunner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Runner")
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "Runner") }
 }
 
 impl WebDriverRunner {
-    pub async fn init(target_url: impl AsRef<str>) -> Result<Self> {
+    pub async fn init(config: &CliArg) -> Result<Self> {
         let caps = DesiredCapabilities::edge();
-        let driver = WebDriver::new("http://localhost:9515", caps).await?;
-        driver.goto(target_url.as_ref()).await?;
+        let driver = WebDriver::new(&config.driver_url, caps).await?;
+        driver.goto(&config.target_url).await?;
         driver.execute(INSERT_JS, vec![]).await?;
         // insert.js
         // 预备环境
@@ -67,12 +79,9 @@ impl WebDriverRunner {
 
         go_btn.click().await?;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await; // 等一会
-        fast_forward_btn.click().await?;
+        fast_forward_btn.click().await.ok();
 
-        done_target
-            .wait_until()
-            .has_attribute("done", "true")
-            .await?;
+        done_target.wait_until().has_attribute("done", "true").await?;
 
         let win_data = self
             .driver
