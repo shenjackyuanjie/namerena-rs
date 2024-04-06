@@ -13,6 +13,8 @@ from enum import IntEnum
 
 gray = (200, 200, 200)
 
+_version_ = "1.0.0"
+
 
 class NumStatus(IntEnum):
     """未被选中"""
@@ -155,10 +157,10 @@ class MainWindow(Window):
         self.info_label = Label(
             x=20,
             y=self.height - 50,
-            text="名字竞技场, 八围制造器 by shenjackyuanjie(点完导出看控制台)",
+            text=f"名字竞技场, 八围制造器v{_version_} by shenjackyuanjie(点完导出看控制台)",
             multiline=False,
             font_name="黑体",
-            font_size=20,
+            font_size=17,
             batch=self.main_batch,
             group=self.main_group,
             color=(0, 0, 0, 255),
