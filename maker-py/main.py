@@ -17,24 +17,24 @@ gray = (200, 200, 200)
 class NumStatus(IntEnum):
     """未被选中"""
 
-    wait = 0
+    wait = 8
 
     # 血量
-    hp = 1
+    hp = 0
     # 攻击
-    attack = 2
+    attack = 1
     # 防御
-    defense = 3
+    defense = 2
     # 速度
-    speed = 4
+    speed = 3
     # 敏捷
-    agility = 5
+    agility = 4
     # 魔法
-    magic = 6
+    magic = 5
     # 抗性
-    resistance = 7
+    resistance = 6
     # 智慧
-    wisdom = 8
+    wisdom = 7
 
 
 class NumWidget:
@@ -155,12 +155,11 @@ class MainWindow(Window):
         self.update_num_display()
     
     def update_num_display(self) -> None:
-        
         for status, widgets in self.display_dict.items():
             num_count = 0
             for widget in widgets:
-                print(f"status: {status}, num_count: {num_count} {status.value=}")
-                widget.x = 40 + (40 * status.value)
+                # print(f"status: {status}, num_count: {num_count} {status.value=}")
+                widget.x = 40 + (65 * status.value)
                 widget.y = self.height - (170 + 30 * num_count)
                 num_count += 1
         
