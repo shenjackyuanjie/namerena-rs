@@ -153,7 +153,7 @@ class MainWindow(Window):
         self.init_name_diy()
 
     def init_info(self) -> None:
-        """ 初始化信息显示 """
+        """初始化信息显示"""
         self.info_label = Label(
             x=20,
             y=self.height - 50,
@@ -316,7 +316,16 @@ class MainWindow(Window):
         gather = sum(
             (int(hp / 3), attack, defense, speed, agility, magic, resistance, wisdom)
         )
-        self.name_data = [attack, defense, speed, agility, magic, resistance, wisdom, hp]
+        self.name_data = [
+            attack,
+            defense,
+            speed,
+            agility,
+            magic,
+            resistance,
+            wisdom,
+            hp,
+        ]
         self.name_info_displays[
             "label"
         ].text = f"HP|{hp} 攻|{attack} 防|{defense} 速|{speed} 敏|{agility} 魔|{magic} 抗|{resistance} 智|{wisdom} 八围:{gather}"
@@ -325,7 +334,10 @@ class MainWindow(Window):
         self.num_hints[0].y = self.height - (173 + 30 * 6)
         # 剩下的需要先判断那个是中间的
         for i in range(1, 8):
-            data = sorted(enumerate(x.value for x in self.display_dict[NumStatus(i)]), key=lambda x: x[1])
+            data = sorted(
+                enumerate(x.value for x in self.display_dict[NumStatus(i)]),
+                key=lambda x: x[1],
+            )
             middle_index = data[1][0]
             self.num_hints[i].y = self.height - (173 + 30 * middle_index)
 
@@ -427,9 +439,7 @@ class MainWindow(Window):
                 for status, widgets in self.display_dict.items():
                     if status == NumStatus.wait:
                         continue
-                    print(
-                        f"{status.name}: {', '.join(str(x.value) for x in widgets)}"
-                    )
+                    print(f"{status.name}: {', '.join(str(x.value) for x in widgets)}")
                 name = self.name_info_displays["entry"].value
                 print("名字: ", name)
                 # +diy[50,51,90,130,150,70,89,210]
