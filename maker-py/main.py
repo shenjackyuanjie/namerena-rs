@@ -144,10 +144,49 @@ class MainWindow(Window):
         self.middle_base = (0, 0)
         self.drag_speed = 0
         self.drag_start = None
+        self.name_data = []
 
         self.name_info_displays = {}
+        self.init_info()
         self.init_name_dispaly()
         self.init_name_diy()
+
+    def init_info(self) -> None:
+        """ 初始化信息显示 """
+        self.info_label = Label(
+            x=20,
+            y=self.height - 50,
+            text="名字竞技场, 八围制造器 by shenjackyuanjie(点完导出看控制台)",
+            multiline=False,
+            font_name="黑体",
+            font_size=20,
+            batch=self.main_batch,
+            group=self.main_group,
+            color=(0, 0, 0, 255),
+        )
+        self.output_button = Rectangle(
+            x=400,
+            y=200,
+            width=100,
+            height=50,
+            color=(0, 0, 255, 200),
+            batch=self.main_batch,
+            group=self.main_group,
+        )
+        self.output_label = Label(
+            x=400 + 50,
+            y=200 + 25,
+            text="导出",
+            width=100,
+            height=50,
+            multiline=False,
+            anchor_x="center",
+            font_name="黑体",
+            font_size=20,
+            color=(255, 255, 255, 255),
+            batch=self.main_batch,
+            group=self.main_group,
+        )
 
     def init_name_diy(self) -> None:
         """
@@ -276,6 +315,7 @@ class MainWindow(Window):
         gather = sum(
             (int(hp / 3), attack, defense, speed, agility, magic, resistance, wisdom)
         )
+        self.name_data = [attack, defense, speed, agility, magic, resistance, wisdom, hp]
         self.name_info_displays[
             "label"
         ].text = f"HP|{hp} 攻|{attack} 防|{defense} 速|{speed} 敏|{agility} 魔|{magic} 抗|{resistance} 智|{wisdom} 八围:{gather}"
@@ -380,10 +420,24 @@ class MainWindow(Window):
             self.on_middle = False
         if button & mouse.LEFT:
             # 捏起
+            if (x, y) in self.output_button:
+                # 导出
+                print("导出")
+                for status, widgets in self.display_dict.items():
+                    if status == NumStatus.wait:
+                        continue
+                    print(
+                        f"{status.name}: {', '.join(str(x.value) for x in widgets)}"
+                    )
+                name = self.name_info_displays["entry"].value
+                print("名字: ", name)
+                # +diy[50,51,90,130,150,70,89,210]
+                print(f"{name}+diy{self.name_data}")
+                return
             for idx, widget in self.num_dict.items():
                 if widget.aabb(x, y):
                     self.drag_start = idx
-                    print(f"捏起 {idx}")
+                    # print(f"捏起 {idx}")
                     break
 
     def on_mouse_release(self, x, y, button, modifiers):
@@ -411,8 +465,8 @@ class MainWindow(Window):
                     self.num_dict[find[1]],
                     self.num_dict[find[0]],
                 )
-                self.drag_start = None
-                self.update_num_display()
+            self.drag_start = None
+            self.update_num_display()
 
     def on_mouse_leave(self, x, y):
         self.on_middle = False
