@@ -74,10 +74,14 @@ class NumWidget:
     def value(self) -> int:
         return int(self.label.text)
 
+    @value.setter
+    def value(self, value: int) -> None:
+        self.label.text = str(value)
+
     @property
     def display(self) -> bool:
         return self._display
-    
+
     @display.setter
     def display(self, value: bool) -> None:
         self._display = value
@@ -139,6 +143,7 @@ class MainWindow(Window):
         self.on_middle = False
         self.middle_base = (0, 0)
         self.drag_speed = 0
+        self.drag_start = None
 
         self.name_info_displays = {}
         self.init_name_dispaly()
@@ -165,7 +170,8 @@ class MainWindow(Window):
             group=cover_group,
         )
         self.main_frame.add_calculate_func(
-            self.num_cover, lambda rec, width, height, window: (37 + 8 * 65, height - 143)
+            self.num_cover,
+            lambda rec, width, height, window: (37 + 8 * 65, height - 143),
         )
         # 从大到小
         num_group = Group(parent=self.num_group, order=10)
@@ -245,7 +251,7 @@ class MainWindow(Window):
                 widget.x = 40 + (65 * status.value)
                 widget.y = self.height - (170 + 30 * num_count)
                 num_count += 1
-                
+
         # wait 的单独处理, 因为有滚动条
         num_count = 0
         for widget in self.display_dict[NumStatus.wait]:
@@ -278,7 +284,7 @@ class MainWindow(Window):
         self.num_hints[0].y = self.height - (173 + 30 * 6)
         # 剩下的需要先判断那个是中间的
         for i in range(1, 8):
-            data = sorted(enumerate(x.value for x in self.display_dict[NumStatus(i)]))
+            data = sorted(enumerate(x.value for x in self.display_dict[NumStatus(i)]), key=lambda x: x[1])
             middle_index = data[1][0]
             self.num_hints[i].y = self.height - (173 + 30 * middle_index)
 
@@ -363,23 +369,54 @@ class MainWindow(Window):
             self.update_num_display()
             return
         self.num_slide += dy
-        print(self.num_cover.y, self.num_slide, dy)
         self.update_num_display()
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
-        self.update_slide(int(scroll_y) * 10)
-    
+        self.update_slide(int(scroll_y) * -10)
+
     def on_mouse_press(self, x, y, button, modifiers):
         self.middle_base = (x, y)
-        if not button & mouse.MIDDLE: # 中键
+        if not button & mouse.MIDDLE:  # 中键
             self.on_middle = False
-    
+        if button & mouse.LEFT:
+            # 捏起
+            for idx, widget in self.num_dict.items():
+                if widget.aabb(x, y):
+                    self.drag_start = idx
+                    print(f"捏起 {idx}")
+                    break
+
     def on_mouse_release(self, x, y, button, modifiers):
         self.on_middle = False
-    
+        if button & mouse.LEFT:
+            find = []
+            if self.drag_start:  # 有开始目标
+                for idx, target_widget in self.num_dict.items():
+                    if target_widget.aabb(x, y):
+                        if idx == self.drag_start:
+                            # 如果是自己, 就不做任何操作
+                            continue
+                        # 搜索对面那个, 修改双方显示内容
+                        # 交换 value
+                        find = [self.drag_start, idx]
+                        break
+            if find:
+                print(f"交换 {find}")
+                (
+                    self.num_dict[find[0]].value,
+                    self.num_dict[find[1]].value,
+                ) = find[1], find[0]
+                # 交换键
+                self.num_dict[find[0]], self.num_dict[find[1]] = (
+                    self.num_dict[find[1]],
+                    self.num_dict[find[0]],
+                )
+                self.drag_start = None
+                self.update_num_display()
+
     def on_mouse_leave(self, x, y):
         self.on_middle = False
-    
+
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
         if dy != 0 and y != self.middle_base[1] and buttons & mouse.MIDDLE:
             if not self.on_middle:
@@ -389,8 +426,11 @@ class MainWindow(Window):
                 return
             drag_y = y - self.middle_base[1]
             # 取个对数, 保证不会太快
-            # drag_y = math.log(abs(drag_y) + 1, 2) * (1 if drag_y > 0 else -1)
             self.drag_speed = int(drag_y)
+        if self.drag_start:
+            # 拖动
+            self.num_dict[self.drag_start].x = x - 17
+            self.num_dict[self.drag_start].y = y - 7
 
     def on_resize(self, width, height):
         super().on_resize(width, height)
