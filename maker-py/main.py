@@ -9,6 +9,7 @@ from pyglet.graphics import Batch, Group
 
 from control import RePositionFrame
 
+from typing import List, Dict
 from enum import IntEnum
 
 gray = (200, 200, 200)
@@ -264,7 +265,7 @@ class MainWindow(Window):
         # index 22~24 中值 + 36 = 魔法
         # index 25~27 中值 + 36 = 抗性
         # index 28~30 中值 + 36 = 智慧
-        self.display_dict: dict[NumStatus, list[NumWidget]] = {
+        self.display_dict: Dict[NumStatus, List[NumWidget]] = {
             NumStatus.hp: [self.num_dict[i] for i in range(0, 10)],
             NumStatus.attack: [self.num_dict[i] for i in range(10, 13)],
             NumStatus.defense: [self.num_dict[i] for i in range(13, 16)],
