@@ -39,8 +39,8 @@ class NumStatus(IntEnum):
 
 class NumWidget:
     def __init__(self, num: int, batch: Batch, group: Group, x: int, y: int) -> None:
-        self.x = x
-        self.y = y
+        self._y = y
+        self._x = x
         font = load_font("黑体", 15)
         font_height = font.ascent - font.descent
         self.label = Label(
@@ -65,6 +65,26 @@ class NumWidget:
             batch=batch,
             group=group,
         )
+
+    @property
+    def x(self) -> int:
+        return self._x
+    
+    @x.setter
+    def x(self, value: int) -> None:
+        self._x = value
+        self.label.x = value + 17
+        self.background.x = value
+        
+    @property
+    def y(self) -> int:
+        return self._y
+    
+    @y.setter
+    def y(self, value: int) -> None:
+        self._y = value
+        self.label.y = value + 7
+        self.background.y = value
 
     def aabb(self, x: int, y: int) -> bool:
         # 判断是否在范围内
@@ -103,10 +123,10 @@ class MainWindow(Window):
         self.num_group = Group(parent=self.main_group, order=10)
         # 从大到小
         for i in range(256):
-            widget = NumWidget(
+            num_name = NumWidget(
                 num=i, batch=self.num_batch, group=self.num_group, x=40, y=50
             )
-            self.num_dict[i] = widget
+            self.num_dict[i] = num_name
         # 0-9 sorted
         # 取前9个拿到血量这边
         # index 3~6 之和 + 154 = 血量
@@ -117,7 +137,7 @@ class MainWindow(Window):
         # index 22~24 中值 + 36 = 魔法
         # index 25~27 中值 + 36 = 抗性
         # index 28~30 中值 + 36 = 智慧
-        self.display_dict: dict[NumStatus, list[int]] = {
+        self.display_dict: dict[NumStatus, list[NumWidget]] = {
             NumStatus.hp: [self.num_dict[i] for i in range(3, 7)],
             NumStatus.attack: [self.num_dict[i] for i in range(10, 13)],
             NumStatus.defense: [self.num_dict[i] for i in range(13, 16)],
@@ -132,6 +152,18 @@ class MainWindow(Window):
                 *(self.num_dict[i] for i in range(31, 256)),
             ],
         }
+        self.update_num_display()
+    
+    def update_num_display(self) -> None:
+        
+        for status, widgets in self.display_dict.items():
+            num_count = 0
+            for widget in widgets:
+                print(f"status: {status}, num_count: {num_count} {status.value=}")
+                widget.x = 40 + (40 * status.value)
+                widget.y = self.height - (170 + 30 * num_count)
+                num_count += 1
+        
 
     def init_name_dispaly(self) -> None:
         """
