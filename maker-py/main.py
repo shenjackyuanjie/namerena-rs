@@ -137,6 +137,16 @@ class MainWindow(Window):
         self.num_dict = {}
         self.num_batch = Batch()
         self.num_group = Group(parent=self.main_group, order=10)
+        # 用于覆盖掉 num 顶上多出来的部分
+        self.num_cover = Rectangle(
+            x=40,
+            y=50,
+            width=35,
+            height=20,
+            color=(0, 255, 255, 255),
+            batch=self.num_batch,
+            group=self.num_group,
+        )
         # 从大到小
         num_group = Group(parent=self.num_group, order=10)
         for i in range(256):
