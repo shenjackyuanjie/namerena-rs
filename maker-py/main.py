@@ -42,6 +42,7 @@ class NumWidget:
     def __init__(self, num: int, batch: Batch, group: Group, x: int, y: int) -> None:
         self._y = y
         self._x = x
+        self._display = True
         font = load_font("黑体", 15)
         font_height = font.ascent - font.descent
         self.label_group = Group(parent=group, order=20)
@@ -72,6 +73,16 @@ class NumWidget:
     @property
     def value(self) -> int:
         return int(self.label.text)
+
+    @property
+    def display(self) -> bool:
+        return self._display
+    
+    @display.setter
+    def display(self, value: bool) -> None:
+        self._display = value
+        self.label_group.visible = value
+        self.background_group.visible = value
 
     @property
     def x(self) -> int:
@@ -234,11 +245,18 @@ class MainWindow(Window):
                 widget.x = 40 + (65 * status.value)
                 widget.y = self.height - (170 + 30 * num_count)
                 num_count += 1
+                
         # wait 的单独处理, 因为有滚动条
         num_count = 0
         for widget in self.display_dict[NumStatus.wait]:
             widget.x = 40 + (65 * NumStatus.wait.value)
             widget.y = self.height - (170 + 30 * num_count) + self.num_slide
+            # 如果太高了, 就不显示了
+            if widget.y > self.height - 200:
+                # 给我不显示啊啊啊啊啊啊
+                widget.display = False
+            else:
+                widget.display = True
             num_count += 1
         # 计算数据
         hp = sum(widget.value for widget in self.display_dict[NumStatus.hp][3:6]) + 154
