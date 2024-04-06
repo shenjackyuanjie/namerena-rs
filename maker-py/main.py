@@ -2,7 +2,7 @@ import pyglet
 from pyglet.font import load as load_font
 from pyglet.text import Label
 from pyglet.gui import TextEntry
-from pyglet.window import Window
+from pyglet.window import Window, mouse
 from pyglet.gl import glClearColor
 from pyglet.shapes import Rectangle
 from pyglet.graphics import Batch, Group
@@ -10,6 +10,7 @@ from pyglet.graphics import Batch, Group
 from control import RePositionFrame
 
 from enum import IntEnum
+import math
 
 gray = (200, 200, 200)
 
@@ -124,6 +125,9 @@ class MainWindow(Window):
         self.main_batch = Batch()
         self.main_group = Group()
         self.main_frame = RePositionFrame(self)
+        self.on_middle = False
+        self.middle_base = (0, 0)
+        self.drag_speed = 0
 
         self.name_info_displays = {}
         self.init_name_dispaly()
@@ -135,23 +139,28 @@ class MainWindow(Window):
         """
         # 0-255
         self.num_dict = {}
-        self.num_batch = Batch()
         self.num_group = Group(parent=self.main_group, order=10)
         # 用于覆盖掉 num 顶上多出来的部分
+        cover_group = Group(parent=self.main_group, order=20)
+        # 滚动条数值
+        self.num_slide = 0
         self.num_cover = Rectangle(
-            x=40,
-            y=50,
-            width=35,
-            height=20,
+            x=37 + 8 * 65,
+            y=self.height - 143,
+            width=41,
+            height=40,
             color=(0, 255, 255, 255),
-            batch=self.num_batch,
-            group=self.num_group,
+            batch=self.main_batch,
+            group=cover_group,
+        )
+        self.main_frame.add_calculate_func(
+            self.num_cover, lambda rec, width, height, window: (37 + 8 * 65, height - 143)
         )
         # 从大到小
         num_group = Group(parent=self.num_group, order=10)
         for i in range(256):
             num_name = NumWidget(
-                num=i, batch=self.num_batch, group=num_group, x=40, y=50
+                num=i, batch=self.main_batch, group=num_group, x=40, y=50
             )
             self.num_dict[i] = num_name
         self.num_hints = []
@@ -169,7 +178,7 @@ class MainWindow(Window):
                 height=(font_height + 4 + 5) * 4,
                 # 浅蓝色背景
                 color=(0, 0, 255, 100),
-                batch=self.num_batch,
+                batch=self.main_batch,
                 group=num_hint_group,
             )
         )
@@ -183,7 +192,7 @@ class MainWindow(Window):
                     height=font_height + 4 + 5,
                     # 浅蓝色背景
                     color=(0, 0, 255, 100),
-                    batch=self.num_batch,
+                    batch=self.main_batch,
                     group=num_hint_group,
                 )
             )
@@ -219,10 +228,18 @@ class MainWindow(Window):
 
         for status, widgets in self.display_dict.items():
             num_count = 0
+            if status == NumStatus.wait:
+                continue
             for widget in widgets:
                 widget.x = 40 + (65 * status.value)
                 widget.y = self.height - (170 + 30 * num_count)
                 num_count += 1
+        # wait 的单独处理, 因为有滚动条
+        num_count = 0
+        for widget in self.display_dict[NumStatus.wait]:
+            widget.x = 40 + (65 * NumStatus.wait.value)
+            widget.y = self.height - (170 + 30 * num_count) + self.num_slide
+            num_count += 1
         # 计算数据
         hp = sum(widget.value for widget in self.display_dict[NumStatus.hp][3:6]) + 154
         attack = middle_widget(*self.display_dict[NumStatus.attack]) + 36
@@ -251,7 +268,7 @@ class MainWindow(Window):
         """
         初始化 名字显示 这块内容
         """
-        name_group = Group(parent=self.main_group)
+        name_group = Group(parent=self.main_group, order=30)
         self.name_info_displays["group"] = name_group
 
         font = load_font("黑体", 20)
@@ -310,8 +327,52 @@ class MainWindow(Window):
 
     def on_draw(self) -> None:
         self.clear()
+        if self.on_middle:
+            # 正在滑动
+            self.update_slide(self.drag_speed)
         self.main_batch.draw()
-        self.num_batch.draw()
+
+    def update_slide(self, dy: int) -> None:
+        # 保证不会太下
+        if (self.num_slide + dy) < 0:
+            self.num_slide = 0
+            self.update_num_display()
+            return
+        # 再保证不会太上
+        num_len = len(self.display_dict[NumStatus.wait])
+        if (self.num_slide + dy) > (30 * num_len - 100):
+            self.num_slide = 30 * num_len - 100
+            self.update_num_display()
+            return
+        self.num_slide += dy
+        print(self.num_cover.y, self.num_slide, dy)
+        self.update_num_display()
+
+    def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+        self.update_slide(int(scroll_y) * 10)
+    
+    def on_mouse_press(self, x, y, button, modifiers):
+        self.middle_base = (x, y)
+        if not button & mouse.MIDDLE: # 中键
+            self.on_middle = False
+    
+    def on_mouse_release(self, x, y, button, modifiers):
+        self.on_middle = False
+    
+    def on_mouse_leave(self, x, y):
+        self.on_middle = False
+    
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        if dy != 0 and y != self.middle_base[1] and buttons & mouse.MIDDLE:
+            if not self.on_middle:
+                self.middle_base = (x, y)
+                self.drag_speed = 0
+                self.on_middle = True
+                return
+            drag_y = y - self.middle_base[1]
+            # 取个对数, 保证不会太快
+            # drag_y = math.log(abs(drag_y) + 1, 2) * (1 if drag_y > 0 else -1)
+            self.drag_speed = int(drag_y)
 
     def on_resize(self, width, height):
         super().on_resize(width, height)
