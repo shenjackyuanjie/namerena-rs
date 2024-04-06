@@ -10,7 +10,6 @@ from pyglet.graphics import Batch, Group
 from control import RePositionFrame
 
 from enum import IntEnum
-import math
 
 gray = (200, 200, 200)
 
