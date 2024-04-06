@@ -146,21 +146,38 @@ class MainWindow(Window):
             self.num_dict[i] = num_name
         self.num_hints = []
         # 每个部分的取值提示
+        font = load_font("黑体", 15)
+        font_height = font.ascent - font.descent
         num_hint_group = Group(parent=self.main_group, order=20)
         # hp: 3~6 len = 4
         # 要覆盖住 4 个数字
         self.num_hints.append(
             Rectangle(
                 x=40 - 3,
-                y=self.height - (170 + 30 * 3),
-                width=46,
-                height=80,
-                color=(255, 255, 255, 255),
+                y=self.height - (173 + 30 * 6),
+                width=41,
+                height=(font_height + 4 + 5) * 4,
+                # 浅蓝色背景
+                color=(0, 0, 255, 100),
                 batch=self.num_batch,
                 group=num_hint_group,
             )
         )
-        
+        # 剩下 7 个, 每个都是中间
+        for x in range(1, 8):
+            self.num_hints.append(
+                Rectangle(
+                    x=40 - 3 + (65 * x),
+                    y=self.height - (173 + 30),
+                    width=41,
+                    height=font_height + 4 + 5,
+                    # 浅蓝色背景
+                    color=(0, 0, 255, 100),
+                    batch=self.num_batch,
+                    group=num_hint_group,
+                )
+            )
+
         # 0-9 sorted
         # 取前9个拿到血量这边
         # index 3~6 之和 + 154 = 血量
@@ -211,6 +228,14 @@ class MainWindow(Window):
         self.name_info_displays[
             "label"
         ].text = f"HP|{hp} 攻|{attack} 防|{defense} 速|{speed} 敏|{agility} 魔|{magic} 抗|{resistance} 智|{wisdom} 八围:{gather}"
+        # 更新提示框
+        # hp 提示框是固定的
+        self.num_hints[0].y = self.height - (173 + 30 * 6)
+        # 剩下的需要先判断那个是中间的
+        for i in range(1, 8):
+            data = sorted(enumerate(x.value for x in self.display_dict[NumStatus(i)]))
+            middle_index = data[1][0]
+            self.num_hints[i].y = self.height - (173 + 30 * middle_index)
 
     def init_name_dispaly(self) -> None:
         """
