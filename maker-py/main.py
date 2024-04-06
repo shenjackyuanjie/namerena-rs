@@ -67,19 +67,23 @@ class NumWidget:
         )
 
     @property
+    def value(self) -> int:
+        return int(self.label.text)
+
+    @property
     def x(self) -> int:
         return self._x
-    
+
     @x.setter
     def x(self, value: int) -> None:
         self._x = value
         self.label.x = value + 17
         self.background.x = value
-        
+
     @property
     def y(self) -> int:
         return self._y
-    
+
     @y.setter
     def y(self, value: int) -> None:
         self._y = value
@@ -91,6 +95,16 @@ class NumWidget:
         width = 35
         height = 20
         return self.x <= x <= self.x + width and self.y <= y <= self.y + height
+
+
+def middle_widget(一: NumWidget, 二: NumWidget, 三: NumWidget) -> int:
+    """返回中间值"""
+    a, b, c = 一.value, 二.value, 三.value
+    if a < b < c or c < b < a:
+        return b
+    if b < a < c or c < a < b:
+        return a
+    return c
 
 
 class MainWindow(Window):
@@ -138,7 +152,7 @@ class MainWindow(Window):
         # index 25~27 中值 + 36 = 抗性
         # index 28~30 中值 + 36 = 智慧
         self.display_dict: dict[NumStatus, list[NumWidget]] = {
-            NumStatus.hp: [self.num_dict[i] for i in range(3, 7)],
+            NumStatus.hp: [self.num_dict[i] for i in range(0, 10)],
             NumStatus.attack: [self.num_dict[i] for i in range(10, 13)],
             NumStatus.defense: [self.num_dict[i] for i in range(13, 16)],
             NumStatus.speed: [self.num_dict[i] for i in range(16, 19)],
@@ -146,15 +160,16 @@ class MainWindow(Window):
             NumStatus.magic: [self.num_dict[i] for i in range(22, 25)],
             NumStatus.resistance: [self.num_dict[i] for i in range(25, 28)],
             NumStatus.wisdom: [self.num_dict[i] for i in range(28, 31)],
-            NumStatus.wait: [
-                *(self.num_dict[i] for i in range(0, 3)),
-                *(self.num_dict[i] for i in range(7, 10)),
-                *(self.num_dict[i] for i in range(31, 256)),
-            ],
+            NumStatus.wait: [self.num_dict[i] for i in range(31, 256)],
         }
         self.update_num_display()
-    
+
     def update_num_display(self) -> None:
+        # sort hp
+        self.display_dict[NumStatus.hp].sort(key=lambda x: x.value)
+        # sort wait
+        self.display_dict[NumStatus.wait].sort(key=lambda x: x.value)
+
         for status, widgets in self.display_dict.items():
             num_count = 0
             for widget in widgets:
@@ -162,7 +177,21 @@ class MainWindow(Window):
                 widget.x = 40 + (65 * status.value)
                 widget.y = self.height - (170 + 30 * num_count)
                 num_count += 1
-        
+        # 计算数据
+        hp = sum(widget.value for widget in self.display_dict[NumStatus.hp][3:6]) + 154
+        attack = middle_widget(*self.display_dict[NumStatus.attack]) + 36
+        defense = middle_widget(*self.display_dict[NumStatus.defense]) + 36
+        speed = middle_widget(*self.display_dict[NumStatus.speed]) + 36
+        agility = middle_widget(*self.display_dict[NumStatus.agility]) + 36
+        magic = middle_widget(*self.display_dict[NumStatus.magic]) + 36
+        resistance = middle_widget(*self.display_dict[NumStatus.resistance]) + 36
+        wisdom = middle_widget(*self.display_dict[NumStatus.wisdom]) + 36
+        gather = sum(
+            (int(hp / 3), attack, defense, speed, agility, magic, resistance, wisdom)
+        )
+        self.name_info_displays[
+            "label"
+        ].text = f"HP|{hp} 攻|{attack} 防|{defense} 速|{speed} 敏|{agility} 魔|{magic} 抗|{resistance} 智|{wisdom} 八围:{gather}"
 
     def init_name_dispaly(self) -> None:
         """
@@ -229,6 +258,10 @@ class MainWindow(Window):
         self.clear()
         self.main_batch.draw()
         self.num_batch.draw()
+
+    def on_resize(self, width, height):
+        super().on_resize(width, height)
+        self.update_num_display()
 
     def start(self) -> None:
         pyglet.app.run(interval=1 / 30)
