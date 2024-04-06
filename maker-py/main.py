@@ -14,7 +14,7 @@ from enum import IntEnum
 
 gray = (200, 200, 200)
 
-_version_ = "1.0.0"
+_version_ = "1.1.0"
 
 
 class NumStatus(IntEnum):
@@ -45,18 +45,20 @@ class NumWidget:
         self._y = y
         self._x = x
         self._display = True
-        font = load_font("黑体", 15)
+        font = load_font("黑体", 13)
         font_height = font.ascent - font.descent
         self.label_group = Group(parent=group, order=20)
         self.background_group = Group(parent=group, order=10)
+        self.val = num
+        self._value = num & 63
         self.label = Label(
-            x=x + 17,
+            x=x + 37,
             y=y + 7,
             color=(0, 0, 0, 255),
-            text=f"{num}",
+            text=f"{self._value}-{self.val}",
             font_name="黑体",
-            font_size=15,
-            width=35,
+            font_size=13,
+            width=50,
             height=font_height + 4,
             anchor_x="center",
             batch=batch,
@@ -65,8 +67,8 @@ class NumWidget:
         self.background = Rectangle(
             x=x,
             y=y,
-            width=35,
-            height=font_height + 4,
+            width=56,
+            height=font_height + 7,
             color=gray,
             batch=batch,
             group=self.background_group,
@@ -74,11 +76,13 @@ class NumWidget:
 
     @property
     def value(self) -> int:
-        return int(self.label.text)
+        return self._value
 
     @value.setter
     def value(self, value: int) -> None:
-        self.label.text = str(value)
+        self._value = value & 63
+        self.val = value
+        self.label.text = f"{self._value}-{self.val}"
 
     @property
     def display(self) -> bool:
@@ -97,7 +101,7 @@ class NumWidget:
     @x.setter
     def x(self, value: int) -> None:
         self._x = value
-        self.label.x = value + 17
+        self.label.x = value + 27
         self.background.x = value
 
     @property
@@ -112,8 +116,8 @@ class NumWidget:
 
     def aabb(self, x: int, y: int) -> bool:
         # 判断是否在范围内
-        width = 35
-        height = 20
+        width = self.background.width
+        height = self.background.height
         return self.x <= x <= self.x + width and self.y <= y <= self.y + height
 
 
@@ -163,7 +167,7 @@ class MainWindow(Window):
             font_name="黑体",
             font_size=17,
             batch=self.main_batch,
-            group=self.main_group,
+            group=Group(parent=self.main_group, order=30),
             color=(0, 0, 0, 255),
         )
         self.output_button = Rectangle(
@@ -204,9 +208,9 @@ class MainWindow(Window):
         self.num_cover = Rectangle(
             x=37 + 8 * 65,
             y=self.height - 143,
-            width=41,
-            height=40,
-            color=(0, 255, 255, 255),
+            width=70,
+            height=150,
+            color=(255, 255, 255, 255),
             batch=self.main_batch,
             group=cover_group,
         )
@@ -232,7 +236,7 @@ class MainWindow(Window):
             Rectangle(
                 x=40 - 3,
                 y=self.height - (173 + 30 * 6),
-                width=41,
+                width=62,
                 height=(font_height + 4 + 5) * 4,
                 # 浅蓝色背景
                 color=(0, 0, 255, 100),
@@ -246,7 +250,7 @@ class MainWindow(Window):
                 Rectangle(
                     x=40 - 3 + (65 * x),
                     y=self.height - (173 + 30),
-                    width=41,
+                    width=62,
                     height=font_height + 4 + 5,
                     # 浅蓝色背景
                     color=(0, 0, 255, 100),
@@ -266,15 +270,15 @@ class MainWindow(Window):
         # index 25~27 中值 + 36 = 抗性
         # index 28~30 中值 + 36 = 智慧
         self.display_dict: Dict[NumStatus, List[NumWidget]] = {
-            NumStatus.hp: [self.num_dict[i] for i in range(0, 10)],
-            NumStatus.attack: [self.num_dict[i] for i in range(10, 13)],
-            NumStatus.defense: [self.num_dict[i] for i in range(13, 16)],
-            NumStatus.speed: [self.num_dict[i] for i in range(16, 19)],
-            NumStatus.agility: [self.num_dict[i] for i in range(19, 22)],
-            NumStatus.magic: [self.num_dict[i] for i in range(22, 25)],
-            NumStatus.resistance: [self.num_dict[i] for i in range(25, 28)],
-            NumStatus.wisdom: [self.num_dict[i] for i in range(28, 31)],
-            NumStatus.wait: [self.num_dict[i] for i in range(31, 256)],
+            NumStatus.hp: [self.num_dict[i] for i in range(89, 99)],
+            NumStatus.attack: [self.num_dict[i] for i in range(99, 102)],
+            NumStatus.defense: [self.num_dict[i] for i in range(102, 105)],
+            NumStatus.speed: [self.num_dict[i] for i in range(105, 108)],
+            NumStatus.agility: [self.num_dict[i] for i in range(108, 111)],
+            NumStatus.magic: [self.num_dict[i] for i in range(111, 114)],
+            NumStatus.resistance: [self.num_dict[i] for i in range(114, 117)],
+            NumStatus.wisdom: [self.num_dict[i] for i in range(117, 120)],
+            NumStatus.wait: [self.num_dict[i] for i in range(120, 217)],
         }
         self.update_num_display()
 
