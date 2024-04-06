@@ -43,6 +43,8 @@ class NumWidget:
         self._x = x
         font = load_font("黑体", 15)
         font_height = font.ascent - font.descent
+        self.label_group = Group(parent=group, order=20)
+        self.background_group = Group(parent=group, order=10)
         self.label = Label(
             x=x + 17,
             y=y + 7,
@@ -54,7 +56,7 @@ class NumWidget:
             height=font_height + 4,
             anchor_x="center",
             batch=batch,
-            group=group,
+            group=self.label_group,
         )
         self.background = Rectangle(
             x=x,
@@ -63,7 +65,7 @@ class NumWidget:
             height=font_height + 4,
             color=gray,
             batch=batch,
-            group=group,
+            group=self.background_group,
         )
 
     @property
@@ -136,11 +138,29 @@ class MainWindow(Window):
         self.num_batch = Batch()
         self.num_group = Group(parent=self.main_group, order=10)
         # 从大到小
+        num_group = Group(parent=self.num_group, order=10)
         for i in range(256):
             num_name = NumWidget(
-                num=i, batch=self.num_batch, group=self.num_group, x=40, y=50
+                num=i, batch=self.num_batch, group=num_group, x=40, y=50
             )
             self.num_dict[i] = num_name
+        self.num_hints = []
+        # 每个部分的取值提示
+        num_hint_group = Group(parent=self.main_group, order=20)
+        # hp: 3~6 len = 4
+        # 要覆盖住 4 个数字
+        self.num_hints.append(
+            Rectangle(
+                x=40 - 3,
+                y=self.height - (170 + 30 * 3),
+                width=46,
+                height=80,
+                color=(255, 255, 255, 255),
+                batch=self.num_batch,
+                group=num_hint_group,
+            )
+        )
+        
         # 0-9 sorted
         # 取前9个拿到血量这边
         # index 3~6 之和 + 154 = 血量
@@ -173,7 +193,6 @@ class MainWindow(Window):
         for status, widgets in self.display_dict.items():
             num_count = 0
             for widget in widgets:
-                # print(f"status: {status}, num_count: {num_count} {status.value=}")
                 widget.x = 40 + (65 * status.value)
                 widget.y = self.height - (170 + 30 * num_count)
                 num_count += 1
