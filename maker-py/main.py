@@ -310,7 +310,7 @@ class MainWindow(Window):
                 widget.display = True
             num_count += 1
         # 计算数据
-        hp = sum(widget.value for widget in self.display_dict[NumStatus.hp][3:6]) + 154
+        hp = sum(widget.value for widget in self.display_dict[NumStatus.hp][3:7]) + 154
         attack = middle_widget(*self.display_dict[NumStatus.attack]) + 36
         defense = middle_widget(*self.display_dict[NumStatus.defense]) + 36
         speed = middle_widget(*self.display_dict[NumStatus.speed]) + 36
