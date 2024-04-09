@@ -99,13 +99,13 @@ async fn execute_gpu_inner(
     //   A storage buffer (can be bound within a bind group and thus available to a shader).
     //   The destination of a copy.
     //   The source of a copy.
-    let storage_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Storage Buffer"),
-        contents: bytemuck::cast_slice(numbers),
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC,
-    });
+    // let storage_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //     label: Some("Storage Buffer"),
+    //     contents: bytemuck::cast_slice(numbers),
+    //     usage: wgpu::BufferUsages::STORAGE
+    //         | wgpu::BufferUsages::COPY_DST
+    //         | wgpu::BufferUsages::COPY_SRC,
+    // });
 
     // A bind group defines how buffers are accessed by shaders.
     // It is to WebGPU what a descriptor set is to Vulkan.
@@ -118,20 +118,20 @@ async fn execute_gpu_inner(
         label: None,
         layout: None,
         module: &cs_module,
-        entry_point: "main",
+        entry_point: "team_bytes",
         // constants: &Default::default(),
     });
 
     // Instantiates the bind group, once again specifying the binding of buffers.
-    let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: storage_buffer.as_entire_binding(),
-        }],
-    });
+    // let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
+    // let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    //     label: None,
+    //     layout: &bind_group_layout,
+    //     entries: &[wgpu::BindGroupEntry {
+    //         binding: 0,
+    //         resource: storage_buffer.as_entire_binding(),
+    //     }],
+    // });
 
     // A command encoder executes one or many pipelines.
     // It is to WebGPU what a command buffer is to Vulkan.
@@ -143,13 +143,13 @@ async fn execute_gpu_inner(
             timestamp_writes: None,
         });
         cpass.set_pipeline(&compute_pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
+        // cpass.set_bind_group(0, &bind_group, &[]);
         cpass.insert_debug_marker("compute collatz iterations");
-        cpass.dispatch_workgroups(numbers.len() as u32, 1, 1); // Number of cells to run, the (x,y,z) size of item being processed
+        // cpass.dispatch_workgroups(numbers.len() as u32, 1, 1); // Number of cells to run, the (x,y,z) size of item being processed
     }
     // Sets adds copy operation to command encoder.
     // Will copy data from storage buffer on GPU to staging buffer on CPU.
-    encoder.copy_buffer_to_buffer(&storage_buffer, 0, &staging_buffer, 0, size);
+    // encoder.copy_buffer_to_buffer(&storage_buffer, 0, &staging_buffer, 0, size);
 
     // Submits command encoder for processing
     queue.submit(Some(encoder.finish()));

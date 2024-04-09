@@ -23,7 +23,8 @@ build_options = {
         "random",
         "lzma",
         "bz2",
-        "decimal"
+        "decimal",
+        "ssl"
     ],
 }
 

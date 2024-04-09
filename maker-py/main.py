@@ -14,7 +14,7 @@ from enum import IntEnum
 
 gray = (200, 200, 200)
 
-_version_ = "1.1.0"
+_version_ = "1.1.1"
 
 
 class NumStatus(IntEnum):
@@ -220,7 +220,7 @@ class MainWindow(Window):
         )
         # 从大到小
         num_group = Group(parent=self.num_group, order=10)
-        for i in range(256):
+        for i in range(89, 217):
             num_name = NumWidget(
                 num=i, batch=self.main_batch, group=num_group, x=40, y=50
             )
