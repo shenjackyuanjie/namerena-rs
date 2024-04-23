@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "rust-namer",
-    "miner", "wgpu-mine"]
+    "miner", "wgpu-mine", "namerena-runner"]
 
 # [miner.profile.release]
 # opt-level = 3

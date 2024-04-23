@@ -1015,6 +1015,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "namerena-runner"
+version = "0.1.0"
+
+[[package]]
 name = "nanorand"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
