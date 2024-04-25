@@ -141,7 +141,12 @@ impl Namer {
             unsafe { val.swap_unchecked(s as usize, 0) };
             let mut k = 0;
             for i in 0..256 {
-                s = s.wrapping_add(if k == 0 { 0 } else { name_bytes[k - 1] });
+                // s = s.wrapping_add(if k == 0 { 0 } else { name_bytes[k - 1] });
+                s = s.wrapping_add(if k == 0 {
+                    0
+                } else {
+                    *unsafe { name_bytes.get_unchecked(k - 1) }
+                });
                 s = s.wrapping_add(val[i]);
                 unsafe { val.swap_unchecked(i, s as usize) }
                 k = if k == b_name_len - 1 { 0 } else { k + 1 };
@@ -158,25 +163,39 @@ impl Namer {
 
             for i in (0..256).step_by(64) {
                 // 一次性加载64个数字
-                let mut x = u8x64::from_slice(&simd_val[i..]);
+                // let mut x = u8x64::from_slice(&simd_val[i..]);
+                let mut x = u8x64::from_slice(unsafe { simd_val.get_unchecked(i..) });
                 x = x * simd_181 + simd_160;
                 // 写入到 simd_val
-                x.copy_to_slice(&mut simd_val[i..]);
+                // x.copy_to_slice(&mut simd_val[i..]);
+                unsafe {
+                    x.copy_to_slice(simd_val.get_unchecked_mut(i..));
+                }
 
                 let y = x & simd_63;
-                y.copy_to_slice(&mut simd_val_b[i..]);
+                // y.copy_to_slice(&mut simd_val_b[i..]);
+                unsafe {
+                    y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
+                }
             }
 
             let mut mod_count = 0;
 
             for i in 0..96 {
-                if simd_val[i] > 88 && simd_val[i] < 217 {
-                    // name_base[mod_count as usize] = simd_val_b[i];
-                    unsafe {
+                // if simd_val[i] > 88 && simd_val[i] < 217 {
+                //     // name_base[mod_count as usize] = simd_val_b[i];
+                //     unsafe {
+                //         *name_base.get_unchecked_mut(mod_count as usize) =
+                //             *simd_val_b.get_unchecked(i);
+                //     }
+                //     mod_count += 1;
+                // }
+                unsafe {
+                    if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
                         *name_base.get_unchecked_mut(mod_count as usize) =
                             *simd_val_b.get_unchecked(i);
+                        mod_count += 1;
                     }
-                    mod_count += 1;
                 }
                 if mod_count > 30 {
                     break;
