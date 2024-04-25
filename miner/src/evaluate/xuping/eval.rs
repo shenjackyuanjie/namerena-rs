@@ -207,6 +207,9 @@ pub fn predict_20(name: &Namer) -> f64 {
 
     for i in 0..1034 {
         sum += xp[i] * xuping20::MODEL[i];
+        // unsafe {
+        //     sum += xp.get_unchecked(i) * xuping20::MODEL.get_unchecked(i);
+        // }
     }
     // for i in 0..1034 {
     //     sum_qd += xp[i] * xuping20::MODEL_QD[i];
