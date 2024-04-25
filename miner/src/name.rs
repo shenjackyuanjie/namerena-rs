@@ -138,18 +138,31 @@ impl Namer {
         let b_name_len = name_len + 1;
         for _ in 0..2 {
             let mut s = 0_u8;
-            unsafe { val.swap_unchecked(s as usize, 0) };
-            let mut k = 0;
-            for i in 0..256 {
-                // s = s.wrapping_add(if k == 0 { 0 } else { name_bytes[k - 1] });
-                s = s.wrapping_add(if k == 0 {
-                    0
-                } else {
-                    *unsafe { name_bytes.get_unchecked(k - 1) }
-                });
-                s = s.wrapping_add(val[i]);
-                unsafe { val.swap_unchecked(i, s as usize) }
-                k = if k == b_name_len - 1 { 0 } else { k + 1 };
+            // unsafe { val.swap_unchecked(s as usize, 0) };
+            // let mut k = 0;
+            // for i in 0..256 {
+            //     s = s.wrapping_add(if k == 0 {
+            //         0
+            //     } else {
+            //         *unsafe { name_bytes.get_unchecked(k - 1) }
+            //     });
+            //     s = s.wrapping_add(val[i]);
+            //     unsafe { val.swap_unchecked(i, s as usize) }
+            //     k = if k == b_name_len - 1 { 0 } else { k + 1 };
+            // }
+            unsafe {
+                val.swap_unchecked(s as usize, 0);
+                let mut k = 0;
+                for i in 0..256 {
+                    s = s.wrapping_add(if k == 0 {
+                        0
+                    } else {
+                        *name_bytes.get_unchecked(k - 1)
+                    });
+                    s = s.wrapping_add(val[i]);
+                    val.swap_unchecked(i, s as usize);
+                    k = if k == b_name_len - 1 { 0 } else { k + 1 };
+                }
             }
         }
         // simd 优化
@@ -163,17 +176,14 @@ impl Namer {
 
             for i in (0..256).step_by(64) {
                 // 一次性加载64个数字
-                // let mut x = u8x64::from_slice(&simd_val[i..]);
                 let mut x = u8x64::from_slice(unsafe { simd_val.get_unchecked(i..) });
                 x = x * simd_181 + simd_160;
                 // 写入到 simd_val
-                // x.copy_to_slice(&mut simd_val[i..]);
                 unsafe {
                     x.copy_to_slice(simd_val.get_unchecked_mut(i..));
                 }
 
                 let y = x & simd_63;
-                // y.copy_to_slice(&mut simd_val_b[i..]);
                 unsafe {
                     y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
                 }
@@ -182,14 +192,6 @@ impl Namer {
             let mut mod_count = 0;
 
             for i in 0..96 {
-                // if simd_val[i] > 88 && simd_val[i] < 217 {
-                //     // name_base[mod_count as usize] = simd_val_b[i];
-                //     unsafe {
-                //         *name_base.get_unchecked_mut(mod_count as usize) =
-                //             *simd_val_b.get_unchecked(i);
-                //     }
-                //     mod_count += 1;
-                // }
                 unsafe {
                     if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
                         *name_base.get_unchecked_mut(mod_count as usize) =
@@ -203,13 +205,12 @@ impl Namer {
             }
             if mod_count < 31 {
                 for i in 96..256 {
-                    if simd_val[i] > 88 && simd_val[i] < 217 {
-                        // name_base[mod_count as usize] = simd_val_b[i];
-                        unsafe {
+                    unsafe {
+                        if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
                             *name_base.get_unchecked_mut(mod_count as usize) =
                                 *simd_val_b.get_unchecked(i);
+                            mod_count += 1;
                         }
-                        mod_count += 1;
                     }
                     if mod_count > 30 {
                         break;
@@ -231,20 +232,31 @@ impl Namer {
         }
 
         // 计算 name_prop
-        let mut prop_name = name_base[0..32].to_vec();
-        prop_name[0..10].sort_unstable();
-        name_prop[0] = 154
-            + prop_name[3] as u32
-            + prop_name[4] as u32
-            + prop_name[5] as u32
-            + prop_name[6] as u32;
-        name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
-        name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
-        name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
-        name_prop[4] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
-        name_prop[5] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
-        name_prop[6] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
-        name_prop[7] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
+        // let mut prop_name = name_base[0..32].to_vec();
+        // prop_name[0..10].sort_unstable();
+        // name_prop[0] = 154
+        //     + prop_name[3] as u32
+        //     + prop_name[4] as u32
+        //     + prop_name[5] as u32
+        //     + prop_name[6] as u32;
+        // name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
+        // name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
+        // name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
+        // name_prop[4] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
+        // name_prop[5] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
+        // name_prop[6] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
+        // name_prop[7] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
+        // 疯狂的 unsafe 优化（确信
+        unsafe {
+            let mut prop_name = [0_u8; 32];
+            prop_name.copy_from_slice(name_base.get_unchecked(0..32));
+            prop_name.get_unchecked_mut(0..10).sort_unstable();
+            *name_prop.get_unchecked_mut(0) = 154
+                + *prop_name.get_unchecked(3) as u32
+                + *prop_name.get_unchecked(4) as u32
+                + *prop_name.get_unchecked(5) as u32
+                + *prop_name.get_unchecked(6) as u32
+        }
 
         Self {
             name: name.to_string(),
