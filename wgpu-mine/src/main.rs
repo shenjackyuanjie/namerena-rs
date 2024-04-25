@@ -69,11 +69,7 @@ async fn execute_gpu(numbers: &[u32]) -> Option<Vec<u32>> {
     execute_gpu_inner(&device, &queue, numbers).await
 }
 
-async fn execute_gpu_inner(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    numbers: &[u32],
-) -> Option<Vec<u32>> {
+async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, numbers: &[u32]) -> Option<Vec<u32>> {
     // Loads the shader from WGSL
     let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
@@ -135,8 +131,7 @@ async fn execute_gpu_inner(
 
     // A command encoder executes one or many pipelines.
     // It is to WebGPU what a command buffer is to Vulkan.
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     {
         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: None,

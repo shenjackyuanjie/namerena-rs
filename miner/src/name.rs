@@ -138,27 +138,11 @@ impl Namer {
         let b_name_len = name_len + 1;
         for _ in 0..2 {
             let mut s = 0_u8;
-            // unsafe { val.swap_unchecked(s as usize, 0) };
-            // let mut k = 0;
-            // for i in 0..256 {
-            //     s = s.wrapping_add(if k == 0 {
-            //         0
-            //     } else {
-            //         *unsafe { name_bytes.get_unchecked(k - 1) }
-            //     });
-            //     s = s.wrapping_add(val[i]);
-            //     unsafe { val.swap_unchecked(i, s as usize) }
-            //     k = if k == b_name_len - 1 { 0 } else { k + 1 };
-            // }
             unsafe {
                 val.swap_unchecked(s as usize, 0);
                 let mut k = 0;
                 for i in 0..256 {
-                    s = s.wrapping_add(if k == 0 {
-                        0
-                    } else {
-                        *name_bytes.get_unchecked(k - 1)
-                    });
+                    s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
                     s = s.wrapping_add(val[i]);
                     val.swap_unchecked(i, s as usize);
                     k = if k == b_name_len - 1 { 0 } else { k + 1 };
@@ -194,8 +178,7 @@ impl Namer {
             for i in 0..96 {
                 unsafe {
                     if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
-                        *name_base.get_unchecked_mut(mod_count as usize) =
-                            *simd_val_b.get_unchecked(i);
+                        *name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
                         mod_count += 1;
                     }
                 }
@@ -207,8 +190,7 @@ impl Namer {
                 for i in 96..256 {
                     unsafe {
                         if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
-                            *name_base.get_unchecked_mut(mod_count as usize) =
-                                *simd_val_b.get_unchecked(i);
+                            *name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
                             mod_count += 1;
                         }
                     }
@@ -273,7 +255,9 @@ impl Namer {
     pub fn update_skill(&mut self) {
         let skill_id = self.skl_id.as_mut();
         for i in 0..40 {
-            skill_id[i] = i as u8
+            unsafe {
+                *skill_id.get_unchecked_mut(i) = i as u8;
+            }
         }
 
         #[cfg(feature = "simd")]
@@ -288,19 +272,31 @@ impl Namer {
             let simd_32 = u8x64::splat(32);
 
             for i in (0..256).step_by(64) {
-                let mut x = u8x64::from_slice(&simd_val[i..]);
-                let mut y = u8x64::from_slice(&simd_val_b[i..]);
-                x = x * simd_181 + simd_199 & simd_128;
-                y = y * simd_53 & simd_63 ^ simd_32;
-                x.copy_to_slice(&mut simd_val[i..]);
-                y.copy_to_slice(&mut simd_val_b[i..]);
+                // let mut x = u8x64::from_slice(&simd_val[i..]);
+                // let mut y = u8x64::from_slice(&simd_val_b[i..]);
+                unsafe {
+                    let mut x = u8x64::from_slice(simd_val.get_unchecked(i..));
+                    let mut y = u8x64::from_slice(simd_val_b.get_unchecked(i..));
+                    x = x * simd_181 + simd_199 & simd_128;
+                    y = y * simd_53 & simd_63 ^ simd_32;
+                    x.copy_to_slice(simd_val.get_unchecked_mut(i..));
+                    y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
+                }
+                // x.copy_to_slice(&mut simd_val[i..]);
+                // y.copy_to_slice(&mut simd_val_b[i..]);
             }
 
             let mut mod_count = 0;
             for i in 0..256 {
-                if simd_val[i] != 0 {
-                    self.name_base[mod_count as usize] = simd_val_b[i];
-                    mod_count += 1;
+                // if simd_val[i] != 0 {
+                //     self.name_base[mod_count as usize] = simd_val_b[i];
+                //     mod_count += 1;
+                // }
+                unsafe {
+                    if simd_val.get_unchecked(i) != &0 {
+                        *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
+                        mod_count += 1;
+                    }
                 }
             }
             // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
@@ -309,23 +305,35 @@ impl Namer {
             let mut s: u8 = 0;
             for _ in 0..2 {
                 for i in 0..40 {
-                    let rnd = {
+                    let rnd = unsafe {
                         a += 1;
-                        b = b.wrapping_add(self.val[a as usize]);
-                        self.val.swap(a as usize, b as usize);
-                        let u: u8 = self.val[((self.val[a as usize] as u16
-                            + self.val[b as usize] as u16)
-                            & 255) as usize];
+                        // b = b.wrapping_add(self.val[a as usize]);
+                        b = b.wrapping_add(*self.val.get_unchecked(a as usize));
+                        // self.val.swap(a as usize, b as usize);
+                        self.val.swap_unchecked(a as usize, b as usize);
+                        // let u: u8 = self.val[((self.val[a as usize] as u16 + self.val[b as usize] as u16) & 255) as usize];
+                        let u: u8 = *self.val.get_unchecked(
+                            ((*self.val.get_unchecked(a as usize) as u16 + *self.val.get_unchecked(b as usize) as u16) & 255)
+                                as usize,
+                        );
                         a += 1;
-                        b = b.wrapping_add(self.val[a as usize]);
-                        self.val.swap(a as usize, b as usize);
-                        let t = self.val[((self.val[a as usize] as u16
-                            + self.val[b as usize] as u16)
-                            & 255) as usize];
+                        // b = b.wrapping_add(self.val[a as usize]);
+                        b = b.wrapping_add(*self.val.get_unchecked(a as usize));
+                        // self.val.swap(a as usize, b as usize);
+                        self.val.swap_unchecked(a as usize, b as usize);
+                        // let t = self.val[((self.val[a as usize] as u16 + self.val[b as usize] as u16) & 255) as usize];
+                        let t: u8 = *self.val.get_unchecked(
+                            ((*self.val.get_unchecked(a as usize) as u16 + *self.val.get_unchecked(b as usize) as u16) & 255)
+                                as usize,
+                        );
                         (((u as u32) << 8 | t as u32) % 40) as u8
                     };
-                    s = (s as u16 + rnd as u16 + skill_id[i] as u16) as u8 % 40;
-                    skill_id.swap(i as usize, s as usize);
+                    // s = (s as u16 + rnd as u16 + skill_id[i] as u16) as u8 % 40;
+                    // skill_id.swap(i as usize, s as usize);
+                    unsafe {
+                        s = (s as u16 + rnd as u16 + *skill_id.get_unchecked(i as usize) as u16) as u8 % 40;
+                        skill_id.swap_unchecked(i as usize, s as usize);
+                    }
                 }
             }
             let mut last = -1;
@@ -350,12 +358,10 @@ impl Namer {
                 // *= 2
             }
             if (self.skl_freq[14] != 0) && (last != 14) {
-                self.skl_freq[14] +=
-                    min(min(self.name_base[60], self.name_base[61]), self.skl_freq[14]);
+                self.skl_freq[14] += min(min(self.name_base[60], self.name_base[61]), self.skl_freq[14]);
             }
             if (self.skl_freq[15] != 0) && (last != 15) {
-                self.skl_freq[15] +=
-                    min(min(self.name_base[62], self.name_base[63]), self.skl_freq[15]);
+                self.skl_freq[15] += min(min(self.name_base[62], self.name_base[63]), self.skl_freq[15]);
             }
         }
 
@@ -426,10 +432,9 @@ impl Namer {
         let skills = {
             let mut base = "".to_string();
             let skill_names = [
-                "火球", "冰冻", "雷击", "地裂", "吸血", "投毒", "连击", "会心", "瘟疫", "命轮",
-                "狂暴", "魅惑", "加速", "减速", "诅咒", "治愈", "苏生", "净化", "铁壁", "蓄力",
-                "聚气", "潜行", "血祭", "分身", "幻术", "防御", "守护", "反弹", "护符", "护盾",
-                "反击", "吞噬", "亡灵", "垂死", "隐匿", "啧", "啧", "啧", "啧", "啧",
+                "火球", "冰冻", "雷击", "地裂", "吸血", "投毒", "连击", "会心", "瘟疫", "命轮", "狂暴", "魅惑", "加速", "减速",
+                "诅咒", "治愈", "苏生", "净化", "铁壁", "蓄力", "聚气", "潜行", "血祭", "分身", "幻术", "防御", "守护", "反弹",
+                "护符", "护盾", "反击", "吞噬", "亡灵", "垂死", "隐匿", "啧", "啧", "啧", "啧", "啧",
             ];
             // 后处理
             let mut skills = [0; 40];
@@ -476,20 +481,16 @@ mod test {
         let namer = Namer::new_from_team_namer_unchecked(&team, "x");
 
         let val_vec: Vec<u8> = vec![
-            225, 96, 49, 232, 20, 47, 115, 245, 234, 23, 111, 178, 231, 100, 118, 197, 42, 98, 137,
-            196, 209, 86, 114, 184, 167, 129, 164, 239, 205, 211, 82, 173, 189, 153, 198, 67, 4, 3,
-            90, 52, 128, 134, 176, 145, 85, 9, 250, 30, 63, 247, 240, 17, 215, 200, 78, 188, 132,
-            117, 10, 45, 162, 79, 123, 73, 109, 91, 57, 210, 22, 175, 107, 203, 103, 32, 83, 70,
-            242, 75, 220, 140, 148, 15, 138, 44, 228, 43, 105, 199, 99, 116, 97, 69, 80, 172, 230,
-            25, 224, 33, 31, 135, 235, 74, 193, 238, 233, 88, 216, 204, 24, 163, 141, 6, 201, 26,
-            38, 21, 186, 237, 101, 206, 212, 76, 144, 219, 149, 169, 202, 110, 41, 166, 139, 194,
-            168, 34, 142, 147, 187, 108, 223, 94, 5, 243, 226, 60, 40, 102, 51, 87, 61, 236, 46,
-            159, 64, 227, 113, 190, 81, 127, 65, 8, 183, 253, 150, 249, 229, 37, 156, 182, 180,
-            246, 124, 244, 174, 122, 89, 120, 160, 35, 143, 11, 14, 151, 133, 27, 177, 251, 221,
-            207, 58, 29, 131, 119, 171, 157, 93, 185, 48, 112, 192, 191, 66, 106, 39, 59, 92, 19,
-            1, 155, 254, 84, 222, 165, 54, 121, 13, 50, 36, 130, 95, 161, 213, 170, 28, 241, 71,
-            53, 68, 218, 0, 252, 16, 136, 179, 158, 248, 2, 154, 12, 125, 126, 255, 18, 146, 104,
-            77, 152, 208, 214, 72, 55, 195, 62, 7, 217, 56, 181,
+            225, 96, 49, 232, 20, 47, 115, 245, 234, 23, 111, 178, 231, 100, 118, 197, 42, 98, 137, 196, 209, 86, 114, 184, 167,
+            129, 164, 239, 205, 211, 82, 173, 189, 153, 198, 67, 4, 3, 90, 52, 128, 134, 176, 145, 85, 9, 250, 30, 63, 247, 240,
+            17, 215, 200, 78, 188, 132, 117, 10, 45, 162, 79, 123, 73, 109, 91, 57, 210, 22, 175, 107, 203, 103, 32, 83, 70, 242,
+            75, 220, 140, 148, 15, 138, 44, 228, 43, 105, 199, 99, 116, 97, 69, 80, 172, 230, 25, 224, 33, 31, 135, 235, 74, 193,
+            238, 233, 88, 216, 204, 24, 163, 141, 6, 201, 26, 38, 21, 186, 237, 101, 206, 212, 76, 144, 219, 149, 169, 202, 110,
+            41, 166, 139, 194, 168, 34, 142, 147, 187, 108, 223, 94, 5, 243, 226, 60, 40, 102, 51, 87, 61, 236, 46, 159, 64, 227,
+            113, 190, 81, 127, 65, 8, 183, 253, 150, 249, 229, 37, 156, 182, 180, 246, 124, 244, 174, 122, 89, 120, 160, 35, 143,
+            11, 14, 151, 133, 27, 177, 251, 221, 207, 58, 29, 131, 119, 171, 157, 93, 185, 48, 112, 192, 191, 66, 106, 39, 59,
+            92, 19, 1, 155, 254, 84, 222, 165, 54, 121, 13, 50, 36, 130, 95, 161, 213, 170, 28, 241, 71, 53, 68, 218, 0, 252, 16,
+            136, 179, 158, 248, 2, 154, 12, 125, 126, 255, 18, 146, 104, 77, 152, 208, 214, 72, 55, 195, 62, 7, 217, 56, 181,
         ];
         assert_eq!(namer.val.to_vec(), val_vec);
     }
@@ -499,19 +500,17 @@ mod test {
         let team = TeamNamer::new_unchecked("x");
         let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
         let base_name_vec: Vec<u8> = vec![
-            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
-            57, 34, 22, 37, 35, 6, 12, 25, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30, 57, 34, 22, 37, 35, 6, 12, 25,
+            50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
         let full_base_name_vec: Vec<u8> = vec![
-            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30,
-            57, 34, 22, 37, 35, 6, 12, 25, 50, 49, 59, 23, 49, 27, 51, 58, 39, 28, 60, 20, 31, 36,
-            41, 11, 7, 29, 24, 24, 61, 62, 57, 4, 28, 48, 55, 50, 38, 29, 10, 40, 42, 15, 23, 47,
-            42, 62, 47, 1, 60, 5, 43, 21, 1, 46, 45, 9, 9, 14, 38, 13, 56, 0, 31, 59, 39, 6, 35,
-            41, 55, 5, 34, 3, 7, 33, 33, 45, 16, 16, 32, 43, 18, 44, 22, 14, 17, 10, 11, 53, 18,
-            44, 19, 52, 2, 32, 12, 8, 2, 54, 26, 48, 8, 3, 63, 54, 19, 25,
+            53, 0, 40, 4, 58, 61, 37, 46, 56, 51, 21, 20, 27, 17, 15, 26, 13, 30, 52, 63, 36, 30, 57, 34, 22, 37, 35, 6, 12, 25,
+            50, 49, 59, 23, 49, 27, 51, 58, 39, 28, 60, 20, 31, 36, 41, 11, 7, 29, 24, 24, 61, 62, 57, 4, 28, 48, 55, 50, 38, 29,
+            10, 40, 42, 15, 23, 47, 42, 62, 47, 1, 60, 5, 43, 21, 1, 46, 45, 9, 9, 14, 38, 13, 56, 0, 31, 59, 39, 6, 35, 41, 55,
+            5, 34, 3, 7, 33, 33, 45, 16, 16, 32, 43, 18, 44, 22, 14, 17, 10, 11, 53, 18, 44, 19, 52, 2, 32, 12, 8, 2, 54, 26, 48,
+            8, 3, 63, 54, 19, 25,
         ];
         assert_eq!(namer.name_base.to_vec(), base_name_vec);
         namer.update_skill();
@@ -527,8 +526,8 @@ mod test {
 
         namer.update_skill();
         let skill_prop_vec: Vec<u8> = vec![
-            13, 0, 0, 0, 0, 0, 0, 0, 6, 8, 0, 1, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            13, 0, 0, 0, 0, 0, 0, 0, 6, 8, 0, 1, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0,
         ];
         assert_eq!(namer.skl_freq.to_vec(), skill_prop_vec);
     }
@@ -540,8 +539,8 @@ mod test {
 
         namer.update_skill();
         let skill_id_vec: Vec<u8> = vec![
-            9, 13, 12, 38, 4, 27, 26, 15, 16, 32, 24, 5, 7, 21, 18, 10, 37, 2, 6, 20, 39, 1, 14, 3,
-            11, 29, 22, 33, 19, 0, 30, 31, 17, 28, 34, 35, 23, 8, 25, 36,
+            9, 13, 12, 38, 4, 27, 26, 15, 16, 32, 24, 5, 7, 21, 18, 10, 37, 2, 6, 20, 39, 1, 14, 3, 11, 29, 22, 33, 19, 0, 30,
+            31, 17, 28, 34, 35, 23, 8, 25, 36,
         ];
         assert_eq!(namer.skl_id.to_vec(), skill_id_vec);
     }

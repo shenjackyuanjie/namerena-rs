@@ -1,11 +1,11 @@
 # cargo fmt config
 
 # 最大行长
-max_width = 100
+max_width = 130
 # 链式调用的最大长度
-chain_width = 80
+chain_width = 90
 # 数组的最大长度
-array_width = 70
+array_width = 80
 # 函数参数的最大长度
 attr_fn_like_width = 60
 # 函数调用参数的最大长度

@@ -83,10 +83,7 @@ impl WebDriverRunner {
 
         done_target.wait_until().has_attribute("done", "true").await?;
 
-        let win_data = self
-            .driver
-            .execute("return arguments[0].win_data", vec![done_target.to_json()?])
-            .await?;
+        let win_data = self.driver.execute("return arguments[0].win_data", vec![done_target.to_json()?]).await?;
         let win_data: WinData = serde_json::from_value(win_data.json().to_owned())?;
         Ok(win_data)
     }
