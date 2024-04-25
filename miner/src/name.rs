@@ -255,9 +255,10 @@ impl Namer {
     pub fn update_skill(&mut self) {
         let skill_id = self.skl_id.as_mut();
         for i in 0..40 {
-            unsafe {
-                *skill_id.get_unchecked_mut(i) = i as u8;
-            }
+            skill_id[i] = i as u8;
+            // unsafe {
+            //     *skill_id.get_unchecked_mut(i) = i as u8;
+            // }
         }
 
         #[cfg(feature = "simd")]
@@ -288,16 +289,16 @@ impl Namer {
 
             let mut mod_count = 0;
             for i in 0..256 {
-                // if simd_val[i] != 0 {
-                //     self.name_base[mod_count as usize] = simd_val_b[i];
-                //     mod_count += 1;
-                // }
-                unsafe {
-                    if simd_val.get_unchecked(i) != &0 {
-                        *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
-                        mod_count += 1;
-                    }
+                if simd_val[i] != 0 {
+                    self.name_base[mod_count as usize] = simd_val_b[i];
+                    mod_count += 1;
                 }
+                // unsafe {
+                //     if simd_val.get_unchecked(i) != &0 {
+                //         *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
+                //         mod_count += 1;
+                //     }
+                // }
             }
             // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
             let mut a: u8 = 0;
