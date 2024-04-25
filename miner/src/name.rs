@@ -255,10 +255,9 @@ impl Namer {
     pub fn update_skill(&mut self) {
         let skill_id = self.skl_id.as_mut();
         for i in 0..40 {
-            skill_id[i] = i as u8;
-            // unsafe {
-            //     *skill_id.get_unchecked_mut(i) = i as u8;
-            // }
+            unsafe {
+                *skill_id.get_unchecked_mut(i) = i as u8;
+            }
         }
 
         #[cfg(feature = "simd")]
@@ -273,8 +272,6 @@ impl Namer {
             let simd_32 = u8x64::splat(32);
 
             for i in (0..256).step_by(64) {
-                // let mut x = u8x64::from_slice(&simd_val[i..]);
-                // let mut y = u8x64::from_slice(&simd_val_b[i..]);
                 unsafe {
                     let mut x = u8x64::from_slice(simd_val.get_unchecked(i..));
                     let mut y = u8x64::from_slice(simd_val_b.get_unchecked(i..));
@@ -283,22 +280,16 @@ impl Namer {
                     x.copy_to_slice(simd_val.get_unchecked_mut(i..));
                     y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
                 }
-                // x.copy_to_slice(&mut simd_val[i..]);
-                // y.copy_to_slice(&mut simd_val_b[i..]);
             }
 
             let mut mod_count = 0;
             for i in 0..256 {
-                if simd_val[i] != 0 {
-                    self.name_base[mod_count as usize] = simd_val_b[i];
-                    mod_count += 1;
+                unsafe {
+                    if simd_val.get_unchecked(i) != &0 {
+                        *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
+                        mod_count += 1;
+                    }
                 }
-                // unsafe {
-                //     if simd_val.get_unchecked(i) != &0 {
-                //         *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
-                //         mod_count += 1;
-                //     }
-                // }
             }
             // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
             let mut a: u8 = 0;
@@ -308,29 +299,21 @@ impl Namer {
                 for i in 0..40 {
                     let rnd = unsafe {
                         a += 1;
-                        // b = b.wrapping_add(self.val[a as usize]);
                         b = b.wrapping_add(*self.val.get_unchecked(a as usize));
-                        // self.val.swap(a as usize, b as usize);
                         self.val.swap_unchecked(a as usize, b as usize);
-                        // let u: u8 = self.val[((self.val[a as usize] as u16 + self.val[b as usize] as u16) & 255) as usize];
                         let u: u8 = *self.val.get_unchecked(
                             ((*self.val.get_unchecked(a as usize) as u16 + *self.val.get_unchecked(b as usize) as u16) & 255)
                                 as usize,
                         );
                         a += 1;
-                        // b = b.wrapping_add(self.val[a as usize]);
                         b = b.wrapping_add(*self.val.get_unchecked(a as usize));
-                        // self.val.swap(a as usize, b as usize);
                         self.val.swap_unchecked(a as usize, b as usize);
-                        // let t = self.val[((self.val[a as usize] as u16 + self.val[b as usize] as u16) & 255) as usize];
                         let t: u8 = *self.val.get_unchecked(
                             ((*self.val.get_unchecked(a as usize) as u16 + *self.val.get_unchecked(b as usize) as u16) & 255)
                                 as usize,
                         );
                         (((u as u32) << 8 | t as u32) % 40) as u8
                     };
-                    // s = (s as u16 + rnd as u16 + skill_id[i] as u16) as u8 % 40;
-                    // skill_id.swap(i as usize, s as usize);
                     unsafe {
                         s = (s as u16 + rnd as u16 + *skill_id.get_unchecked(i as usize) as u16) as u8 % 40;
                         skill_id.swap_unchecked(i as usize, s as usize);
@@ -340,10 +323,12 @@ impl Namer {
             let mut last = -1;
             let mut j = 0;
             for i in (64..128).step_by(4) {
-                let p = min(
-                    min(self.name_base[i + 0], self.name_base[i + 1]),
-                    min(self.name_base[i + 2], self.name_base[i + 3]),
-                );
+                let p = unsafe {
+                    min(
+                        min(*self.name_base.get_unchecked(i + 0), *self.name_base.get_unchecked(i + 1)),
+                        min(*self.name_base.get_unchecked(i + 2), *self.name_base.get_unchecked(i + 3)),
+                    )
+                };
                 if p > 10 && skill_id[j] < 35 {
                     self.skl_freq[j] = p - 10;
                     if skill_id[j] < 25 {
