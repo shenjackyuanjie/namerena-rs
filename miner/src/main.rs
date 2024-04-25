@@ -36,6 +36,11 @@ pub struct Command {
     /// 预期状态输出时间间隔 (秒)
     #[arg(long, short = 'r', default_value_t = 10)]
     pub report_interval: u64,
+    /// 是否启动 benchmark 模式
+    ///
+    ///  Windows 下会强制单线程, 且设置线程亲和性为核心 0
+    #[arg(long = "bench", default_value_t = false)]
+    pub bench: bool,
 }
 
 impl Command {
@@ -60,7 +65,6 @@ fn main() {
     let left = cli_arg.start % cli_arg.thread_count as u64;
     cli_arg.end = cli_arg.end.wrapping_add(left);
 
-    let mut n = 0;
     let mut threads = Vec::with_capacity(cli_arg.thread_count as usize);
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     // namerena-<team>-<time>.txt
@@ -73,22 +77,46 @@ fn main() {
         warn!("创建文件夹失败: {}", e);
     }
 
+    if cli_arg.bench {
+        cli_arg.thread_count = 1;
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
+
+            let thread_id = GetCurrentThread();
+            let core_mask = 0x02;
+            match SetThreadAffinityMask(thread_id, core_mask) {
+                0 => warn!("设置线程亲和性失败 {}", std::io::Error::last_os_error()),
+                x => info!("设置线程亲和性成功 {}", x),
+            }
+        }
+    }
+
     info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
     info!("线程数: {}", cli_arg.thread_count);
     info!("八围预期: {}", cli_arg.prop_expect);
     info!("队伍名: {}", cli_arg.team);
     info!("输出文件名: {:?}", out_path);
+    info!("预期状态输出时间间隔: {} 秒", cli_arg.report_interval);
+    info!("是否启动 benchmark 模式: {}", cli_arg.bench);
 
-    for i in 0..cli_arg.thread_count {
-        n += 1;
+    if cli_arg.bench {
+        info!("开始 benchmark");
         let config = cli_arg.as_cacl_config();
-        let out_path = out_path.clone();
-        let thread_name = format!("thread_{}", i);
-        threads.push(std::thread::spawn(move || {
-            info!("线程 {} 开始计算", thread_name);
-            cacluate::cacl(config, n, &out_path);
-            info!("线程 {} 结束计算", thread_name);
-        }));
+        cacluate::cacl(config, 1, &out_path);
+    } else {
+        let mut n = 0;
+        for i in 0..cli_arg.thread_count {
+            n += 1;
+            let config = cli_arg.as_cacl_config();
+            let out_path = out_path.clone();
+            let thread_name = format!("thread_{}", i);
+            threads.push(std::thread::spawn(move || {
+                info!("线程 {} 开始计算", thread_name);
+                cacluate::cacl(config, n, &out_path);
+                info!("线程 {} 结束计算", thread_name);
+            }));
+        }
     }
     info!("开始计算");
 
