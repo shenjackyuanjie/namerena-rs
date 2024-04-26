@@ -4,11 +4,13 @@ members = [
     "rust-namer",
     "miner", "wgpu-mine", "namerena-runner"]
 
-# [miner.profile.release]
-# opt-level = 3
-# codegen-units = 1
-# # panic = "abort"
-# debug = true
-# strip = false
-# lto = true
-# overflow-checks = false
+
+[profile.miner]
+inherits = "release"
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+debug = true
+strip = false
+lto = true
+overflow-checks = false
