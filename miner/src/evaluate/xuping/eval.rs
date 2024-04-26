@@ -206,10 +206,9 @@ pub fn predict_20(name: &Namer) -> f64 {
     let mut sum_qd = xuping20::BASE_QD;
 
     for i in 0..1034 {
-        sum += xp[i] * xuping20::MODEL[i];
-        // unsafe {
-        //     sum += xp.get_unchecked(i) * xuping20::MODEL.get_unchecked(i);
-        // }
+        unsafe {
+            sum += xp.get_unchecked(i) * xuping20::MODEL.get_unchecked(i);
+        }
     }
     // for i in 0..1034 {
     //     sum_qd += xp[i] * xuping20::MODEL_QD[i];

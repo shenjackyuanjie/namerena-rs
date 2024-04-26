@@ -237,7 +237,50 @@ impl Namer {
                 + *prop_name.get_unchecked(3) as u32
                 + *prop_name.get_unchecked(4) as u32
                 + *prop_name.get_unchecked(5) as u32
-                + *prop_name.get_unchecked(6) as u32
+                + *prop_name.get_unchecked(6) as u32;
+            
+            *name_prop.get_unchecked_mut(1) = median(
+                *prop_name.get_unchecked(10),
+                *prop_name.get_unchecked(11),
+                *prop_name.get_unchecked(12),
+            ) as u32
+                + 36;
+            *name_prop.get_unchecked_mut(2) = median(
+                *prop_name.get_unchecked(13),
+                *prop_name.get_unchecked(14),
+                *prop_name.get_unchecked(15),
+            ) as u32
+                + 36;
+            *name_prop.get_unchecked_mut(3) = median(
+                *prop_name.get_unchecked(16),
+                *prop_name.get_unchecked(17),
+                *prop_name.get_unchecked(18),
+            ) as u32
+                + 36;
+            *name_prop.get_unchecked_mut(4) = median(
+                *prop_name.get_unchecked(19),
+                *prop_name.get_unchecked(20),
+                *prop_name.get_unchecked(21),
+            ) as u32
+                + 36;
+            *name_prop.get_unchecked_mut(5) = median(
+                *prop_name.get_unchecked(22),
+                *prop_name.get_unchecked(23),
+                *prop_name.get_unchecked(24),
+            ) as u32
+                + 36;
+            *name_prop.get_unchecked_mut(6) = median(
+                *prop_name.get_unchecked(25),
+                *prop_name.get_unchecked(26),
+                *prop_name.get_unchecked(27),
+            ) as u32
+                + 36;
+            *name_prop.get_unchecked_mut(7) = median(
+                *prop_name.get_unchecked(28),
+                *prop_name.get_unchecked(29),
+                *prop_name.get_unchecked(30),
+            ) as u32
+                + 36;
         }
 
         Self {
