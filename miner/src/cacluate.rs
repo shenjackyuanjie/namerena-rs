@@ -57,7 +57,7 @@ pub struct CacluateConfig {
 #[inline(always)]
 pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     // 初始猜测的时间间隔
-    let mut report_interval = 10000; // 第一次猜测测 1w 次, 获取初始数据
+    let mut report_interval = 100000; // 第一次猜测测 10w 次, 获取初始数据
     let mut run_speed = 0.0;
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
@@ -115,12 +115,14 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             // 虚评
             namer.update_skill();
 
-            // let xu = crate::evaluate::xuping::XuPing1_3_1::evaluate(&namer);
             let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&namer);
 
             if xu < config.qp_expect as f64 {
                 continue;
             }
+
+            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&namer);
+
             // debug!("Id:{:>15}|{:>5}|{}|{}", i, full_name, xu, show_name(&namer));
 
             // let skill_sum: u32 = {
@@ -142,12 +144,22 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
 
             get_count += 1;
             info!("Id:{:>15}|{}|{}|{}", i, full_name, xu, namer.get_info());
+
+            let write_in = format!(
+                // <full_name>,<xu>,<xuqd>,<namer.get_info()>
+                "{},{},{},{}\n",
+                full_name,
+                xu,
+                xu_qd,
+                namer.get_info()
+            );
+
             // 写入 (写到最后一行)
             match std::fs::OpenOptions::new()
                 .append(true)
                 .create(true)
                 .open(outfile)
-                .and_then(|mut file| file.write(format!("{}\n", full_name).as_bytes()))
+                .and_then(|mut file| file.write(write_in.as_bytes()))
             {
                 Ok(_) => {}
                 Err(e) => {
