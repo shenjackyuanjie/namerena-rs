@@ -81,6 +81,23 @@ pub fn set_thread2core(core: usize) {
     }
 }
 
+pub fn set_process_cores(cores: usize) {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{SetProcessAffinityMask, GetCurrentProcess};
+        let process = GetCurrentProcess();
+        let core_mask = cores;
+        match SetProcessAffinityMask(process, core_mask) {
+            0 => warn!("设置进程亲和性失败 {}", std::io::Error::last_os_error()),
+            x => info!("设置进程亲和性成功 {}", x),
+        }
+    }
+    #[cfg(linux)]
+    {
+        warn!("Linux 下不支持设置进程亲和性 (未实现) {}", cores)
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
     let mut cli_arg = Command::parse();
@@ -113,14 +130,17 @@ fn main() {
         info!("开始 benchmark");
         let mut config = cli_arg.as_cacl_config();
         config.core_affinity = Some(0001 << cli_arg.bench_core);
+        set_process_cores(cli_arg.bench_core);
         cacluate::cacl(config, 1, &out_path);
     } else {
         let mut n = 0;
+        let mut cores = 0;
         for i in 0..cli_arg.thread_count {
             n += 1;
             let mut config = cli_arg.as_cacl_config();
             // 核心亲和性: n, n+1
             config.core_affinity = Some((0001 << i) + (0001 << (i + 1)));
+            cores |= (0001 << i) + (0001 << (i + 1));
             let out_path = out_path.clone();
             let thread_name = format!("thread_{}", n);
             threads.push(std::thread::spawn(move || {
@@ -129,6 +149,7 @@ fn main() {
                 info!("线程 {} 结束计算", thread_name);
             }));
         }
+        set_process_cores(cores);
     }
     info!("开始计算");
 
