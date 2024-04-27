@@ -67,9 +67,9 @@ fn main() {
 
     let mut threads = Vec::with_capacity(cli_arg.thread_count as usize);
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-    // namerena-<team>-<time>.txt
+    // namerena-<team>-<time>.csv
     // <time>: %Y-%m-%d-%H-%M-%S
-    let output_filename = format!("namerena-{}-{}.txt", cli_arg.team, now);
+    let output_filename = format!("namerena-{}-{}.csv", cli_arg.team, now);
     let out_path = PathBuf::from(format!("./namerena/{}", output_filename));
     info!("输出文件: {:?}", out_path);
     // 先创建文件夹
