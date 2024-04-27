@@ -101,11 +101,6 @@ fn main() {
         warn!("创建文件夹失败: {}", e);
     }
 
-    if cli_arg.bench {
-        cli_arg.thread_count = 1;
-        set_thread2core(cli_arg.bench_core);
-    }
-
     info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
     info!("线程数: {}", cli_arg.thread_count);
     info!("八围预期: {}", cli_arg.prop_expect);
@@ -116,7 +111,8 @@ fn main() {
 
     if cli_arg.bench {
         info!("开始 benchmark");
-        let config = cli_arg.as_cacl_config();
+        let mut config = cli_arg.as_cacl_config();
+        config.core_affinity = Some(0001 << cli_arg.bench_core);
         cacluate::cacl(config, 1, &out_path);
     } else {
         let mut n = 0;
