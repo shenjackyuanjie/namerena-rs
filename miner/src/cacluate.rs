@@ -49,6 +49,10 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
     let mut get_count: u32 = 0;
+    // 设置线程亲和性
+    if let Some(core_affinity) = config.core_affinity {
+        crate::set_thread2core(core_affinity)
+    }
 
     // 提前准备好 team_namer
     let team_namer = TeamNamer::new(&config.team).unwrap();

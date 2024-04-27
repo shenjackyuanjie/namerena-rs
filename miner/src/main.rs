@@ -63,6 +63,24 @@ impl Command {
     }
 }
 
+pub fn set_thread2core(core: usize) {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
+
+        let thread_id = GetCurrentThread();
+        let core_mask = core;
+        match SetThreadAffinityMask(thread_id, core_mask) {
+            0 => warn!("设置线程亲和性失败 {}", std::io::Error::last_os_error()),
+            x => info!("设置线程亲和性成功 {}", x),
+        }
+    }
+    #[cfg(linux)]
+    {
+        warn!("Linux 下不支持设置线程亲和性 (未实现) {}", core)
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
     let mut cli_arg = Command::parse();
@@ -85,17 +103,7 @@ fn main() {
 
     if cli_arg.bench {
         cli_arg.thread_count = 1;
-        #[cfg(windows)]
-        unsafe {
-            use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
-
-            let thread_id = GetCurrentThread();
-            let core_mask = 0x02;
-            match SetThreadAffinityMask(thread_id, core_mask) {
-                0 => warn!("设置线程亲和性失败 {}", std::io::Error::last_os_error()),
-                x => info!("设置线程亲和性成功 {}", x),
-            }
-        }
+        set_thread2core(cli_arg.bench_core);
     }
 
     info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
@@ -114,7 +122,9 @@ fn main() {
         let mut n = 0;
         for i in 0..cli_arg.thread_count {
             n += 1;
-            let config = cli_arg.as_cacl_config();
+            let mut config = cli_arg.as_cacl_config();
+            // 核心亲和性: n, n+1
+            config.core_affinity = Some((0001 << i) + (0001 << (i + 1)));
             let out_path = out_path.clone();
             let thread_name = format!("thread_{}", i);
             threads.push(std::thread::spawn(move || {
