@@ -122,7 +122,7 @@ fn main() {
             // 核心亲和性: n, n+1
             config.core_affinity = Some((0001 << i) + (0001 << (i + 1)));
             let out_path = out_path.clone();
-            let thread_name = format!("thread_{}", i);
+            let thread_name = format!("thread_{}", n);
             threads.push(std::thread::spawn(move || {
                 info!("线程 {} 开始计算", thread_name);
                 cacluate::cacl(config, n, &out_path);
