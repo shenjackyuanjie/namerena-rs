@@ -36,11 +36,12 @@ pub struct Command {
     /// 预期状态输出时间间隔 (秒)
     #[arg(long, short = 'r', default_value_t = 10)]
     pub report_interval: u64,
-    /// 是否启动 benchmark 模式
-    ///
     ///  Windows 下会强制单线程, 且设置线程亲和性为核心 0
     #[arg(long = "bench", default_value_t = false)]
     pub bench: bool,
+    /// benchmark 模式下的核心亲和性核心号 (从 0 开始)
+    #[arg(long = "bench-core", default_value_t = 0)]
+    pub bench_core: usize,
 }
 
 impl Command {
@@ -53,6 +54,11 @@ impl Command {
             qp_expect: self.qp_expect,
             team: self.team.clone(),
             report_interval: self.report_interval,
+            core_affinity: if self.bench {
+                Some(0001 << self.bench_core)
+            } else {
+                None
+            },
         }
     }
 }

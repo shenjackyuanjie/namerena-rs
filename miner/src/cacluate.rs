@@ -9,21 +9,6 @@ use base16384::Base16384Utf8;
 use colored::Colorize;
 use tracing::{debug, info, warn};
 
-pub fn show_name(namer: &Namer) -> String {
-    format!(
-        "HP|{} 攻|{} 防|{} 速|{} 敏|{} 魔|{} 抗|{} 智|{} 八围:{}",
-        namer.name_prop[0],
-        namer.name_prop[1],
-        namer.name_prop[2],
-        namer.name_prop[3],
-        namer.name_prop[4],
-        namer.name_prop[5],
-        namer.name_prop[6],
-        namer.name_prop[7],
-        namer.get_property()
-    )
-}
-
 /// 根据 u64 生成对应的 name
 /// 转换成 base 16384
 /// 禁用:
@@ -52,6 +37,8 @@ pub struct CacluateConfig {
     pub team: String,
     /// 预期状态输出时间间隔 (秒)
     pub report_interval: u64,
+    /// 可能的设置指定核心亲和性
+    pub core_affinity: Option<usize>,
 }
 
 #[inline(always)]
@@ -62,7 +49,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     let mut start_time = std::time::Instant::now();
     let mut k: u64 = 0;
     let mut get_count: u32 = 0;
-    // let xuping = crate::evaluate::xuping::XuPing1_3_1::new(5000.0);
+
     // 提前准备好 team_namer
     let team_namer = TeamNamer::new(&config.team).unwrap();
 
