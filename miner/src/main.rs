@@ -55,7 +55,7 @@ impl Command {
             team: self.team.clone(),
             report_interval: self.report_interval,
             core_affinity: if self.bench {
-                Some(0001 << self.bench_core)
+                Some(1 << self.bench_core)
             } else {
                 None
             },
@@ -75,7 +75,7 @@ pub fn set_thread2core(core: usize) {
             x => info!("设置线程亲和性成功 {}", x),
         }
     }
-    #[cfg(linux)]
+    #[cfg(unix)]
     {
         warn!("Linux 下不支持设置线程亲和性 (未实现) {}", core)
     }
@@ -92,7 +92,7 @@ pub fn set_process_cores(cores: usize) {
             x => info!("设置进程亲和性成功 {}", x),
         }
     }
-    #[cfg(linux)]
+    #[cfg(unix)]
     {
         warn!("Linux 下不支持设置进程亲和性 (未实现) {}", cores)
     }
@@ -114,7 +114,7 @@ fn main() {
     let out_path = PathBuf::from(format!("./namerena/{}", output_filename));
     info!("输出文件: {:?}", out_path);
     // 先创建文件夹
-    if let Err(e) = std::fs::create_dir_all(&out_path.parent().unwrap()) {
+    if let Err(e) = std::fs::create_dir_all(out_path.parent().unwrap()) {
         warn!("创建文件夹失败: {}", e);
     }
 
@@ -129,7 +129,7 @@ fn main() {
     if cli_arg.bench {
         info!("开始 benchmark");
         let mut config = cli_arg.as_cacl_config();
-        config.core_affinity = Some(0001 << cli_arg.bench_core);
+        config.core_affinity = Some(1 << cli_arg.bench_core);
         set_process_cores(cli_arg.bench_core);
         cacluate::cacl(config, 1, &out_path);
     } else {
@@ -139,8 +139,8 @@ fn main() {
             n += 1;
             let mut config = cli_arg.as_cacl_config();
             // 核心亲和性: n, n+1
-            config.core_affinity = Some((0001 << i) + (0001 << (i + 1)));
-            cores |= (0001 << i) + (0001 << (i + 1));
+            config.core_affinity = Some((1 << i) + (1 << (i + 1)));
+            cores |= (1 << i) + (1 << (i + 1));
             let out_path = out_path.clone();
             let thread_name = format!("thread_{}", n);
             threads.push(std::thread::spawn(move || {

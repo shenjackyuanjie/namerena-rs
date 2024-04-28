@@ -7,7 +7,7 @@ use std::{io::Write, path::PathBuf};
 
 use base16384::Base16384Utf8;
 use colored::Colorize;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// 根据 u64 生成对应的 name
 /// 转换成 base 16384
@@ -58,7 +58,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     let team_namer = TeamNamer::new(&config.team).unwrap();
 
     for i in (config.start + id..config.end).step_by(config.thread_count as usize) {
-        let name = gen_name(i as u64);
+        let name = gen_name(i);
         let mut namer = Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
         let prop = namer.get_property();
 

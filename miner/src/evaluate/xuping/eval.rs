@@ -5,8 +5,6 @@ use std::simd::f64x64;
 #[cfg(feature = "simd")]
 use std::simd::num::SimdFloat;
 
-use tracing::{debug, info};
-
 use crate::evaluate::xuping::{model13 as xuping13, model20 as xuping20};
 use crate::name::Namer;
 
@@ -281,12 +279,6 @@ mod test {
         assert_eq!(predict_13(&namer), 5799.586821819176);
     }
 
-    fn xp_20(name: &str) -> f64 {
-        let mut namer = Namer::new(&name.to_string()).unwrap();
-        namer.update_skill();
-        predict_20(&namer)
-    }
-
     #[test]
     fn xuping_20_1015_test() {
         // let mut namer = Namer::new(&"pi31uXx?shadow@魔".to_string()).unwrap();
@@ -295,7 +287,6 @@ mod test {
         namer.update_skill();
 
         println!("{:?}", namer.get_info());
-        // println!("{:?}", xp_20("一一七啺埀㴁@shenjack"));
         assert_eq!(predict_20(&namer), 3603.4389333619297);
     }
 }
