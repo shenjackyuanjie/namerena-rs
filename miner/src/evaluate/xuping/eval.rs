@@ -19,8 +19,11 @@ pub fn predict_13(name: &Namer) -> f64 {
 
     let mut combined_skills: [f64; 43] = [0.0; 43];
     // 长度取 64, 方便simd填充
-    for i in 0..8 {
-        combined_skills[i] = name.name_prop[i] as f64;
+    // for i in 0..8 {
+    //     combined_skills[i] = name.name_prop[i] as f64;
+    // }
+    for (i, prop) in combined_skills.iter_mut().enumerate().take(8) {
+        *prop = name.name_prop[i] as f64;
     }
     for i in 0..16 {
         if name.skl_freq[i] != 0 {
@@ -122,7 +125,7 @@ pub fn predict_13(name: &Namer) -> f64 {
 pub fn poly(input: &[f64; 44]) -> [f64; 1034] {
     let mut result = [0.0; 1034];
     for index in 0..1034 {
-        let mut l: i32 = 44;
+        let l: i32 = 44;
         let mut i: i32 = 0;
         let mut p: i32 = 0;
         let mut q: i32 = 0;
@@ -171,8 +174,11 @@ if (x[42] > 0) x[42] += 20
  */
 pub fn predict_20(name: &Namer) -> f64 {
     let mut st: [f64; 44] = [0.0; 44];
-    for i in 0..8 {
-        st[i] = name.name_prop[i] as f64;
+    // for i in 0..8 {
+    //     st[i] = name.name_prop[i] as f64;
+    // }
+    for (i, prop) in st.iter_mut().enumerate().take(8) {
+        *prop = name.name_prop[i] as f64;
     }
     for i in 0..16 {
         if name.skl_freq[i] != 0 {
@@ -181,7 +187,7 @@ pub fn predict_20(name: &Namer) -> f64 {
     }
 
     if st[32] > 0.0 {
-        let mut shadow_name = Namer::new_unchecked(&format!("{}?shadow@{}", name.name, name.team));
+        let shadow_name = Namer::new_unchecked(&format!("{}?shadow@{}", name.name, name.team));
         let mut shadow_sum = shadow_name.name_prop[0] as f64 / 3.0;
 
         for j in 1..8 {
@@ -190,7 +196,7 @@ pub fn predict_20(name: &Namer) -> f64 {
         shadow_sum -= (shadow_name.name_prop[7] as f64 - 36.0) * 3.0;
         let mut shadowi = shadow_sum - 210.0;
 
-        shadowi = shadowi * st[32] as f64 / 100.0;
+        shadowi = shadowi * st[32] / 100.0;
         st[43] = shadowi;
     } else {
         st[43] = 0.0;
@@ -203,24 +209,21 @@ pub fn predict_20(name: &Namer) -> f64 {
     let xp = poly(&st);
 
     let mut sum = xuping20::BASE;
-    let mut sum_qd = xuping20::BASE_QD;
+    let mut _sum_qd = xuping20::BASE_QD;
 
-    for i in 0..1034 {
-        unsafe {
-            sum += xp.get_unchecked(i) * xuping20::MODEL.get_unchecked(i);
+    unsafe {
+        for (i, xp) in xp.iter().enumerate() {
+            sum += xp * xuping20::MODEL.get_unchecked(i);
         }
     }
-    // for i in 0..1034 {
-    //     sum_qd += xp[i] * xuping20::MODEL_QD[i];
-    // }
 
     sum
 }
 
 pub fn predict_20_qd(name: &Namer) -> f64 {
     let mut st: [f64; 44] = [0.0; 44];
-    for i in 0..8 {
-        st[i] = name.name_prop[i] as f64;
+    for (i, prop) in st.iter_mut().enumerate().take(8) {
+        *prop = name.name_prop[i] as f64;
     }
     for i in 0..16 {
         if name.skl_freq[i] != 0 {
@@ -229,7 +232,7 @@ pub fn predict_20_qd(name: &Namer) -> f64 {
     }
 
     if st[32] > 0.0 {
-        let mut shadow_name = Namer::new_unchecked(&format!("{}?shadow@{}", name.name, name.team));
+        let shadow_name = Namer::new_unchecked(&format!("{}?shadow@{}", name.name, name.team));
         let mut shadow_sum = shadow_name.name_prop[0] as f64 / 3.0;
 
         for j in 1..8 {
@@ -238,7 +241,7 @@ pub fn predict_20_qd(name: &Namer) -> f64 {
         shadow_sum -= (shadow_name.name_prop[7] as f64 - 36.0) * 3.0;
         let mut shadowi = shadow_sum - 210.0;
 
-        shadowi = shadowi * st[32] as f64 / 100.0;
+        shadowi = shadowi * st[32] / 100.0;
         st[43] = shadowi;
     } else {
         st[43] = 0.0;
@@ -252,8 +255,8 @@ pub fn predict_20_qd(name: &Namer) -> f64 {
 
     let mut sum_qd = xuping20::BASE_QD;
 
-    for i in 0..1034 {
-        sum_qd += xp[i] * xuping20::MODEL_QD[i];
+    for (i, xp) in xp.iter().enumerate() {
+        sum_qd += xp * xuping20::MODEL_QD[i];
     }
 
     sum_qd

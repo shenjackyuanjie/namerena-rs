@@ -50,7 +50,7 @@ impl TeamNamer {
         }
     }
     #[inline(always)]
-    pub fn clone_vals(&self) -> [u8; 256] { self.val.clone() }
+    pub fn clone_vals(&self) -> [u8; 256] { self.val }
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +64,7 @@ pub struct Namer {
     pub skl_freq: [u8; 40],
 }
 
+#[allow(dead_code)]
 impl Namer {
     /// 最完整的、最简单的 new
     /// 可以直接丢一个 name 进来
@@ -150,7 +151,7 @@ impl Namer {
         // simd 优化
         #[cfg(feature = "simd")]
         {
-            let mut simd_val = val.clone();
+            let mut simd_val = val;
             let mut simd_val_b = [0_u8; 256];
             let simd_181 = u8x64::splat(181);
             let simd_160 = u8x64::splat(160);
@@ -236,7 +237,7 @@ impl Namer {
                 + *prop_name.get_unchecked(4) as u32
                 + *prop_name.get_unchecked(5) as u32
                 + *prop_name.get_unchecked(6) as u32;
-            
+
             *name_prop.get_unchecked_mut(1) = median(
                 *prop_name.get_unchecked(10),
                 *prop_name.get_unchecked(11),
@@ -303,8 +304,8 @@ impl Namer {
 
         #[cfg(feature = "simd")]
         {
-            let mut simd_val = self.val.clone();
-            let mut simd_val_b = self.val.clone();
+            let mut simd_val = self.val;
+            let mut simd_val_b = self.val;
             let simd_181 = u8x64::splat(181);
             let simd_199 = u8x64::splat(199);
             let simd_128 = u8x64::splat(128);
@@ -316,8 +317,8 @@ impl Namer {
                 unsafe {
                     let mut x = u8x64::from_slice(simd_val.get_unchecked(i..));
                     let mut y = u8x64::from_slice(simd_val_b.get_unchecked(i..));
-                    x = x * simd_181 + simd_199 & simd_128;
-                    y = y * simd_53 & simd_63 ^ simd_32;
+                    x = (x * simd_181 + simd_199) & simd_128;
+                    y = (y * simd_53) & simd_63 ^ simd_32;
                     x.copy_to_slice(simd_val.get_unchecked_mut(i..));
                     y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
                 }
@@ -362,11 +363,10 @@ impl Namer {
                 }
             }
             let mut last = -1;
-            let mut j = 0;
-            for i in (64..128).step_by(4) {
+            for (j, i) in (64..128).step_by(4).enumerate() {
                 let p = unsafe {
                     min(
-                        min(*self.name_base.get_unchecked(i + 0), *self.name_base.get_unchecked(i + 1)),
+                        min(*self.name_base.get_unchecked(i), *self.name_base.get_unchecked(i + 1)),
                         min(*self.name_base.get_unchecked(i + 2), *self.name_base.get_unchecked(i + 3)),
                     )
                 };
@@ -378,7 +378,6 @@ impl Namer {
                 } else {
                     self.skl_freq[j] = 0
                 }
-                j += 1;
             }
             if last != -1 {
                 self.skl_freq[last as usize] <<= 1;
@@ -401,17 +400,15 @@ impl Namer {
     #[inline(always)]
     pub fn get_property(&self) -> f32 {
         let sum1 = self.name_prop[1..=7].iter().sum::<u32>();
-        let sum2 = self.name_prop[0] as u32;
+        let sum2 = self.name_prop[0];
         sum1 as f32 + (sum2 as f32 / 3_f32)
     }
 
     pub fn get_净化(&self) -> u8 {
         // self.skl_freq[17]
         for (i, v) in self.skl_freq.iter().enumerate() {
-            if *v != 0 {
-                if self.skl_id[i] == 17 {
-                    return *v;
-                }
+            if *v != 0 && self.skl_id[i] == 17 {
+                return *v;
             }
         }
         0
@@ -420,10 +417,8 @@ impl Namer {
     pub fn get_分身(&self) -> u8 {
         // self.skl_freq[23]
         for (i, v) in self.skl_freq.iter().enumerate() {
-            if *v != 0 {
-                if self.skl_id[i] == 23 {
-                    return *v;
-                }
+            if *v != 0 && self.skl_id[i] == 23 {
+                return *v;
             }
         }
         0
@@ -432,10 +427,8 @@ impl Namer {
     pub fn get_幻术(&self) -> u8 {
         // self.skl_freq[24]
         for (i, v) in self.skl_freq.iter().enumerate() {
-            if *v != 0 {
-                if self.skl_id[i] == 24 {
-                    return *v;
-                }
+            if *v != 0 && self.skl_id[i] == 24 {
+                return *v;
             }
         }
         0

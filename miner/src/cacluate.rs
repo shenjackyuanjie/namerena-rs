@@ -63,7 +63,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
         let prop = namer.get_property();
 
         k += 1;
-        if k >= report_interval as u64 {
+        if k >= report_interval {
             let now = std::time::Instant::now();
             let d_t: std::time::Duration = now.duration_since(start_time);
             let new_run_speed = k as f64 / d_t.as_secs_f64();
@@ -101,26 +101,27 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
         }
 
         if prop > config.prop_expect as f32 {
-            let name = gen_name(i as u64);
+            let name = gen_name(i);
             let full_name = format!("{}@{}", name, config.team);
             // 虚评
             namer.update_skill();
 
             let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&namer);
+            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&namer);
 
-            if xu < config.qp_expect as f64 {
+            if xu < config.qp_expect as f64 && xu_qd < config.qp_expect as f64{
                 continue;
             }
 
-            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&namer);
 
             get_count += 1;
-            info!("Id:{:>15}|{}|{}|{}", i, full_name, xu, namer.get_info());
+            info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, namer.get_info());
 
             let write_in = format!(
-                // <full_name>,<xu>,<xuqd>,<namer.get_info()>
-                "{},{},{},{}\n",
+                // <full_name>,<id>,<xu>,<xuqd>,<namer.get_info()>
+                "{},{:>15},{:.4},{:.4},{}\n",
                 full_name,
+                i,
                 xu,
                 xu_qd,
                 namer.get_info_csv()
