@@ -139,8 +139,8 @@ fn main() {
             n += 1;
             let mut config = cli_arg.as_cacl_config();
             // 核心亲和性: n, n+1
-            config.core_affinity = Some((1 << i) + (1 << (i + 1)));
-            cores |= (1 << i) + (1 << (i + 1));
+            config.core_affinity = Some(1 << i);
+            cores |= 1 << i;
             let out_path = out_path.clone();
             let thread_name = format!("thread_{}", n);
             threads.push(std::thread::spawn(move || {
