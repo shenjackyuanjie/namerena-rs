@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "rust-namer",
-    "miner", "wgpu-mine", "namerena-runner"]
-
+members = ["rust-namer", "miner", "wgpu-mine", "namerena-runner"]
 
 [profile.miner]
 inherits = "release"

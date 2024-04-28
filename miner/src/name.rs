@@ -142,7 +142,7 @@ impl Namer {
                 let mut k = 0;
                 for i in 0..256 {
                     s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
-                    s = s.wrapping_add(val[i]);
+                    s = s.wrapping_add(*val.get_unchecked(i));
                     val.swap_unchecked(i, s as usize);
                     k = if k == b_name_len - 1 { 0 } else { k + 1 };
                 }

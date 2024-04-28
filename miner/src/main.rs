@@ -130,7 +130,7 @@ fn main() {
         info!("开始 benchmark");
         let mut config = cli_arg.as_cacl_config();
         config.core_affinity = Some(1 << cli_arg.bench_core);
-        set_process_cores(cli_arg.bench_core);
+        set_process_cores(config.core_affinity.unwrap());
         cacluate::cacl(config, 1, &out_path);
     } else {
         let mut n = 0;
@@ -151,7 +151,6 @@ fn main() {
         }
         set_process_cores(cores);
     }
-    info!("开始计算");
 
     for t in threads {
         t.join().unwrap();
