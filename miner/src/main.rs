@@ -54,11 +54,7 @@ impl Command {
             qp_expect: self.qp_expect,
             team: self.team.clone(),
             report_interval: self.report_interval,
-            core_affinity: if self.bench {
-                Some(1 << self.bench_core)
-            } else {
-                None
-            },
+            core_affinity: if self.bench { Some(1 << self.bench_core) } else { None },
         }
     }
 }
@@ -84,7 +80,7 @@ pub fn set_thread2core(core: usize) {
 pub fn set_process_cores(cores: usize) {
     #[cfg(windows)]
     unsafe {
-        use windows_sys::Win32::System::Threading::{SetProcessAffinityMask, GetCurrentProcess};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessAffinityMask};
         let process = GetCurrentProcess();
         let core_mask = cores;
         match SetProcessAffinityMask(process, core_mask) {

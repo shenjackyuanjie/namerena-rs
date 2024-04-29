@@ -6,15 +6,41 @@ pub struct Works {
     /// 队伍名(统一)
     pub team: String,
     /// 队伍名(每个任务)
-    pub names: Vec<String>,
+    pub names: Vec<Vec<String>>,
+}
+
+impl Works {
+    /// 创建一个新的工作信息
+    pub fn new(team: String, names: Vec<String>) -> Self {
+        // 把输入的名字填充到 256 长度的数组里
+        // 如果不够 256 长度, 就用空字符串填充
+        let names = {
+            if names.len() < 256 {
+                // 先把数组扩容到 256 长度
+                let mut names = names;
+                names.resize(256, "".to_string());
+                // 把数组放到一个新的数组里
+                vec![names]
+            } else {
+                // 如果长度已经是 256 了, 直接截取
+                // 不满 256 的部分用空字符串填充
+                names
+                    .chunks_exact(256)
+                    .map(|c| {
+                        let mut c = c.to_vec();
+                        c.resize(256, "".to_string());
+                        c
+                    })
+                    .collect::<Vec<Vec<String>>>()
+            }
+        };
+        Self { team, names }
+    }
 }
 
 #[cfg_attr(test, allow(dead_code))]
 async fn run() {
-    let works = Works {
-        team: "team".to_string(),
-        names: vec!["name1".to_string(), "name2".to_string()],
-    };
+    let works = Works::new("team".to_string(), vec!["name1".to_string(), "name2".to_string()]);
 
     let steps = execute_gpu(works).await.unwrap();
 
@@ -97,10 +123,10 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, works: Wo
     //   A storage buffer (can be bound within a bind group and thus available to a shader).
     //   The destination of a copy.
     //   The source of a copy.
-    let storage_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("team bytes input buffer"),
         contents: bytemuck::cast_slice(&uniform_val),
-        usage: wgpu::BufferUsages::STORAGE,
+        usage: wgpu::BufferUsages::UNIFORM,
     });
 
     // A bind group defines how buffers are accessed by shaders.
@@ -114,19 +140,39 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, works: Wo
         label: None,
         layout: None,
         module: &cs_module,
-        entry_point: "team_bytes",
+        entry_point: "rc4_name",
         // constants: &Default::default(),
     });
 
     // Instantiates the bind group, once again specifying the binding of buffers.
-    let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group_layout_0 = compute_pipeline.get_bind_group_layout(0);
+    let bind_group_0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
-        layout: &bind_group_layout,
+        layout: &bind_group_layout_0,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
-            resource: storage_buffer.as_entire_binding(),
+            resource: uniform_buffer.as_entire_binding(),
         }],
+    });
+
+    let bind_group_layout_1 = compute_pipeline.get_bind_group_layout(1);
+    let bind_group_1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bind_group_layout_1,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: staging_buffer.as_entire_binding(),
+            },
+            // wgpu::BindGroupEntry {
+            //     binding: 1,
+            //     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            //         buffer: uniform_buffer,
+            //         offset: 0,
+            //         size,
+            //     }),
+            // },
+        ],
     });
 
     // A command encoder executes one or many pipelines.
@@ -138,9 +184,10 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, works: Wo
             timestamp_writes: None,
         });
         cpass.set_pipeline(&compute_pipeline);
-        cpass.set_bind_group(0, &bind_group, &[]);
+        cpass.set_bind_group(0, &bind_group_0, &[]);
+        cpass.set_bind_group(1, &bind_group_1, &[]);
         cpass.insert_debug_marker("compute collatz iterations");
-        cpass.dispatch_workgroups(numbers.len() as u32, 1, 1); // Number of cells to run, the (x,y,z) size of item being processed
+        cpass.dispatch_workgroups(uniform_val.len() as u32, 1, 1); // Number of cells to run, the (x,y,z) size of item being processed
     }
     // Sets adds copy operation to command encoder.
     // Will copy data from storage buffer on GPU to staging buffer on CPU.

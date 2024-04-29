@@ -109,10 +109,9 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&namer);
             let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&namer);
 
-            if xu < config.qp_expect as f64 && xu_qd < config.qp_expect as f64{
+            if xu < config.qp_expect as f64 && xu_qd < config.qp_expect as f64 {
                 continue;
             }
-
 
             get_count += 1;
             info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, namer.get_info());
