@@ -118,13 +118,11 @@ async fn execute_gpu_inner(device: &wgpu::Device, queue: &wgpu::Queue, works: Wo
         mapped_at_creation: false,
     });
 
-    let input_buffer_name_len = device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor {
-            label: Some("input buffer name len"),
-            contents: bytemuck::cast_slice(&[works.team.len() as u32]),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_READ,
-        }
-    );
+    let input_buffer_name_len = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("input buffer name len"),
+        contents: bytemuck::cast_slice(&[works.team.len() as u32]),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::MAP_READ,
+    });
 
     // Instantiates buffer with data (`numbers`).
     // Usage allowing the buffer to be:
