@@ -165,21 +165,26 @@ impl RC4 {
     }
 
     /// 生成 i32 随机数
-    /// ```dart
-    /// int nextInt(int max) {
-    ///   int round = max ;
-    ///   int v = nextByte();
-    ///   do {
-    ///     v = v <<8 | nextByte();
-    ///     if (v >= max) {
-    ///       v %= max;
-    ///     }
-    ///     round >>= 6;
-    ///   } while(round != 0);
-    ///   return v;
+    /// ```javascript
+    /// ax(a) {
+    ///     // nextInt
+    ///     var n, round
+    ///     if (a === 0) return 0
+    ///     n = this.n()
+    ///     round = a
+    ///     do {
+    ///         n = (n << 8 | this.n()) >>> 0
+    ///         if (n >= a) n = C.JsInt.V(n, a)
+    ///         round = C.JsInt.am(round, 8)
+    ///     } while (round !== 0)
+    ///     return n
     /// }
+    /// 
     /// ```
     pub fn next_i32(&mut self, max: i32) -> i32 {
+        if max == 0 {
+            return 0;
+        }
         let mut round = max;
         let mut v = self.next_u8() as i32;
         loop {
@@ -187,7 +192,8 @@ impl RC4 {
             if v >= max {
                 v %= max;
             }
-            round >>= 6;
+            round >>= 8; 
+            // rc4 lib 里是 6, md5.js( 继承的 R ) 里是 8
             if round == 0 {
                 break;
             }
