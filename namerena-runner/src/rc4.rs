@@ -40,7 +40,7 @@ impl RC4 {
     ///     int j = 0;
     ///     for (int i = 0; i < 256; ++i) {
     ///       int keyv = key[i % keylen];
-    ///       j = (j + val[i] + keyv) & 0xFF;
+    ///       j = (j + val[i] + keyv) & 255;
     ///       int t = val[i];
     ///       val[i] = val[j];
     ///       val[j] = t;
@@ -58,11 +58,10 @@ impl RC4 {
             j = 0;
             for x in 0..256 {
                 let key_v = keys[x % key_len];
-                j = (j + val[x] as u32 + key_v as u32) & 0xFF;
+                j = (j + val[x] as u32 + key_v as u32) & 255;
                 val.swap(x, j as usize);
             }
         }
-
         RC4 {
             i: 0,
             j: 0,
@@ -75,21 +74,21 @@ impl RC4 {
     /// void xorBytes(List<int> bytes) {
     ///    int t, len = bytes.length;
     ///    for (int x = 0; x < len; ++x) {
-    ///      i = (i + 1) & 0xFF;
-    ///      j = (j + S[i]) & 0xFF;
+    ///      i = (i + 1) & 255;
+    ///      j = (j + S[i]) & 255;
     ///      t = S[i];
     ///      S[i] = S[j];
     ///      S[j] = t;
-    ///      bytes[x] ^= S[(S[i] + S[j]) & 0xFF];
+    ///      bytes[x] ^= S[(S[i] + S[j]) & 255];
     ///    }
     ///  }
     /// ```
     pub fn xor_bytes(&mut self, bytes: &mut [u8]) {
         for byte in bytes.iter_mut() {
-            self.i = (self.i + 1) & 0xFF;
-            self.j = (self.j + self.main_val[self.i as usize] as u32) & 0xFF;
+            self.i = (self.i + 1) & 255;
+            self.j = (self.j + self.main_val[self.i as usize] as u32) & 255;
             self.main_val.swap(self.i as usize, self.j as usize);
-            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize];
+            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
         }
     }
 
@@ -99,23 +98,23 @@ impl RC4 {
     /// void encryptBytes(List<int> bytes) {
     ///   int t, len = bytes.length;
     ///   for (int x = 0; x < len; ++x) {
-    ///     i = (i + 1) & 0xFF;
-    ///     j = (j + S[i]) & 0xFF;
+    ///     i = (i + 1) & 255;
+    ///     j = (j + S[i]) & 255;
     ///     t = S[i];
     ///     S[i] = S[j];
     ///     S[j] = t;
-    ///     bytes[x] ^= S[(S[i] + S[j]) & 0xFF];
-    ///     j = (j + bytes[x]) & 0xFF;
+    ///     bytes[x] ^= S[(S[i] + S[j]) & 255];
+    ///     j = (j + bytes[x]) & 255;
     ///   }
     /// }
     /// ```
     pub fn encrypt_bytes(&mut self, bytes: &mut [u8]) {
         for byte in bytes.iter_mut() {
-            self.i = (self.i + 1) & 0xFF;
-            self.j = (self.j + self.main_val[self.i as usize] as u32) & 0xFF;
+            self.i = (self.i + 1) & 255;
+            self.j = (self.j + self.main_val[self.i as usize] as u32) & 255;
             self.main_val.swap(self.i as usize, self.j as usize);
-            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize];
-            self.j = (self.j + *byte as u32) & 0xFF;
+            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
+            self.j = (self.j + *byte as u32) & 255;
         }
     }
 
@@ -125,44 +124,44 @@ impl RC4 {
     /// void decryptBytes(List<int> bytes) {
     ///   int t, len = bytes.length;
     ///   for (int x = 0; x < len; ++x) {
-    ///     i = (i + 1) & 0xFF;
-    ///     j = (j + S[i]) & 0xFF;
+    ///     i = (i + 1) & 255;
+    ///     j = (j + S[i]) & 255;
     ///     t = S[i];
     ///     S[i] = S[j];
     ///     S[j] = t;
     ///     int byte = bytes[x];
-    ///     bytes[x] ^= S[(S[i] + S[j]) & 0xFF];
-    ///     j = (j + byte) & 0xFF;
+    ///     bytes[x] ^= S[(S[i] + S[j]) & 255];
+    ///     j = (j + byte) & 255;
     ///   }
     /// }
     /// ```
     pub fn decrypt_bytes(&mut self, bytes: &mut [u8]) {
         for byte in bytes.iter_mut() {
-            self.i = (self.i + 1) & 0xFF;
-            self.j = (self.j + self.main_val[self.i as usize] as u32) & 0xFF;
+            self.i = (self.i + 1) & 255;
+            self.j = (self.j + self.main_val[self.i as usize] as u32) & 255;
             self.main_val.swap(self.i as usize, self.j as usize);
             let byte_v = *byte;
-            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize];
-            self.j = (self.j + byte_v as u32) & 0xFF;
+            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
+            self.j = (self.j + byte_v as u32) & 255;
         }
     }
 
     /// 生成 u8 随机数
     /// ```dart
     /// int nextByte() {
-    ///  i = (i + 1) & 0xFF; // 255
-    ///  j = (j + S[i]) & 0xFF; // 255
+    ///  i = (i + 1) & 255; // 255
+    ///  j = (j + S[i]) & 255; // 255
     ///  int t = S[i];
     ///  S[i] = S[j];
     ///  S[j] = t;
-    ///  return S[(S[i] + S[j]) & 0xFF];
+    ///  return S[(S[i] + S[j]) & 255];
     ///}
     /// ```
     pub fn next_u8(&mut self) -> u8 {
-        self.i = (self.i + 1) & 0xFF;
-        self.j = (self.j + self.main_val[self.i as usize] as u32) & 0xFF;
+        self.i = (self.i + 1) & 255;
+        self.j = (self.j + self.main_val[self.i as usize] as u32) & 255;
         self.main_val.swap(self.i as usize, self.j as usize);
-        self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize]
+        self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255]
     }
 
     /// 生成 i32 随机数
@@ -205,7 +204,7 @@ impl RC4 {
     ///    int j = 0;
     ///    for (int i = 0; i < 256; ++i) {
     ///      int keyv = key[i % keylen];
-    ///      j = (j + val[i] + keyv) & 0xFF;
+    ///      j = (j + val[i] + keyv) & 255;
     ///      int t = val[i];
     ///      val[i] = val[j];
     ///      val[j] = t;
@@ -220,12 +219,52 @@ impl RC4 {
             let mut j = 0;
             for i in 0..256 {
                 let key_v = keys[i % key_len];
-                j = (j + self.main_val[i] as u32 + key_v as u32) & 0xFF;
+                j = (j + self.main_val[i] as u32 + key_v as u32) & 255;
                 self.main_val.swap(i, j as usize);
             }
         }
         self.i = 0;
         self.j = 0;
+    }
+
+    /// 打乱列表
+    /// ```dart
+    /// List<T> sortList<T>(List<T> list) {
+    ///   if (list.length <= 1) {
+    ///       return list;
+    ///     }
+    ///     int n = list.length;
+    ///     List<int> X = [];
+    ///     X.length = n;
+    ///     for (int i = 0; i < n; ++i) {
+    ///       X[i] = i;
+    ///     }
+    ///     int b = 0;
+    ///     for (int i = 0; i < 2; ++i) {
+    ///         for (int a = 0; a < n; ++a) {
+    ///             int keyv = nextInt(n);
+    ///             b = (b + X[a] + keyv) % n;
+    ///             int t = X[a];
+    ///             X[a] = X[b];
+    ///             X[b] = t;
+    ///         }
+    ///     }
+    ///     return X.map((e) => list[e]).toList();
+    /// }
+    /// ```
+    pub fn sort_list<T>(&mut self, &mut list: Vec<T>) {
+        if list.len() <= 1 {
+            return;
+        }
+        let n = list.len();
+        // 直接对输入列表进行操作
+        for _ in 0..2 {
+            for a in 0..n {
+                let key_v = self.next_i32(n as i32);
+                let b = (b + a + key_v) % n;
+                list.swap(a, b);
+            }
+        }
     }
 
     /// 从列表里选一个
@@ -349,31 +388,6 @@ impl RC4 {
     }
 
     // 一大堆判定是否小于指定数字的函数
-    /*  bool get c94 {
-      return nextByte() < 240;
-    }
-
-    bool get c75 {
-      return nextByte() < 192;
-    }
-
-    bool get c50 {
-      return nextByte() < 128;
-    }
-
-    bool get c25 {
-      return nextByte() < 64;
-    }
-    bool get c12 {
-      return nextByte() < 32;
-    }
-
-    bool get c33 {
-      return nextByte() < 84;
-    }
-    bool get c66 {
-      return nextByte() < 171;
-    } */
 
     /// next_u8 是否小于 240
     pub fn c94(&mut self) -> bool { self.next_u8() < 240 }
@@ -397,42 +411,16 @@ impl RC4 {
     pub fn c66(&mut self) -> bool { self.next_u8() < 171 }
 
     // 两个颜色拼接
-    /*
-    int get rFFFFFF {
-      return nextByte() << 16 | nextByte() << 8 | nextByte();
-    }
-
-    int get rFFFF {
-      return nextByte() << 8 | nextByte();
-    } */
 
     /// 生成一个 RGB 颜色
-    pub fn rffffff(&mut self) -> u32 { (self.next_u8() as u32) << 16 | (self.next_u8() as u32) << 8 | self.next_u8() as u32 }
+    #[allow(non_snake_case)]
+    pub fn rFFFFFF(&mut self) -> u32 { (self.next_u8() as u32) << 16 | (self.next_u8() as u32) << 8 | self.next_u8() as u32 }
 
     /// 生成一个 RGB 颜色
-    pub fn rffff(&mut self) -> u32 { (self.next_u8() as u32) << 8 | self.next_u8() as u32 }
+    #[allow(non_snake_case)]
+    pub fn rFFFF(&mut self) -> u32 { (self.next_u8() as u32) << 8 | self.next_u8() as u32 }
 
     // 一些指定范围的随机数
-    /*
-    int get r256 {
-      return nextByte() + 1;
-    }
-
-    int get r255 {
-      return nextByte();
-    }
-
-    int get r127 {
-      return nextByte() & 127;
-    }
-
-    int get r64 {
-      return (nextByte() & 63) + 1;
-    }
-
-    int get r63 {
-      return nextByte() & 63;
-    } */
 
     /// 生成一个 1-256 的随机数
     pub fn r256(&mut self) -> u32 { self.next_u8() as u32 + 1 }
