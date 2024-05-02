@@ -88,7 +88,8 @@ impl RC4 {
             self.i = (self.i + 1) & 255;
             self.j = (self.j + self.main_val[self.i as usize] as u32) & 255;
             self.main_val.swap(self.i as usize, self.j as usize);
-            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
+            *byte ^=
+                self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
         }
     }
 
@@ -113,7 +114,8 @@ impl RC4 {
             self.i = (self.i + 1) & 255;
             self.j = (self.j + self.main_val[self.i as usize] as u32) & 255;
             self.main_val.swap(self.i as usize, self.j as usize);
-            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
+            *byte ^=
+                self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
             self.j = (self.j + *byte as u32) & 255;
         }
     }
@@ -141,7 +143,8 @@ impl RC4 {
             self.j = (self.j + self.main_val[self.i as usize] as u32) & 255;
             self.main_val.swap(self.i as usize, self.j as usize);
             let byte_v = *byte;
-            *byte ^= self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
+            *byte ^=
+                self.main_val[(self.main_val[self.i as usize] as u32 + self.main_val[self.j as usize] as u32) as usize & 255];
             self.j = (self.j + byte_v as u32) & 255;
         }
     }
@@ -155,7 +158,7 @@ impl RC4 {
     ///  S[i] = S[j];
     ///  S[j] = t;
     ///  return S[(S[i] + S[j]) & 255];
-    ///}
+    /// }
     /// ```
     pub fn next_u8(&mut self) -> u8 {
         self.i = (self.i + 1) & 255;
@@ -179,7 +182,6 @@ impl RC4 {
     ///     } while (round !== 0)
     ///     return n
     /// }
-    /// 
     /// ```
     pub fn next_i32(&mut self, max: i32) -> i32 {
         if max == 0 {
@@ -192,7 +194,7 @@ impl RC4 {
             if v >= max {
                 v %= max;
             }
-            round >>= 8; 
+            round >>= 8;
             // rc4 lib 里是 6, md5.js( 继承的 R ) 里是 8
             if round == 0 {
                 break;
