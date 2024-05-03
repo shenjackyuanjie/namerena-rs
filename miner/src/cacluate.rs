@@ -56,10 +56,12 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     // 提前准备好 team_namer
     let team_namer = TeamNamer::new(&config.team).unwrap();
 
+    let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
+
     for i in (config.start + id..config.end).step_by(config.thread_count as usize) {
         let name = gen_name(i);
-        let mut namer = Namer::new_from_team_namer_unchecked(&team_namer, name.as_str());
-        let prop = namer.get_property();
+        main_namer.replace_name(&team_namer, &name);
+        let prop = main_namer.get_property();
 
         k += 1;
         if k >= report_interval {
@@ -103,26 +105,26 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             let name = gen_name(i);
             let full_name = format!("{}@{}", name, config.team);
             // 虚评
-            namer.update_skill();
+            main_namer.update_skill();
 
-            let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&namer);
-            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&namer);
+            let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&main_namer);
+            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&main_namer);
 
             if xu < config.qp_expect as f64 && xu_qd < config.qp_expect as f64 {
                 continue;
             }
 
             get_count += 1;
-            info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, namer.get_info());
+            info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, main_namer.get_info());
 
             let write_in = format!(
-                // <full_name>,<id>,<xu>,<xuqd>,<namer.get_info()>
+                // <full_name>,<id>,<xu>,<xuqd>,<main_namer.get_info()>
                 "{},{:>15},{:.4},{:.4},{}\n",
                 full_name,
                 i,
                 xu,
                 xu_qd,
-                namer.get_info_csv()
+                main_namer.get_info_csv()
             );
 
             // 写入 (写到最后一行)

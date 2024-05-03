@@ -260,16 +260,17 @@ impl RC4 {
     ///     return X.map((e) => list[e]).toList();
     /// }
     /// ```
-    pub fn sort_list<T>(&mut self, &mut list: Vec<T>) {
+    pub fn sort_list<T>(&mut self, list: &mut [T]) {
         if list.len() <= 1 {
             return;
         }
         let n = list.len();
         // 直接对输入列表进行操作
+        let mut b = 0;
         for _ in 0..2 {
             for a in 0..n {
                 let key_v = self.next_i32(n as i32);
-                let b = (b + a + key_v) % n;
+                b = (b + a + key_v as usize) % n;
                 list.swap(a, b);
             }
         }
@@ -290,7 +291,7 @@ impl RC4 {
     ///   return null;
     /// }
     /// ```
-    pub fn pick<T>(&mut self, list: Vec<T>) -> Option<usize> {
+    pub fn pick<T>(&mut self, list: &mut [T]) -> Option<usize> {
         match list.len() {
             1 => Some(0),
             n if n > 1 => Some(self.next_i32(n as i32) as usize),
@@ -327,7 +328,7 @@ impl RC4 {
     ///    return null;
     ///  }
     /// ```
-    pub fn pick_skip<T>(&mut self, list: Vec<T>, skip_after_index: usize) -> Option<usize> {
+    pub fn pick_skip<T>(&mut self, list: &mut [T], skip_after_index: usize) -> Option<usize> {
         match list.len() {
             1 => {
                 if skip_after_index == 0 {
@@ -377,7 +378,7 @@ impl RC4 {
     ///     return null;
     /// }
     /// ```
-    pub fn pick_skip_range<T>(&mut self, list: Vec<T>, skips: Vec<usize>) -> Option<usize> {
+    pub fn pick_skip_range<T>(&mut self, list: &mut [T], skips: Vec<usize>) -> Option<usize> {
         if skips.is_empty() {
             return self.pick(list);
         }

@@ -293,6 +293,140 @@ impl Namer {
         }
     }
 
+    /// 更新当前的名字
+    #[inline(always)]
+    pub fn replace_name(&mut self, team_namer: &TeamNamer, name: &str) {
+        self.val = team_namer.clone_vals();
+        
+        let name_bytes = name.as_bytes();
+        let name_len = name_bytes.len();
+        let b_name_len = name_len + 1;
+        
+        for _ in 0..2 {
+            let mut s = 0_u8;
+            unsafe {
+                self.val.swap_unchecked(s as usize, 0);
+                let mut k = 0;
+                for i in 0..256 {
+                    s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
+                    s = s.wrapping_add(*self.val.get_unchecked(i));
+                    self.val.swap_unchecked(i, s as usize);
+                    k = if k == b_name_len - 1 { 0 } else { k + 1 };
+                }
+            }
+        }
+        // simd!
+        #[cfg(feature = "simd")]
+        {
+            let mut simd_val = [0_u8; 256];
+            let mut simd_val_b = [0_u8; 256];
+            let simd_181 = u8x64::splat(181);
+            let simd_160 = u8x64::splat(160);
+            let simd_63 = u8x64::splat(63);
+
+            for i in (0..256).step_by(64) {
+                unsafe {
+                    let mut x = u8x64::from_slice(self.val.get_unchecked(i..i+64));
+                    x = x * simd_181 + simd_160;
+                    x.copy_to_slice(simd_val.get_unchecked_mut(i..i+64));
+                    let y = x & simd_63;
+                    y.copy_to_slice(simd_val_b.get_unchecked_mut(i..i+64));   
+                }
+            }
+            let mut mod_count = 0;
+            for i in 0..96 {
+                unsafe {
+                    if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
+                        *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
+                        mod_count += 1;
+                    }
+                }
+                if mod_count > 30 {
+                    break;
+                }
+            }
+            if mod_count < 31 {
+                for i in 96..256 {
+                    unsafe {
+                        if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
+                            *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
+                            mod_count += 1;
+                        }
+                    }
+                    if mod_count > 30 {
+                        break;
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            let mut s = 0;
+            for i in 0..256 {
+                let m = ((self.val[i] as u32 * 181) + 160) % 256;
+                if m >= 89 && m < 217 {
+                    self.name_base[s as usize] = (m & 63) as u8;
+                    s += 1;
+                }
+            }
+        }
+        // 计算 name_prop
+        unsafe {
+            let mut prop_name = [0_u8; 32];
+            prop_name.copy_from_slice(self.name_base.get_unchecked(0..32));
+            prop_name.get_unchecked_mut(0..10).sort_unstable();
+            *self.name_prop.get_unchecked_mut(0) = 154
+                + *prop_name.get_unchecked(3) as u32
+                + *prop_name.get_unchecked(4) as u32
+                + *prop_name.get_unchecked(5) as u32
+                + *prop_name.get_unchecked(6) as u32;
+            
+            *self.name_prop.get_unchecked_mut(1) = median(
+                *prop_name.get_unchecked(10),
+                *prop_name.get_unchecked(11),
+                *prop_name.get_unchecked(12),
+            ) as u32
+                + 36;
+            *self.name_prop.get_unchecked_mut(2) = median(
+                *prop_name.get_unchecked(13),
+                *prop_name.get_unchecked(14),
+                *prop_name.get_unchecked(15),
+            ) as u32
+                + 36;
+            *self.name_prop.get_unchecked_mut(3) = median(
+                *prop_name.get_unchecked(16),
+                *prop_name.get_unchecked(17),
+                *prop_name.get_unchecked(18),
+            ) as u32
+                + 36;
+            *self.name_prop.get_unchecked_mut(4) = median(
+                *prop_name.get_unchecked(19),
+                *prop_name.get_unchecked(20),
+                *prop_name.get_unchecked(21),
+            ) as u32
+                + 36;
+            *self.name_prop.get_unchecked_mut(5) = median(
+                *prop_name.get_unchecked(22),
+                *prop_name.get_unchecked(23),
+                *prop_name.get_unchecked(24),
+            ) as u32
+                + 36;
+            *self.name_prop.get_unchecked_mut(6) = median(
+                *prop_name.get_unchecked(25),
+                *prop_name.get_unchecked(26),
+                *prop_name.get_unchecked(27),
+            ) as u32
+                + 36;
+            *self.name_prop.get_unchecked_mut(7) = median(
+                *prop_name.get_unchecked(28),
+                *prop_name.get_unchecked(29),
+                *prop_name.get_unchecked(30),
+            ) as u32
+                + 36;
+        }
+
+    }
+
     #[inline(always)]
     pub fn update_skill(&mut self) {
         let skill_id = self.skl_id.as_mut();
@@ -619,5 +753,27 @@ mod test {
         let prop_vec: Vec<u32> = vec![240, 89, 69, 82, 65, 75, 49, 49];
 
         assert_eq!(name.name_prop.to_vec(), prop_vec);
+    }
+
+    #[test]
+    fn update_name_test() {
+        // 先创建一个正常的 namer
+        // 然后更新名字
+        let team = TeamNamer::new_unchecked("x");
+        let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
+
+        let update_name = "k";
+        namer.replace_name(&team, update_name);
+
+        let mut none_update_name = Namer::new_from_team_namer_unchecked(&team, update_name);
+        none_update_name.update_skill();
+        namer.update_skill();
+
+        assert_eq!(namer.name_base.to_vec(), none_update_name.name_base.to_vec());
+        assert_eq!(namer.name_prop.to_vec(), none_update_name.name_prop.to_vec());
+        assert_eq!(namer.val.to_vec(), none_update_name.val.to_vec());
+        assert_eq!(namer.skl_id.to_vec(), none_update_name.skl_id.to_vec());
+        assert_eq!(namer.skl_freq.to_vec(), none_update_name.skl_freq.to_vec());
+
     }
 }
