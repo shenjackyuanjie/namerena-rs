@@ -1,5 +1,6 @@
 
 pub mod runners {
+    use crate::name::Player;
 
     pub struct PlayerGroup {
         players: Vec<Player>,

@@ -16,10 +16,9 @@ use tracing::{info, warn};
 /// ? , 问号
 /// U2000 - U202F , unicode特殊空格 等
 /// 不可以空格开头
-#[inline(always)]
 pub fn gen_name(id: u64) -> String {
-    let id_bytes = id.to_be_bytes();
-    Base16384Utf8::encode(id_bytes.as_slice())
+    // 手动把 u64 转换成 8 个 u8
+    Base16384Utf8::encode(&id.to_be_bytes())
 }
 
 pub struct CacluateConfig {
