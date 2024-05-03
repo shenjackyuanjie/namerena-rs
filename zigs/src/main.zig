@@ -16,13 +16,6 @@ pub fn main() !void {
     try bw.flush(); // don't forget to flush!
 }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
 const val_init = [256]u8{
     0,   1,   2,   3,   4,   5,   6,   7,   8,   9,   10,  11,  12,  13,  14,  15,
     16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  29,  30,  31,
@@ -49,7 +42,7 @@ const Teamer = struct {
     pub fn new(team_name: []const u8) Teamer {
         var val = val_init;
         const t_len = team_name.len + 1;
-        var s = 0;
+        var s: u8 = 0;
         for (0..256) |i| {
             if (i % t_len != 0) {
                 s +%= team_name[i % t_len - 1];
@@ -64,13 +57,25 @@ const Teamer = struct {
     }
 };
 
+fn median(a: u8, b: u8, c: u8) u8 {
+    if (a > b) {
+        if (b > c) {
+            return b;
+        } else if (a > c) {
+            return c;
+        } else {
+            return a;
+        }
+    } else if (a > c) {
+        return a;
+    } else if (b > c) {
+        return c;
+    } else {
+        return b;
+    }
+}
+
 const Namer = struct {
-    // code from rust
-    // pub val: [u8; 256],
-    // pub name_base: [u8; 128],
-    // pub name_prop: [u32; 8],
-    // pub skl_id: [u8; 40],
-    // pub skl_freq: [u8; 40],
     val: [256]u8,
     name_base: [128]u8,
     name_prop: [8]u32,
@@ -79,11 +84,108 @@ const Namer = struct {
 
     pub fn new(team: Teamer, name: []const u8) Namer {
         var val = team.val;
-        var name_base = [0]u8;
-        var name_prop = [0]u32;
-        var skl_id = [0]u8;
-        var skl_freq = [0]u8;
+        var name_base = [_]u8{0} ** 128;
+        var name_prop = [_]u32{0} ** 8;
+        const skl_id = [_]u8{0} ** 40;
+        const skl_freq = [_]u8{0} ** 40;
 
-        const name_len = name.len + 1;
+        const name_len = name.len;
+        inline for (0..2) |_| {
+            var k: u32 = 0;
+            var s: u8 = 0;
+            inline for (0..256) |i| {
+                if (k != 0) {
+                    s +%= name[k - 1];
+                }
+                s +%= val[i];
+                // swap i and s
+                const tmp = val[i];
+                val[i] = val[s];
+                val[s] = tmp;
+                if (k == name_len) {
+                    k = 0;
+                } else {
+                    k += 1;
+                }
+            }
+        }
+
+        var s: u32 = 0;
+        var q_len: i32 = -1;
+        inline for (0..96) |i| {
+            const m = ((val[i] *% 181) +% 160);
+            if (m >= 89 and m < 217) {
+                name_base[s] = m & 63;
+                s += 1;
+                if (q_len == 30) {
+                    break;
+                } else {
+                    q_len += 1;
+                }
+            }
+        }
+        if (q_len < 31) {
+            inline for (96..256) |i| {
+                const m = ((val[i] *% 181) +% 160);
+                if (m >= 89 and m < 217) {
+                    name_base[s] = m & 63;
+                    q_len += 1;
+                    s += 1;
+                    if (q_len > 30) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        var prop_name = [_]u8{0} ** 32;
+        inline for (0..32) |i| {
+            prop_name[i] = name_base[i];
+        }
+        // sort 0~10
+        std.sort.heap(u8, prop_name[0..10], {}, std.sort.asc(u8));
+        name_prop[0] = 154 + @as(u32, prop_name[3]) + @as(u32, prop_name[4]) + @as(u32, prop_name[5]) + @as(u32, prop_name[6]);
+
+        name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) + 36;
+        name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) + 36;
+        name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) + 36;
+        name_prop[4] = median(prop_name[19], prop_name[20], prop_name[21]) + 36;
+        name_prop[5] = median(prop_name[22], prop_name[23], prop_name[24]) + 36;
+        name_prop[6] = median(prop_name[25], prop_name[26], prop_name[27]) + 36;
+        name_prop[7] = median(prop_name[28], prop_name[29], prop_name[30]) + 36;
+
+        return Namer{
+            .val = val,
+            .name_base = name_base,
+            .name_prop = name_prop,
+            .skl_id = skl_id,
+            .skl_freq = skl_freq,
+        };
     }
 };
+
+test "val_test" {
+    // 从 rust 移植过来的测试
+    const team = Teamer.new("x");
+    const namer = Namer.new(team, "x");
+
+    const test_val_vec = [256]u8{
+        225, 96,  49,  232, 20,  47,  115, 245, 234, 23,  111, 178, 231, 100, 118, 197, 42,  98,  137, 196, 209, 86,  114, 184, 167,
+        129, 164, 239, 205, 211, 82,  173, 189, 153, 198, 67,  4,   3,   90,  52,  128, 134, 176, 145, 85,  9,   250, 30,  63,  247,
+        240, 17,  215, 200, 78,  188, 132, 117, 10,  45,  162, 79,  123, 73,  109, 91,  57,  210, 22,  175, 107, 203, 103, 32,  83,
+        70,  242, 75,  220, 140, 148, 15,  138, 44,  228, 43,  105, 199, 99,  116, 97,  69,  80,  172, 230, 25,  224, 33,  31,  135,
+        235, 74,  193, 238, 233, 88,  216, 204, 24,  163, 141, 6,   201, 26,  38,  21,  186, 237, 101, 206, 212, 76,  144, 219, 149,
+        169, 202, 110, 41,  166, 139, 194, 168, 34,  142, 147, 187, 108, 223, 94,  5,   243, 226, 60,  40,  102, 51,  87,  61,  236,
+        46,  159, 64,  227, 113, 190, 81,  127, 65,  8,   183, 253, 150, 249, 229, 37,  156, 182, 180, 246, 124, 244, 174, 122, 89,
+        120, 160, 35,  143, 11,  14,  151, 133, 27,  177, 251, 221, 207, 58,  29,  131, 119, 171, 157, 93,  185, 48,  112, 192, 191,
+        66,  106, 39,  59,  92,  19,  1,   155, 254, 84,  222, 165, 54,  121, 13,  50,  36,  130, 95,  161, 213, 170, 28,  241, 71,
+        53,  68,  218, 0,   252, 16,  136, 179, 158, 248, 2,   154, 12,  125, 126, 255, 18,  146, 104, 77,  152, 208, 214, 72,  55,
+        195, 62,  7,   217, 56,  181,
+    };
+
+    for (0..256) |i| {
+        try std.testing.expectEqual(test_val_vec[i], namer.val[i]);
+    }
+}
+
+test "name_test" {}

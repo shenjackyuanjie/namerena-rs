@@ -10,8 +10,22 @@ where
     T: std::cmp::Ord + std::marker::Copy,
 {
     // std::max(std::min(x, y), std::min(std::max(x, y), z))
-    // x.max(y).max(x.min(y).min(z))
-    x.min(y).max(x.max(y).min(z))
+    // x.min(y).max(x.max(y).min(z))
+    if (x < y) {
+        if (y < z) {
+            y
+        } else if (x < z) {
+            z
+        } else {
+            x
+        }
+    } else if (x < z) {
+        x
+    } else if (y < z) {
+        z
+    } else {
+        y
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +148,6 @@ impl Namer {
 
         let name_bytes = name.as_bytes();
         let name_len = name_bytes.len();
-        let b_name_len = name_len + 1;
         for _ in 0..2 {
             unsafe {
                 let mut s = 0_u8;
@@ -143,7 +156,7 @@ impl Namer {
                     s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
                     s = s.wrapping_add(*val.get_unchecked(i));
                     val.swap_unchecked(i, s as usize);
-                    k = if k == b_name_len - 1 { 0 } else { k + 1 };
+                    k = if k == name_len { 0 } else { k + 1 };
                 }
             }
         }
