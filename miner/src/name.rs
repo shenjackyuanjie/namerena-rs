@@ -11,17 +11,17 @@ where
 {
     // std::max(std::min(x, y), std::min(std::max(x, y), z))
     // x.min(y).max(x.max(y).min(z))
-    if (x < y) {
-        if (y < z) {
+    if x < y {
+        if y < z {
             y
-        } else if (x < z) {
+        } else if x < z {
             z
         } else {
             x
         }
-    } else if (x < z) {
+    } else if x < z {
         x
-    } else if (y < z) {
+    } else if y < z {
         z
     } else {
         y
