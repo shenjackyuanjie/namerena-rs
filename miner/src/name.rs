@@ -297,11 +297,11 @@ impl Namer {
     #[inline(always)]
     pub fn replace_name(&mut self, team_namer: &TeamNamer, name: &str) {
         self.val = team_namer.clone_vals();
-        
+
         let name_bytes = name.as_bytes();
         let name_len = name_bytes.len();
         let b_name_len = name_len + 1;
-        
+
         for _ in 0..2 {
             let mut s = 0_u8;
             unsafe {
@@ -326,11 +326,11 @@ impl Namer {
 
             for i in (0..256).step_by(64) {
                 unsafe {
-                    let mut x = u8x64::from_slice(self.val.get_unchecked(i..i+64));
+                    let mut x = u8x64::from_slice(self.val.get_unchecked(i..i + 64));
                     x = x * simd_181 + simd_160;
-                    x.copy_to_slice(simd_val.get_unchecked_mut(i..i+64));
+                    x.copy_to_slice(simd_val.get_unchecked_mut(i..i + 64));
                     let y = x & simd_63;
-                    y.copy_to_slice(simd_val_b.get_unchecked_mut(i..i+64));   
+                    y.copy_to_slice(simd_val_b.get_unchecked_mut(i..i + 64));
                 }
             }
             let mut mod_count = 0;
@@ -380,7 +380,7 @@ impl Namer {
                 + *prop_name.get_unchecked(4) as u32
                 + *prop_name.get_unchecked(5) as u32
                 + *prop_name.get_unchecked(6) as u32;
-            
+
             *self.name_prop.get_unchecked_mut(1) = median(
                 *prop_name.get_unchecked(10),
                 *prop_name.get_unchecked(11),
@@ -424,7 +424,6 @@ impl Namer {
             ) as u32
                 + 36;
         }
-
     }
 
     #[inline(always)]
@@ -533,9 +532,17 @@ impl Namer {
 
     #[inline(always)]
     pub fn get_property(&self) -> f32 {
-        let sum1 = self.name_prop[1..=7].iter().sum::<u32>();
-        let sum2 = self.name_prop[0];
-        sum1 as f32 + (sum2 as f32 / 3_f32)
+        unsafe {
+            // (self.name_prop.get_unchecked(1)
+            //     + self.name_prop.get_unchecked(2)
+            //     + self.name_prop.get_unchecked(3)
+            //     + self.name_prop.get_unchecked(4)
+            //     + self.name_prop.get_unchecked(5)
+            //     + self.name_prop.get_unchecked(6)
+            //     + self.name_prop.get_unchecked(7)) as f32
+            //     + (*self.name_prop.get_unchecked(0) as f32 / 3_f32)
+            self.name_prop.get_unchecked(1..=7).iter().sum::<u32>() as f32 + (*self.name_prop.get_unchecked(0) as f32 / 3_f32)
+        }
     }
 
     pub fn get_净化(&self) -> u8 {
@@ -745,6 +752,7 @@ mod test {
 
         let prop_vec: Vec<u32> = vec![344, 57, 53, 66, 72, 70, 71, 61];
         assert_eq!(namer.name_prop.to_vec(), prop_vec);
+        assert_eq!(namer.get_property(), 564.6667_f32);
     }
 
     #[test]
@@ -753,6 +761,7 @@ mod test {
         let prop_vec: Vec<u32> = vec![240, 89, 69, 82, 65, 75, 49, 49];
 
         assert_eq!(name.name_prop.to_vec(), prop_vec);
+        assert_eq!(name.get_property(), 558_f32);
     }
 
     #[test]
@@ -774,6 +783,5 @@ mod test {
         assert_eq!(namer.val.to_vec(), none_update_name.val.to_vec());
         assert_eq!(namer.skl_id.to_vec(), none_update_name.skl_id.to_vec());
         assert_eq!(namer.skl_freq.to_vec(), none_update_name.skl_freq.to_vec());
-
     }
 }
