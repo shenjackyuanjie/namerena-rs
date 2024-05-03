@@ -195,7 +195,7 @@ const Namer = struct {
                 self.val[b] = tmp2;
                 const t = self.val[self.val[a] +% self.val[b]];
                 const rnd: u8 = @truncate((@as(u32, u) << 8 | @as(u32, t)) % 40);
-                s = (s + rnd + self.skl_id[i]) % 40;
+                s = (s +% rnd +% self.skl_id[i]) % 40;
                 // swap i, s
                 const tmp3 = self.skl_id[i];
                 self.skl_id[i] = self.skl_id[s];
@@ -204,7 +204,7 @@ const Namer = struct {
         }
         var last: i32 = -1;
         var j: u8 = 0;
-        var i: u8 = 0;
+        var i: u8 = 64;
         while (i < 128) {
             const p = @min(
                 @min(self.name_base[i], self.name_base[i + 1]),
