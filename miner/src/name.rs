@@ -136,9 +136,8 @@ impl Namer {
         let name_len = name_bytes.len();
         let b_name_len = name_len + 1;
         for _ in 0..2 {
-            let mut s = 0_u8;
             unsafe {
-                val.swap_unchecked(s as usize, 0);
+                let mut s = 0_u8;
                 let mut k = 0;
                 for i in 0..256 {
                     s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
@@ -503,17 +502,22 @@ impl Namer {
                         min(*self.name_base.get_unchecked(i + 2), *self.name_base.get_unchecked(i + 3)),
                     )
                 };
-                if p > 10 && skill_id[j] < 35 {
-                    self.skl_freq[j] = p - 10;
-                    if skill_id[j] < 25 {
-                        last = j as i32;
-                    };
-                } else {
-                    self.skl_freq[j] = 0
+                unsafe {
+                    if p > 10 && *skill_id.get_unchecked(j) < 35 {
+                        *self.skl_freq.get_unchecked_mut(j) = p - 10;
+                        if *skill_id.get_unchecked(j) < 25 {
+                            last = j as i32;
+                        }
+                    } else {
+                        *self.skl_freq.get_unchecked_mut(j) = 0;
+                    }
                 }
             }
             if last != -1 {
-                self.skl_freq[last as usize] <<= 1;
+                // self.skl_freq[last as usize] <<= 1;
+                unsafe {
+                    *self.skl_freq.get_unchecked_mut(last as usize) <<= 1;
+                }
                 // *= 2
             }
             if (self.skl_freq[14] != 0) && (last != 14) {
@@ -533,46 +537,8 @@ impl Namer {
     #[inline(always)]
     pub fn get_property(&self) -> f32 {
         unsafe {
-            // (self.name_prop.get_unchecked(1)
-            //     + self.name_prop.get_unchecked(2)
-            //     + self.name_prop.get_unchecked(3)
-            //     + self.name_prop.get_unchecked(4)
-            //     + self.name_prop.get_unchecked(5)
-            //     + self.name_prop.get_unchecked(6)
-            //     + self.name_prop.get_unchecked(7)) as f32
-            //     + (*self.name_prop.get_unchecked(0) as f32 / 3_f32)
             self.name_prop.get_unchecked(1..=7).iter().sum::<u32>() as f32 + (*self.name_prop.get_unchecked(0) as f32 / 3_f32)
         }
-    }
-
-    pub fn get_净化(&self) -> u8 {
-        // self.skl_freq[17]
-        for (i, v) in self.skl_freq.iter().enumerate() {
-            if *v != 0 && self.skl_id[i] == 17 {
-                return *v;
-            }
-        }
-        0
-    }
-
-    pub fn get_分身(&self) -> u8 {
-        // self.skl_freq[23]
-        for (i, v) in self.skl_freq.iter().enumerate() {
-            if *v != 0 && self.skl_id[i] == 23 {
-                return *v;
-            }
-        }
-        0
-    }
-
-    pub fn get_幻术(&self) -> u8 {
-        // self.skl_freq[24]
-        for (i, v) in self.skl_freq.iter().enumerate() {
-            if *v != 0 && self.skl_id[i] == 24 {
-                return *v;
-            }
-        }
-        0
     }
 
     pub fn get_info(&self) -> String {
