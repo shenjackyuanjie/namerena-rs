@@ -13,5 +13,9 @@ pub mod runners {
         seed: u32,
         /// 所有玩家 (包括 boss)
         players: Vec<PlayerGroup>,
+        /// 赢家
+        /// 
+        /// 也应该是一个队伍
+        winner: Option<PlayerGroup>
     }
 }

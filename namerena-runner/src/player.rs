@@ -1,5 +1,7 @@
 pub mod skills;
 
+use crate::rc4::RC4;
+
 pub struct PlayerStatus {
     frozen: bool,
 }
@@ -46,7 +48,7 @@ pub enum PlayerType {
     Boss,
     /// 被特殊增强的玩家
     ///
-    /// 有一堆
+    /// 有一堆玩家都被增强了
     Boost,
     /// 标准测号用靶子
     ///
@@ -97,4 +99,8 @@ impl Player {
     }
 
     pub fn update_player(&mut self) {}
+
+    pub fn step(&mut self, randomer: &mut RC4) {
+
+    }
 }
