@@ -309,6 +309,7 @@ impl Namer {
     #[inline(always)]
     pub fn replace_name(&mut self, team_namer: &TeamNamer, name: &str) {
         self.val = team_namer.clone_vals();
+        self.name = name.to_string();
 
         let name_bytes = name.as_bytes();
         let name_len = name_bytes.len();
