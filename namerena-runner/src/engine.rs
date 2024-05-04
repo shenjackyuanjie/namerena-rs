@@ -1,3 +1,6 @@
+
+pub const PROFILE_START: u32 = 33554431;
+
 pub mod runners {
     use crate::name::Player;
 
