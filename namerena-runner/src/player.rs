@@ -10,7 +10,31 @@ pub struct Player {
 pub enum PlayerType {
     #[default]
     Normal,
-    Seed
+    /// 种子玩家
+    /// 
+    /// # marker: `seed:`
+    Seed,
+    /// 被克隆的玩家
+    Clone,
+    /// Boss 玩家
+    /// 其实应该是一大堆
+    Boss,
+    /// 被特殊增强的玩家
+    /// 
+    /// 有一堆
+    Boost,
+    /// 标准测号用靶子
+    /// 
+    /// # marker: `\u0002`
+    Test1,
+    /// 没用到的测号用玩家
+    /// 
+    /// # marker: `\u0003`
+    Test2,
+    /// 比标准测号再强一点的测号用靶子
+    /// 
+    /// # marker: `!`
+    TestEx,
 }
 
 impl Player {
