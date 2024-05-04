@@ -187,6 +187,7 @@ const Namer = struct {
                 self.val[a] = self.val[b];
                 self.val[b] = tmp;
                 const u = self.val[self.val[a] +% self.val[b]];
+
                 a += 1;
                 b +%= self.val[a];
                 // swap a, b
