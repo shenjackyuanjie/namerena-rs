@@ -21,6 +21,7 @@ const VAL_INIT: [u8; 256] = val!();
 
 /// RC4 类
 /// 名竞的核心~
+#[allow(unused)]
 pub struct RC4 {
     i: u32,
     j: u32,
@@ -28,6 +29,7 @@ pub struct RC4 {
     main_val: Vec<u8>,
 }
 
+#[allow(unused)]
 impl RC4 {
     /// ```dart
     /// RC4(List<int> key, [int round = 1]) {
@@ -291,7 +293,7 @@ impl RC4 {
     ///   return null;
     /// }
     /// ```
-    pub fn pick<T>(&mut self, list: &mut [T]) -> Option<usize> {
+    pub fn pick<T>(&mut self, list: &[T]) -> Option<usize> {
         match list.len() {
             1 => Some(0),
             n if n > 1 => Some(self.next_i32(n as i32) as usize),
@@ -328,7 +330,7 @@ impl RC4 {
     ///    return null;
     ///  }
     /// ```
-    pub fn pick_skip<T>(&mut self, list: &mut [T], skip_after_index: usize) -> Option<usize> {
+    pub fn pick_skip<T>(&mut self, list: &[T], skip_after_index: usize) -> Option<usize> {
         match list.len() {
             1 => {
                 if skip_after_index == 0 {
@@ -378,7 +380,7 @@ impl RC4 {
     ///     return null;
     /// }
     /// ```
-    pub fn pick_skip_range<T>(&mut self, list: &mut [T], skips: Vec<usize>) -> Option<usize> {
+    pub fn pick_skip_range<T>(&mut self, list: &[T], skips: Vec<usize>) -> Option<usize> {
         if skips.is_empty() {
             return self.pick(list);
         }
@@ -434,17 +436,32 @@ impl RC4 {
     /// 生成一个 1-256 的随机数
     pub fn r256(&mut self) -> u32 { self.next_u8() as u32 + 1 }
 
+    /// 生成一个 1-64 的随机数
+    pub fn r64(&mut self) -> u32 { (self.next_u8() as u32 & 63) + 1 }
+
+    /// 生成一个 1-16 的随机数
+    pub fn r16(&mut self) -> u32 { (self.next_u8() as u32 & 15) + 1 }
+
     /// 生成一个 0-255 的随机数
     pub fn r255(&mut self) -> u32 { self.next_u8() as u32 }
 
     /// 生成一个 0-127 的随机数
     pub fn r127(&mut self) -> u32 { self.next_u8() as u32 & 127 }
 
-    /// 生成一个 1-64 的随机数
-    pub fn r64(&mut self) -> u32 { (self.next_u8() as u32 & 63) + 1 }
-
     /// 生成一个 0-63 的随机数
     pub fn r63(&mut self) -> u32 { self.next_u8() as u32 & 63 }
+
+    /// 生成一个 0-31 的随机数
+    pub fn r31(&mut self) -> u32 { self.next_u8() as u32 & 31 }
+
+    /// 生成一个 0-15 的随机数
+    pub fn r15(&mut self) -> u32 { self.next_u8() as u32 & 15 }
+
+    /// 生成一个 0-7 的随机数
+    pub fn r7(&mut self) -> u32 { self.next_u8() as u32 & 7 }
+
+    /// 生成一个 0-3 的随机数
+    pub fn r3(&mut self) -> u32 { self.next_u8() as u32 & 3 }
 
     /// ```dart
     /// used by req mp
