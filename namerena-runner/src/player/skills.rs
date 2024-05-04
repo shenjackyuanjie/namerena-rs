@@ -1,4 +1,1 @@
-
-pub enum Skills {
-    
-}
+pub enum Skills {}

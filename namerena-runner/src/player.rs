@@ -1,28 +1,61 @@
 pub mod skills;
 
+use std::fmt::Display;
+
 use crate::rc4::RC4;
 
 pub struct PlayerStatus {
+    /// 是否被冻结
     frozen: bool,
+    /// 是否存活
+    alive: bool,
+    /// 血量
+    hp: u32,
+    /// 分数
+    point: u32,
 }
 
 impl Default for PlayerStatus {
     fn default() -> Self {
-        PlayerStatus { frozen: false }
+        PlayerStatus {
+            frozen: false,
+            alive: true,
+            hp: 0,
+            point: 0,
+        }
+    }
+}
+
+impl Display for PlayerStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PlayerStatus{{{},{} hp: {}, point: {} }}",
+            // 冻结/正常
+            // 存活/死亡
+            if self.frozen { "冻结" } else { "正常" },
+            if self.alive { "存货" } else { "死亡" },
+            self.hp,
+            self.point
+        )
     }
 }
 
 pub struct Player {
+    /// 队伍
     team: String,
+    /// 玩家名
     name: String,
-    weapon: String,
+    /// 武器
+    weapon: Option<String>,
+    /// 玩家类型
     player_type: PlayerType,
     /// skl id
     skil_id: Vec<u32>,
     /// skl prop
     skil_prop: Vec<u32>,
     /// 玩家状态
-    /// 
+    ///
     /// 主要是我懒得加一大堆字段
     status: PlayerStatus,
 }
@@ -65,7 +98,7 @@ pub enum PlayerType {
 }
 
 impl Player {
-    pub fn new(team: String, name: String, weapon: String) -> Self {
+    pub fn new(team: String, name: String, weapon: Option<String>) -> Self {
         let player_type = {
             match team.as_str() {
                 "!" => {
@@ -100,7 +133,5 @@ impl Player {
 
     pub fn update_player(&mut self) {}
 
-    pub fn step(&mut self, randomer: &mut RC4) {
-
-    }
+    pub fn step(&mut self, randomer: &mut RC4) {}
 }
