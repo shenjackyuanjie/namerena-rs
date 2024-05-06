@@ -131,6 +131,34 @@ impl Player {
         }
     }
 
+    /// 直接从一个名竞的原始输入创建一个 Player
+    /// 
+    /// # 要求
+    /// 不许有 \n
+    /// 
+    /// 可能的输入格式:
+    /// - <name>
+    /// - <name>@<team>
+    /// - <name>+<weapon>
+    /// - <name>+<weapon>+diy{xxxxx}
+    /// - <name>@<team>+<weapon>
+    /// - <name>@<team>+<weapon>+diy{xxxxx}
+    pub fn new_from_namerena_raw(raw_name: String) -> Self {
+        // 先判断是否有 + 和 @
+        if !raw_name.contains("@") && !raw_name.contains("+") {
+            return Player::new(raw_name.clone(), raw_name.clone(), None);
+        }
+        // 区分队伍名
+        let name: &str;
+        let mut team: &str;
+        let weapon: Option<&str>;
+        if raw_name.contains("@") {
+            (name, team) = raw_name.split_once("@").unwrap();
+        }
+        
+        todo!()
+    }
+
     pub fn update_player(&mut self) {}
 
     pub fn step(&mut self, randomer: &mut RC4) {}
