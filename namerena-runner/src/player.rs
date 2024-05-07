@@ -154,9 +154,24 @@ impl Player {
         let weapon: Option<&str>;
         if raw_name.contains("@") {
             (name, team) = raw_name.split_once("@").unwrap();
+            // 判定武器
+            if team.contains("+") {
+                (team, weapon) = team.split_once("+").unwrap();
+            } else {
+                weapon = None;
+            }
+        } else {
+            // 没有队伍名, 直接是武器
+            if team.contains("+") {
+                (name, weapon) = raw_name.split_once("+").unwrap();
+                team = name;
+            } else {
+                name = raw_name.as_str();
+                team = name;
+                weapon = None;
+            }
         }
-        
-        todo!()
+        Player::new(name.to_string(), team.to_string(), weapon.map(|s| s.to_string()))
     }
 
     pub fn update_player(&mut self) {}
