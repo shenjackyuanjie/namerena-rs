@@ -68,6 +68,13 @@ pub const BOSS_NAMES: [&str; 11] = [
 // ["田一人", 18, "云剑狄卡敢", 25, "云剑穸跄祇", 35]
 pub const BOOST_NAMES: [&str; 3] = ["云剑狄卡敢", "云剑穸跄祇", "田一人"];
 
+/// 匹配字符的 Unicode 码点
+/// 
+/// 其实就是过滤一下不可见字符
+pub fn filter_char(s: char) -> bool {
+    matches!(s as u32 , 9..13 | 32 | 133 | 160 | 5760 | 8192..8202 | 8232..8233 | 8239 | 8287 | 12288 | 65279)
+}
+
 #[derive(Default, PartialEq, Eq, Debug)]
 pub enum PlayerType {
     #[default]
@@ -140,10 +147,10 @@ impl Player {
     }
 
     /// 直接从一个名竞的原始输入创建一个 Player
-    /// 
+    ///
     /// # 要求
     /// 不许有 \n
-    /// 
+    ///
     /// 可能的输入格式:
     /// - <name>
     /// - <name>@<team>
@@ -193,7 +200,9 @@ impl Player {
 
 impl Display for Player {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Player{{{}@{}{}, status: {}}}",
+        write!(
+            f,
+            "Player{{{}@{}{}, status: {}}}",
             self.name,
             self.team,
             if let Some(weapon) = &self.weapon {
@@ -282,6 +291,5 @@ mod test {
         // boosted
         let player = Player::new_from_namerena_raw("云剑狄卡敢@!".to_string());
         assert_eq!(player.player_type, PlayerType::Boost);
-        
     }
 }
