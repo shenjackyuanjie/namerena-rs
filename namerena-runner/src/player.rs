@@ -1,4 +1,5 @@
 pub mod skills;
+pub mod utils;
 
 use std::fmt::Display;
 
@@ -64,7 +65,10 @@ pub const BOSS_NAMES: [&str; 11] = [
     "mario", "sonic", "mosquito", "yuri", "slime", "ikaruga", "conan", "aokiji", "lazy", "covid", "saitama",
 ];
 
-#[derive(Default)]
+// ["田一人", 18, "云剑狄卡敢", 25, "云剑穸跄祇", 35]
+pub const BOOST_NAMES: [&str; 3] = ["云剑狄卡敢", "云剑穸跄祇", "田一人"];
+
+#[derive(Default, PartialEq, Eq, Debug)]
 pub enum PlayerType {
     #[default]
     Normal,
@@ -104,6 +108,10 @@ impl Player {
                 "!" => {
                     if BOSS_NAMES.contains(&name.as_str()) {
                         PlayerType::Boss
+                    } else if BOOST_NAMES.contains(&name.as_str()) {
+                        PlayerType::Boost
+                    } else if name.starts_with("seed:") {
+                        PlayerType::Seed
                     } else {
                         // 高强度测号用靶子
                         PlayerType::TestEx
@@ -156,25 +164,124 @@ impl Player {
             (name, team) = raw_name.split_once("@").unwrap();
             // 判定武器
             if team.contains("+") {
-                (team, weapon) = team.split_once("+").unwrap();
+                let tmp;
+                (team, tmp) = team.split_once("+").unwrap();
+                weapon = Some(tmp);
             } else {
                 weapon = None;
             }
         } else {
+            team = raw_name.as_str();
             // 没有队伍名, 直接是武器
             if team.contains("+") {
-                (name, weapon) = raw_name.split_once("+").unwrap();
+                let tmp;
+                (name, tmp) = raw_name.split_once("+").unwrap();
+                weapon = Some(tmp);
                 team = name;
             } else {
-                name = raw_name.as_str();
-                team = name;
+                name = team;
                 weapon = None;
             }
         }
-        Player::new(name.to_string(), team.to_string(), weapon.map(|s| s.to_string()))
+        Player::new(team.to_string(), name.to_string(), weapon.map(|s| s.to_string()))
     }
 
     pub fn update_player(&mut self) {}
 
     pub fn step(&mut self, randomer: &mut RC4) {}
+}
+
+impl Display for Player {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Player{{{}@{}{}, status: {}}}",
+            self.name,
+            self.team,
+            if let Some(weapon) = &self.weapon {
+                format!("+{}", weapon)
+            } else {
+                "".to_string()
+            },
+            self.status
+        )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    /// 测试根据原始输入创建 Player
+    fn player_raw_new() {
+        let player = Player::new_from_namerena_raw("mario".to_string());
+        assert_eq!(player.name, "mario");
+        assert_eq!(player.team, "mario");
+        assert_eq!(player.weapon, None);
+        assert_eq!(player.player_type, PlayerType::Normal);
+
+        let player = Player::new_from_namerena_raw("mario@red".to_string());
+        println!("{}", player);
+        assert_eq!(player.name, "mario");
+        assert_eq!(player.team, "red");
+        assert_eq!(player.weapon, None);
+        assert_eq!(player.player_type, PlayerType::Normal);
+
+        let player = Player::new_from_namerena_raw("mario+fire".to_string());
+        assert_eq!(player.name, "mario");
+        assert_eq!(player.team, "mario");
+        assert_eq!(player.weapon, Some("fire".to_string()));
+        assert_eq!(player.player_type, PlayerType::Normal);
+
+        let player = Player::new_from_namerena_raw("mario+fire+diy{xxxx}".to_string());
+        assert_eq!(player.name, "mario");
+        assert_eq!(player.team, "mario");
+        assert_eq!(player.weapon, Some("fire+diy{xxxx}".to_string()));
+        assert_eq!(player.player_type, PlayerType::Normal);
+
+        let player = Player::new_from_namerena_raw("mario@red+fire".to_string());
+        assert_eq!(player.name, "mario");
+        assert_eq!(player.team, "red");
+        assert_eq!(player.weapon, Some("fire".to_string()));
+        assert_eq!(player.player_type, PlayerType::Normal);
+
+        let player = Player::new_from_namerena_raw("mario@red+fire+diy{xxxx}".to_string());
+        assert_eq!(player.name, "mario");
+        assert_eq!(player.team, "red");
+        assert_eq!(player.weapon, Some("fire+diy{xxxx}".to_string()));
+        assert_eq!(player.player_type, PlayerType::Normal);
+    }
+
+    #[test]
+    pub fn player_raw_types() {
+        let player = Player::new_from_namerena_raw("normal@normal".to_string());
+        assert_eq!(player.player_type, PlayerType::Normal);
+
+        // seed
+        let player = Player::new_from_namerena_raw("seed:just seed@!".to_string());
+        assert_eq!(player.name, "seed:just seed");
+        assert_eq!(player.player_type, PlayerType::Seed);
+
+        // testEx
+        let player = Player::new_from_namerena_raw("testEx@!".to_string());
+        assert_eq!(player.player_type, PlayerType::TestEx);
+
+        // test1
+        let player = Player::new_from_namerena_raw("test1@\u{0002}".to_string());
+        assert_eq!(player.team, "\u{0002}".to_string());
+        assert_eq!(player.player_type, PlayerType::Test1);
+
+        // test2
+        let player = Player::new_from_namerena_raw("test2@\u{0003}".to_string());
+        assert_eq!(player.team, "\u{0003}".to_string());
+        assert_eq!(player.player_type, PlayerType::Test2);
+
+        // boss
+        let player = Player::new_from_namerena_raw("mario@!".to_string());
+        assert_eq!(player.player_type, PlayerType::Boss);
+
+        // boosted
+        let player = Player::new_from_namerena_raw("云剑狄卡敢@!".to_string());
+        assert_eq!(player.player_type, PlayerType::Boost);
+        
+    }
 }
