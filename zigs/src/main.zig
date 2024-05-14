@@ -215,9 +215,9 @@ const Namer = struct {
                 self.skl_freq[j] = p - 10;
                 if (self.skl_id[j] < 25) {
                     last = j;
-                } else {
-                    self.skl_freq[j] = 0;
                 }
+            } else {
+                self.skl_freq[j] = 0;
             }
             j += 1;
             i += 4;
@@ -295,14 +295,13 @@ test "skill_test" {
         9,  13, 12, 38, 4,  27, 26, 15, 16, 32, 24, 5, 7, 21, 18, 10, 37, 2, 6, 20, 39, 1, 14, 3, 11, 29, 22, 33, 19, 0, 30,
         31, 17, 28, 34, 35, 23, 8,  25, 36,
     };
-    const skl_prop = [40]u8{
+    const skl_frep = [40]u8{
         13, 0, 0, 0, 0, 0, 0, 0, 6, 8, 0, 1, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0,  0,
     };
 
-    std.debug.print("skl_id: {any}\n", .{namer.skl_id});
     for (0..40) |i| {
         try std.testing.expectEqual(skl_id[i], namer.skl_id[i]);
-        try std.testing.expectEqual(skl_prop[i], namer.skl_freq[i]);
+        try std.testing.expectEqual(skl_frep[i], namer.skl_freq[i]);
     }
 }

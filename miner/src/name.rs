@@ -705,11 +705,11 @@ mod test {
         let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
 
         namer.update_skill();
-        let skill_prop_vec: Vec<u8> = vec![
+        let skill_freq_vec: Vec<u8> = vec![
             13, 0, 0, 0, 0, 0, 0, 0, 6, 8, 0, 1, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0,
         ];
-        assert_eq!(namer.skl_freq.to_vec(), skill_prop_vec);
+        assert_eq!(namer.skl_freq.to_vec(), skill_freq_vec);
     }
 
     #[test]
