@@ -321,18 +321,14 @@ impl Namer {
             let val_ptr = self.val.as_mut_ptr();
             for _ in 0..2 {
                 let mut s = 0_u8;
-                    // self.val.swap_unchecked(s as usize, 0);
-                    std::ptr::swap(val_ptr.add(s as usize), val_ptr);
-                    let mut k = 0;
-                    for i in 0..256 {
-                        s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
-                        s = s.wrapping_add(*self.val.get_unchecked(i));
-                        // self.val.swap_unchecked(i, s as usize);
-                        std::ptr::swap(val_ptr.add(i), val_ptr.add(s as usize));
-                        k = if k == name_len { 0 } else { k + 1 };
-                    }
+                let mut k = 0;
+                for i in 0..256 {
+                    s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
+                    s = s.wrapping_add(*self.val.get_unchecked(i));
+                    std::ptr::swap(val_ptr.add(i), val_ptr.add(s as usize));
+                    k = if k == name_len { 0 } else { k + 1 };
+                }
             }
-
         }
         // simd!
         #[cfg(feature = "simd")]
@@ -447,12 +443,10 @@ impl Namer {
 
     #[inline(always)]
     pub fn update_skill(&mut self) {
-        let skill_id = self.skl_id.as_mut();
-        for i in 0..40 {
-            unsafe {
-                *skill_id.get_unchecked_mut(i) = i as u8;
-            }
-        }
+        self.skl_id = [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+            32, 33, 34, 35, 36, 37, 38, 39,
+        ];
 
         #[cfg(feature = "simd")]
         {
@@ -509,8 +503,8 @@ impl Namer {
                         (((u as u32) << 8 | t as u32) % 40) as u8
                     };
                     unsafe {
-                        s = (s as u16 + rnd as u16 + *skill_id.get_unchecked(i as usize) as u16) as u8 % 40;
-                        skill_id.swap_unchecked(i as usize, s as usize);
+                        s = (s as u16 + rnd as u16 + *self.skl_id.get_unchecked(i as usize) as u16) as u8 % 40;
+                        self.skl_id.swap_unchecked(i as usize, s as usize);
                     }
                 }
             }
@@ -523,9 +517,9 @@ impl Namer {
                     )
                 };
                 unsafe {
-                    if p > 10 && *skill_id.get_unchecked(j) < 35 {
+                    if p > 10 && *self.skl_id.get_unchecked(j) < 35 {
                         *self.skl_freq.get_unchecked_mut(j) = p - 10;
-                        if *skill_id.get_unchecked(j) < 25 {
+                        if *self.skl_id.get_unchecked(j) < 25 {
                             last = j as i32;
                         }
                     } else {
