@@ -69,6 +69,7 @@ impl TeamNamer {
     pub fn clone_vals(&self) -> [u8; 256] { self.val }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone)]
 pub struct Namer {
     pub name: String,

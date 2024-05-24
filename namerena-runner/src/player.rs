@@ -69,7 +69,7 @@ pub const BOSS_NAMES: [&str; 11] = [
 pub const BOOST_NAMES: [&str; 3] = ["云剑狄卡敢", "云剑穸跄祇", "田一人"];
 
 /// 匹配字符的 Unicode 码点
-/// 
+///
 /// 其实就是过滤一下不可见字符
 pub fn filter_char(s: char) -> bool {
     matches!(s as u32 , 9..13 | 32 | 133 | 160 | 5760 | 8192..8202 | 8232..8233 | 8239 | 8287 | 12288 | 65279)
