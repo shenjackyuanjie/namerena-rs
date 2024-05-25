@@ -26,8 +26,8 @@ pub struct CacluateConfig {
     pub start: u64,
     /// 结束的 id
     pub end: u64,
-    /// 线程数
-    pub thread_count: u32,
+    /// 线程 id
+    pub thread_id: u32,
     /// 八围预期值
     pub prop_expect: u32,
     /// qp 预期值
@@ -40,9 +40,23 @@ pub struct CacluateConfig {
     pub core_affinity: Option<usize>,
 }
 
+/// 用于收集统计信息的结构体
+pub struct RunStatus {
+    /// 工作位置
+    /// 每一个线程对应一组
+    pub work_batches: Vec<(u128, u128)>,
+    /// 每个线程的效率回报
+    pub work_speed: Vec<u32>,
+    /// 每个线程是否需要干活
+    /// work batch 大小
+    pub work_batch: u32,
+}
+
 /// 启动计算的调度函数
 pub fn start_main(cli_config: crate::Command, outfile: PathBuf) {
-
+    if cli_config.is_single_core() {
+        // 单核的处理
+    }
     // if cli_arg.bench {
     //     info!("开始 benchmark");
     //     cli_arg.thread_count = 1;
@@ -99,16 +113,16 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     // 提前准备好 team_namer
     let team_namer = TeamNamer::new(&config.team).unwrap();
 
-    let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
+    let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "看到这个说明有问题出现");
 
-    for i in (config.start + id..config.end).step_by(config.thread_count as usize) {
+    for i in config.start..config.end {
         k += 1;
         if k >= report_interval {
             let now = std::time::Instant::now();
             let d_t: std::time::Duration = now.duration_since(start_time);
             let new_run_speed = k as f64 / d_t.as_secs_f64();
             // 预估剩余时间
-            let wait_time = (config.end - i) / config.thread_count as u64 / new_run_speed as u64;
+            let wait_time = (config.end - i) / new_run_speed as u64;
             let wait_time = chrono::Duration::seconds(wait_time as i64);
             // 转换成 时:分:秒
             // 根据实际运行速率来调整 report_interval

@@ -46,13 +46,17 @@ impl Command {
         CacluateConfig {
             start: self.start,
             end: self.end,
-            thread_count: self.thread_count,
+            thread_id: 0,
             prop_expect: self.prop_expect,
             qp_expect: self.qp_expect,
             team: self.team.clone(),
             report_interval: self.report_interval,
             core_affinity: if self.thread_count == 1 { Some(1 << self.pick_core) } else { None },
         }
+    }
+
+    pub fn is_single_core(&self) -> bool {
+        self.thread_count == 1
     }
 }
 
