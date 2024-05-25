@@ -39,6 +39,9 @@ pub struct Command {
     /// 单线程模式模式下的核心亲和性核心号 (从 0 开始)
     #[arg(long = "core-pick", default_value_t = 0)]
     pub pick_core: usize,
+    /// 是否是子进程
+    #[arg(short = 's')]
+    pub is_sub_process: bool,
 }
 
 impl Command {
@@ -121,7 +124,6 @@ fn main() {
     info!("队伍名: {}", cli_arg.team);
     info!("输出文件名: {:?}", out_path);
     info!("预期状态输出时间间隔: {} 秒", cli_arg.report_interval);
-    info!("是否启动 benchmark 模式: {}", cli_arg.bench);
 
     cacluate::start_main(cli_arg, out_path);
 
