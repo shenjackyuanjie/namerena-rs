@@ -1,8 +1,6 @@
 /// 虚评 1.3.1
 
 #[cfg(feature = "simd")]
-use std::simd::f64x4;
-#[cfg(feature = "simd")]
 use std::simd::f64x64;
 #[cfg(feature = "simd")]
 use std::simd::num::SimdFloat;
@@ -213,17 +211,17 @@ pub fn predict_20(name: &Namer) -> f64 {
     unsafe {
         #[cfg(feature = "simd")]
         {
-            let mut simd_sum = f64x4::splat(0.0);
-            // 加载四个, 计算, 然后加
-            for i in (0..xp.len() - 2).step_by(4) {
-                let simd_xp = f64x4::from_slice(&xp.get_unchecked(i..));
-                let simd_model = f64x4::from_slice(&xuping20::MODEL.get_unchecked(i..));
+            let mut simd_sum = f64x64::splat(0.0);
+            for i in (0..1024).step_by(64) {
+                let simd_xp = f64x64::from_slice(xp.get_unchecked(i..));
+                let simd_model = f64x64::from_slice(xuping20::MODEL.get_unchecked(i..));
                 simd_sum += simd_xp * simd_model;
             }
-            // 最后加两个
             sum += simd_sum.reduce_sum();
-            sum += xp.get_unchecked(xp.len() - 2) * xuping20::MODEL.get_unchecked(xp.len() - 2);
-            sum += xp.get_unchecked(xp.len() - 1) * xuping20::MODEL.get_unchecked(xp.len() - 1);
+            // 剩10个
+            for i in 0..10 {
+                sum += xp[i + 1024] * xuping20::MODEL[i + 1024];
+            }
         }
         #[cfg(not(feature = "simd"))]
         {
@@ -271,24 +269,20 @@ pub fn predict_20_qd(name: &Namer) -> f64 {
 
     let mut sum = xuping20::BASE_QD;
 
-    // for (i, xp) in xp.iter().enumerate() {
-    //     sum_qd += xp * xuping20::MODEL_QD[i];
-    // }
-    
     unsafe {
         #[cfg(feature = "simd")]
         {
-            let mut simd_sum = f64x4::splat(0.0);
-            // 加载四个, 计算, 然后加
-            for i in (0..xp.len() - 2).step_by(4) {
-                let simd_xp = f64x4::from_slice(&xp.get_unchecked(i..));
-                let simd_model = f64x4::from_slice(&xuping20::MODEL_QD.get_unchecked(i..));
+            let mut simd_sum = f64x64::splat(0.0);
+            for i in (0..1024).step_by(64) {
+                let simd_xp = f64x64::from_slice(xp.get_unchecked(i..));
+                let simd_model = f64x64::from_slice(xuping20::MODEL_QD.get_unchecked(i..));
                 simd_sum += simd_xp * simd_model;
             }
-            // 最后加两个
             sum += simd_sum.reduce_sum();
-            sum += xp.get_unchecked(xp.len() - 2) * xuping20::MODEL_QD.get_unchecked(xp.len() - 2);
-            sum += xp.get_unchecked(xp.len() - 1) * xuping20::MODEL_QD.get_unchecked(xp.len() - 1);
+            // 剩10个
+            for i in 0..10 {
+                sum += xp[i + 1024] * xuping20::MODEL_QD[i + 1024];
+            }
         }
         #[cfg(not(feature = "simd"))]
         {
@@ -331,7 +325,7 @@ mod test {
         #[cfg(not(feature = "simd"))]
         assert_eq!(predict_20(&namer), 3603.4389333619297);
         #[cfg(feature = "simd")]
-        assert_eq!(predict_20(&namer), 3603.438933361928);
+        assert_eq!(predict_20(&namer), 3603.4389333619315);
     }
 
     #[test]
@@ -343,8 +337,8 @@ mod test {
 
         println!("{:?}", namer.get_info());
         #[cfg(not(feature = "simd"))]
-        assert_eq!(predict_20_qd(&namer), 3603.4389333619297);
-        #[cfg(feature = "simd")]
         assert_eq!(predict_20_qd(&namer), 3639.8920896688987);
+        #[cfg(feature = "simd")]
+        assert_eq!(predict_20_qd(&namer), 3639.8920896689424);
     }
 }

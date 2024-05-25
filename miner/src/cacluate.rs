@@ -59,10 +59,6 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
 
     for i in (config.start + id..config.end).step_by(config.thread_count as usize) {
-        let name = gen_name(i);
-        main_namer.replace_name(&team_namer, &name);
-        let prop = main_namer.get_property();
-
         k += 1;
         if k >= report_interval {
             let now = std::time::Instant::now();
@@ -100,6 +96,14 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             start_time = std::time::Instant::now();
             k = 0;
         }
+        // 这堆操作放在这边了, 保证统计没问题
+        let name = gen_name(i);
+        // 新加的提前检测
+        if !main_namer.replace_name(&team_namer, &name) {
+            continue;
+        }
+        // println!("{} {}", i, name);
+        let prop = main_namer.get_property();
 
         if prop > config.prop_expect as f32 {
             let name = gen_name(i);
@@ -110,7 +114,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&main_namer);
             let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&main_namer);
 
-            if xu < config.qp_expect as f64 && xu_qd < config.qp_expect as f64 {
+            if xu < config.qp_expect as f64 || xu_qd < config.qp_expect as f64 {
                 continue;
             }
 

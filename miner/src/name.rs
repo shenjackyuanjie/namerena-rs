@@ -310,7 +310,7 @@ impl Namer {
 
     /// 更新当前的名字
     #[inline(always)]
-    pub fn replace_name(&mut self, team_namer: &TeamNamer, name: &str) {
+    pub fn replace_name(&mut self, team_namer: &TeamNamer, name: &str) -> bool {
         self.val = team_namer.clone_vals();
         self.name = name.to_string();
 
@@ -387,21 +387,20 @@ impl Namer {
         }
         // 计算 name_prop
         unsafe {
+            let mut full = 0;
             let mut prop_name = [0_u8; 32];
             prop_name.copy_from_slice(self.name_base.get_unchecked(0..32));
-            prop_name.get_unchecked_mut(0..10).sort_unstable();
-            *self.name_prop.get_unchecked_mut(0) = 154
-                + *prop_name.get_unchecked(3) as u32
-                + *prop_name.get_unchecked(4) as u32
-                + *prop_name.get_unchecked(5) as u32
-                + *prop_name.get_unchecked(6) as u32;
-
-            *self.name_prop.get_unchecked_mut(1) = median(
-                *prop_name.get_unchecked(10),
-                *prop_name.get_unchecked(11),
-                *prop_name.get_unchecked(12),
+            // 加一些特殊检测
+            *self.name_prop.get_unchecked_mut(7) = median(
+                *prop_name.get_unchecked(28),
+                *prop_name.get_unchecked(29),
+                *prop_name.get_unchecked(30),
             ) as u32
                 + 36;
+            full += self.name_prop.get_unchecked(7) - 36;
+            if full < 24 {
+                return false;
+            }
             *self.name_prop.get_unchecked_mut(2) = median(
                 *prop_name.get_unchecked(13),
                 *prop_name.get_unchecked(14),
@@ -412,6 +411,22 @@ impl Namer {
                 *prop_name.get_unchecked(16),
                 *prop_name.get_unchecked(17),
                 *prop_name.get_unchecked(18),
+            ) as u32
+                + 36;
+            *self.name_prop.get_unchecked_mut(6) = median(
+                *prop_name.get_unchecked(25),
+                *prop_name.get_unchecked(26),
+                *prop_name.get_unchecked(27),
+            ) as u32
+                + 36;
+            full += self.name_prop.get_unchecked(2) + self.name_prop.get_unchecked(3) + self.name_prop.get_unchecked(6) - 108;
+            if full < 165 {
+                return false;
+            }
+            *self.name_prop.get_unchecked_mut(1) = median(
+                *prop_name.get_unchecked(10),
+                *prop_name.get_unchecked(11),
+                *prop_name.get_unchecked(12),
             ) as u32
                 + 36;
             *self.name_prop.get_unchecked_mut(4) = median(
@@ -426,19 +441,23 @@ impl Namer {
                 *prop_name.get_unchecked(24),
             ) as u32
                 + 36;
-            *self.name_prop.get_unchecked_mut(6) = median(
-                *prop_name.get_unchecked(25),
-                *prop_name.get_unchecked(26),
-                *prop_name.get_unchecked(27),
-            ) as u32
-                + 36;
-            *self.name_prop.get_unchecked_mut(7) = median(
-                *prop_name.get_unchecked(28),
-                *prop_name.get_unchecked(29),
-                *prop_name.get_unchecked(30),
-            ) as u32
-                + 36;
+            full += self.name_prop.get_unchecked(1) + self.name_prop.get_unchecked(4) + self.name_prop.get_unchecked(5) - 108;
+            if full < 250 {
+                return false;
+            }
+            prop_name.get_unchecked_mut(0..10).sort_unstable();
+            *self.name_prop.get_unchecked_mut(0) = 154
+                + *prop_name.get_unchecked(3) as u32
+                + *prop_name.get_unchecked(4) as u32
+                + *prop_name.get_unchecked(5) as u32
+                + *prop_name.get_unchecked(6) as u32;
+            full += self.name_prop.get_unchecked(0) / 3 + 154;
+            if full < 380 {
+                println!("name_prop[0] < 380 {}", self.name);
+                return false;
+            }
         }
+        true
     }
 
     #[inline(always)]
@@ -450,22 +469,18 @@ impl Namer {
 
         #[cfg(feature = "simd")]
         {
-            let mut simd_val = self.val;
-            let mut simd_val_b = self.val;
+            let mut simd_val = [0_u8; 256];
+            let mut simd_val_b = [0_u8; 256];
             let simd_181 = u8x32::splat(181);
-            let simd_199 = u8x32::splat(199);
-            let simd_128 = u8x32::splat(128);
-            let simd_53 = u8x32::splat(53);
+            let simd_160 = u8x32::splat(160);
             let simd_63 = u8x32::splat(63);
-            let simd_32 = u8x32::splat(32);
 
             for i in (0..256).step_by(32) {
                 unsafe {
-                    let mut x = u8x32::from_slice(simd_val.get_unchecked(i..));
-                    let mut y = u8x32::from_slice(simd_val_b.get_unchecked(i..));
-                    x = (x * simd_181 + simd_199) & simd_128;
-                    y = (y * simd_53) & simd_63 ^ simd_32;
+                    let mut x = u8x32::from_slice(self.val.get_unchecked(i..));
+                    x = x * simd_181 + simd_160;
                     x.copy_to_slice(simd_val.get_unchecked_mut(i..));
+                    let y = x & simd_63;
                     y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
                 }
             }
@@ -473,12 +488,41 @@ impl Namer {
             let mut mod_count = 0;
             for i in 0..256 {
                 unsafe {
-                    if simd_val.get_unchecked(i) != &0 {
+                    if *simd_val.get_unchecked(i) > 88 && *simd_val.get_unchecked(i) < 217 {
                         *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
                         mod_count += 1;
                     }
                 }
             }
+            // let mut simd_val = self.val;
+            // let mut simd_val_b = self.val;
+            // let simd_181 = u8x32::splat(181);
+            // let simd_199 = u8x32::splat(199);
+            // let simd_128 = u8x32::splat(128);
+            // let simd_53 = u8x32::splat(53);
+            // let simd_63 = u8x32::splat(63);
+            // let simd_32 = u8x32::splat(32);
+
+            // for i in (0..256).step_by(32) {
+            //     unsafe {
+            //         let mut x = u8x32::from_slice(simd_val.get_unchecked(i..));
+            //         let mut y = u8x32::from_slice(simd_val_b.get_unchecked(i..));
+            //         x = (x * simd_181 + simd_199) & simd_128;
+            //         y = (y * simd_53) & simd_63 ^ simd_32;
+            //         x.copy_to_slice(simd_val.get_unchecked_mut(i..));
+            //         y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
+            //     }
+            // }
+
+            // let mut mod_count = 0;
+            // for i in 0..256 {
+            //     unsafe {
+            //         if simd_val.get_unchecked(i) != &0 {
+            //             *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
+            //             mod_count += 1;
+            //         }
+            //     }
+            // }
             // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
             let mut a: u8 = 0;
             let mut b: u8 = 0;

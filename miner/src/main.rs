@@ -39,9 +39,9 @@ pub struct Command {
     ///  Windows 下会强制单线程, 且设置线程亲和性为核心 0
     #[arg(long = "bench", default_value_t = false)]
     pub bench: bool,
-    /// benchmark 模式下的核心亲和性核心号 (从 0 开始)
-    #[arg(long = "bench-core", default_value_t = 0)]
-    pub bench_core: usize,
+    /// 单线程模式 / benchmark 模式下的核心亲和性核心号 (从 0 开始)
+    #[arg(long = "core-pick", default_value_t = 0)]
+    pub pick_core: usize,
 }
 
 impl Command {
@@ -54,7 +54,7 @@ impl Command {
             qp_expect: self.qp_expect,
             team: self.team.clone(),
             report_interval: self.report_interval,
-            core_affinity: if self.bench { Some(1 << self.bench_core) } else { None },
+            core_affinity: if self.bench { Some(1 << self.pick_core) } else { None },
         }
     }
 }
@@ -124,28 +124,37 @@ fn main() {
 
     if cli_arg.bench {
         info!("开始 benchmark");
+        cli_arg.thread_count = 1;
         let mut config = cli_arg.as_cacl_config();
-        config.core_affinity = Some(1 << cli_arg.bench_core);
+        config.core_affinity = Some(1 << cli_arg.pick_core);
         set_process_cores(config.core_affinity.unwrap());
         cacluate::cacl(config, 1, &out_path);
     } else {
         let mut n = 0;
         let mut cores = 0;
-        for i in 0..cli_arg.thread_count {
-            n += 1;
+        if cli_arg.thread_count == 1 {
+            // 单线程运行的时候也是让他放在主线程跑
             let mut config = cli_arg.as_cacl_config();
-            // 核心亲和性: n, n+1
-            config.core_affinity = Some(1 << i);
-            cores |= 1 << i;
-            let out_path = out_path.clone();
-            let thread_name = format!("thread_{}", n);
-            threads.push(std::thread::spawn(move || {
-                info!("线程 {} 开始计算", thread_name);
-                cacluate::cacl(config, n, &out_path);
-                info!("线程 {} 结束计算", thread_name);
-            }));
+            config.core_affinity = Some(1 << cli_arg.pick_core);
+            set_process_cores(config.core_affinity.unwrap());
+            cacluate::cacl(config, 1, &out_path);
+        } else {
+            for i in 0..cli_arg.thread_count {
+                n += 1;
+                let mut config = cli_arg.as_cacl_config();
+                // 核心亲和性: n, n+1
+                config.core_affinity = Some(1 << i);
+                cores |= 1 << i;
+                let out_path = out_path.clone();
+                let thread_name = format!("thread_{}", n);
+                threads.push(std::thread::spawn(move || {
+                    info!("线程 {} 开始计算", thread_name);
+                    cacluate::cacl(config, n, &out_path);
+                    info!("线程 {} 结束计算", thread_name);
+                }));
+            }
+            set_process_cores(cores);
         }
-        set_process_cores(cores);
     }
 
     for t in threads {
