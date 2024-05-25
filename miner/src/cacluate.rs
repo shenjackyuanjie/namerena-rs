@@ -40,6 +40,49 @@ pub struct CacluateConfig {
     pub core_affinity: Option<usize>,
 }
 
+/// 启动计算的调度函数
+pub fn start_main(cli_config: crate::Command, outfile: PathBuf) {
+
+    // if cli_arg.bench {
+    //     info!("开始 benchmark");
+    //     cli_arg.thread_count = 1;
+    //     let mut config = cli_arg.as_cacl_config();
+    //     config.core_affinity = Some(1 << cli_arg.pick_core);
+    //     set_process_cores(config.core_affinity.unwrap());
+    //     cacluate::cacl(config, 1, &out_path);
+    // } else {
+    //     let mut n = 0;
+    //     let mut cores = 0;
+    //     if cli_arg.thread_count == 1 {
+    //         // 单线程运行的时候也是让他放在主线程跑
+    //         let mut config = cli_arg.as_cacl_config();
+    //         config.core_affinity = Some(1 << cli_arg.pick_core);
+    //         set_process_cores(config.core_affinity.unwrap());
+    //         cacluate::cacl(config, 1, &out_path);
+    //     } else {
+    //         for i in 0..cli_arg.thread_count {
+    //             n += 1;
+    //             let mut config = cli_arg.as_cacl_config();
+    //             // 核心亲和性: n, n+1
+    //             config.core_affinity = Some(1 << i);
+    //             cores |= 1 << i;
+    //             let out_path = out_path.clone();
+    //             let thread_name = format!("thread_{}", n);
+    //             threads.push(std::thread::spawn(move || {
+    //                 info!("线程 {} 开始计算", thread_name);
+    //                 cacluate::cacl(config, n, &out_path);
+    //                 info!("线程 {} 结束计算", thread_name);
+    //             }));
+    //         }
+    //         set_process_cores(cores);
+    //     }
+    // }
+
+    // for t in threads {
+    //     t.join().unwrap();
+    // }
+}
+
 #[inline(always)]
 pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     // 初始猜测的时间间隔
