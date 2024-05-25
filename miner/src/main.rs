@@ -102,7 +102,7 @@ fn main() {
     let left = cli_arg.start % cli_arg.thread_count as u64;
     cli_arg.end = cli_arg.end.wrapping_add(left);
 
-    let mut threads = Vec::with_capacity(cli_arg.thread_count as usize);
+    let mut threads = vec![];
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     // namerena-<team>-<time>.csv
     // <time>: %Y-%m-%d-%H-%M-%S
