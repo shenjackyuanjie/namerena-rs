@@ -42,6 +42,9 @@ pub struct Command {
     /// 单线程模式模式下的核心亲和性核心号 (从 0 开始)
     #[arg(long = "core-pick")]
     pub pick_core: Option<usize>,
+    /// 是否为 debug 模式
+    #[arg(long, short = 'd')]
+    pub debug: bool,
 }
 
 impl Command {
@@ -119,8 +122,14 @@ pub fn set_process_cores(cores: usize) {
 }
 
 fn main() {
-    tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
     let mut cli_arg = Command::parse();
+    tracing_subscriber::fmt()
+        .with_max_level(if cli_arg.debug {
+            tracing::Level::DEBUG
+        } else {
+            tracing::Level::INFO
+        })
+        .init();
     // 先验证参数
     // batch 至少要是 size 或者 count 之一
     if !cli_arg.batch_in_count() && !cli_arg.batch_in_time() {
