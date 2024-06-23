@@ -124,12 +124,6 @@ pub type ThreadId = u32;
 /// 3.ended 为 true 的时候, 再发送消息的时候直接发送 None
 /// - 如果是 动态大小 的 batch
 pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
-    // if cli_arg.batch_in_time() {
-    //     schdule_count_batch(cli_arg, out_path);
-    // } else {
-    //     schdule_time_batch(cli_arg, out_path);
-    // }
-    let mut cores = 0;
     let mut thread = vec![];
     let mut shared_status = ComputeStatus::new(&cli_arg);
     let (work_sender, work_receiver) = bounded::<WorkInfo>(0);
@@ -296,64 +290,6 @@ pub fn cacl(
     //     k = 0;
     // }
 }
-
-// /// 简单的部分
-// ///
-// /// 固定大小的 batch 的分发函数
-// pub fn schdule_count_batch(cli_arg: Command, out_path: PathBuf) {
-//     let mut n = 0;
-//     let mut cores = 0;
-//     let mut threads = vec![];
-//     let mut shared_status = ComputeStatus::new(&cli_arg);
-//     let (sender, receiver) = bounded::<WorkInfo>(0);
-//     for i in 0..cli_arg.thread_count {
-//         n += 1;
-//         let mut config = cli_arg.as_cacl_config(&out_path);
-//         // 核心亲和性: n
-//         config.core_affinity = Some(1 << i);
-//         cores |= 1 << i;
-//         let thread_name = format!("thread_{}", n);
-//         threads.push(std::thread::spawn(move || {
-//             info!("线程 {} 开始计算", thread_name);
-//             count_batch_cacl(config, &shared_status, receiver.clone());
-//             info!("线程 {} 结束计算", thread_name);
-//         }));
-//     }
-//     crate::set_process_cores(cores);
-//     for t in threads {
-//         t.join().unwrap();
-//     }
-// }
-
-// /// 麻烦的要死的部分
-// ///
-// /// 动态大小的 batch 的分发函数
-// pub fn schdule_time_batch(cli_arg: Command, out_path: PathBuf) {
-//     todo!("动态大小的 batch 的分发函数");
-//     let mut n = 0;
-//     let mut cores = 0;
-//     let mut threads = vec![];
-//     let mut shared_status = ComputeStatus::new(&cli_arg);
-//     let mut sended = vec![false; cli_arg.thread_count as usize];
-//     let (sender, receiver) = bounded::<Option<Range<u64>>>(0);
-//     for i in 0..cli_arg.thread_count {
-//         n += 1;
-//         let mut config = cli_arg.as_cacl_config(&out_path);
-//         // 核心亲和性: n
-//         config.core_affinity = Some(1 << i);
-//         cores |= 1 << i;
-//         let thread_name = format!("thread_{}", n);
-//         threads.push(std::thread::spawn(move || {
-//             info!("线程 {} 开始计算", thread_name);
-//             cacl(config, &shared_status, receiver.clone());
-//             info!("线程 {} 结束计算", thread_name);
-//         }));
-//     }
-//     crate::set_process_cores(cores);
-//     for t in threads {
-//         t.join().unwrap();
-//     }
-// }
 
 /// 固定 batch 的计算函数
 pub fn count_batch_cacl(config: CacluateConfig, status: &ComputeStatus, receiver: Receiver<WorkInfo>) {
