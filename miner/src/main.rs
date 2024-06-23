@@ -27,9 +27,9 @@ pub struct Command {
     /// 八围预期值
     #[arg(long = "prop-expected", short = 'p', default_value_t = 640)]
     pub prop_expect: u32,
-    /// qp 预期值
-    #[arg(long = "qp-expected", short = 'q', default_value_t = 0)]
-    pub qp_expect: u32,
+    /// xp 预期值
+    #[arg(long = "xp-expected", short = 'x', default_value_t = 0)]
+    pub xp_expect: u32,
     /// 队伍名称
     #[arg(long)]
     pub team: String,
@@ -47,10 +47,9 @@ pub struct Command {
 impl Command {
     pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
         CacluateConfig {
-            range: self.start..self.end,
             thread_id: 0,
             prop_expect: self.prop_expect,
-            qp_expect: self.qp_expect,
+            xp_expect: self.xp_expect,
             team: self.team.clone(),
             report_interval: self.report_interval,
             core_affinity: self.pick_core.map(|x| 1 << x),
@@ -59,6 +58,24 @@ impl Command {
     }
 
     pub fn is_single_thread(&self) -> bool { self.thread_count == 1 }
+
+    pub fn display_info(&self) -> String {
+        format!(
+            "开始: {} 结尾: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n预期状态输出时间间隔: {} 秒\n{}",
+            self.start,
+            self.end,
+            self.thread_count,
+            self.prop_expect,
+            self.xp_expect,
+            self.team,
+            self.report_interval,
+            if self.is_single_thread() {
+                "".to_string()
+            } else {
+                format!("batch 大小: {}", self.batch_size)
+            }
+        )
+    }
 }
 
 pub fn set_thread2core(core: usize) {
@@ -116,12 +133,7 @@ fn main() {
         return;
     }
 
-    // info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
-    // info!("线程数: {}", cli_arg.thread_count);
-    // info!("八围预期: {}", cli_arg.prop_expect);
-    // info!("队伍名: {}", cli_arg.team);
-    // info!("输出文件名: {:?}", out_path);
-    // info!("预期状态输出时间间隔: {} 秒", cli_arg.report_interval);
+    info!("{}", cli_arg.display_info());
 
     cacluate::start_main(cli_arg, out_path);
 }
