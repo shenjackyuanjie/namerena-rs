@@ -24,6 +24,10 @@ pub fn gen_name(id: u64) -> String {
 }
 
 pub struct CacluateConfig {
+    /// 开始
+    pub start: u64,
+    /// 结束
+    pub end: u64,
     /// 线程数
     pub thread_id: u32,
     /// 八围预期值
@@ -45,7 +49,8 @@ pub fn start_main(cli_arg: Command, out_path: PathBuf) {
         // 单线程运行的时候也是让他放在主线程跑
         let config = cli_arg.as_cacl_config(&out_path);
         crate::set_process_cores(config.core_affinity.unwrap());
-        cacl(config, 0);
+        // cacl(config);
+        todo!("单线程模式下的调度逻辑没写完呢, 为了保证性能")
     } else {
         schdule_threads(cli_arg, out_path);
     }
@@ -153,7 +158,7 @@ pub fn cacl(config: CacluateConfig, receiver: Receiver<Option<Range<u64>>>) {
     k += 1;
     if k >= report_interval {
         let now = std::time::Instant::now();
-        let d_t: std::time::Duration = now.duration_since(range_time);
+        let d_t: std::time::Duration = now.duration_since(start_time);
         let new_run_speed = k as f64 / d_t.as_secs_f64();
         // 预估剩余时间
         let wait_time = (range.end - i) / new_run_speed as u64;

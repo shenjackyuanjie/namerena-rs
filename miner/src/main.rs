@@ -47,6 +47,8 @@ pub struct Command {
 impl Command {
     pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
         CacluateConfig {
+            start: self.start,
+            end: self.end,
             thread_id: 0,
             prop_expect: self.prop_expect,
             xp_expect: self.xp_expect,
