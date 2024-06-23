@@ -37,7 +37,7 @@ pub struct Command {
     #[arg(long, short = 'r', default_value_t = 10)]
     pub report_interval: u64,
     /// 一个 batch 多大 单线程下无效
-    #[arg(long, short = 'b', default_value_t = 100000)]
+    #[arg(long, short = 'b', default_value_t = 10_0000)]
     pub batch_size: u64,
     /// 单线程模式模式下的核心亲和性核心号 (从 0 开始)
     #[arg(long = "core-pick")]
@@ -47,9 +47,8 @@ pub struct Command {
 impl Command {
     pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
         CacluateConfig {
-            start: self.start,
-            end: self.end,
-            thread_count: self.thread_count,
+            range: self.start..self.end,
+            thread_id: 0,
             prop_expect: self.prop_expect,
             qp_expect: self.qp_expect,
             team: self.team.clone(),

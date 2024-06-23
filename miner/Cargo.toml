@@ -14,6 +14,7 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["time"] }
 chrono = "0.4"
 colored = "2.1.0"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 
 # windows 下额外指定一个 windows 依赖 (微软赛高!)
 # 用于在 bench 状态下指定核心(就是闲得)
