@@ -1,6 +1,7 @@
 use crate::{
     evaluate::NamerEvaluater,
-    name::{Namer, TeamNamer}, Command,
+    name::{Namer, TeamNamer},
+    Command,
 };
 
 use std::{io::Write, path::PathBuf};
@@ -38,52 +39,42 @@ pub struct CacluateConfig {
     pub report_interval: u64,
     /// 可能的设置指定核心亲和性
     pub core_affinity: Option<usize>,
+    /// 输出文件名
+    pub out_file: PathBuf,
 }
 
 pub fn start_main(cli_arg: Command, out_path: PathBuf) {
-    
-    if cli_arg.bench {
-        info!("开始 benchmark");
-        cli_arg.thread_count = 1;
-        let mut config = cli_arg.as_cacl_config();
-        config.core_affinity = Some(1 << cli_arg.pick_core);
-        set_process_cores(config.core_affinity.unwrap());
-        cacluate::cacl(config, 1, &out_path);
+    let mut n = 0;
+    let mut cores = 0;
+    if cli_arg.is_single_thread() {
+        // 单线程运行的时候也是让他放在主线程跑
+        let config = cli_arg.as_cacl_config(&out_path);
+        crate::set_process_cores(config.core_affinity.unwrap());
+        cacl(config, 0);
     } else {
-        let mut n = 0;
-        let mut cores = 0;
-        if cli_arg.is_single_thread() {
-            // 单线程运行的时候也是让他放在主线程跑
-            let mut config = cli_arg.as_cacl_config();
-            config.core_affinity = Some(1 << cli_arg.pick_core);
-            set_process_cores(config.core_affinity.unwrap());
-            cacluate::cacl(config, 1, &out_path);
-        } else {
-            for i in 0..cli_arg.thread_count {
-                n += 1;
-                let mut config = cli_arg.as_cacl_config();
-                // 核心亲和性: n, n+1
-                config.core_affinity = Some(1 << i);
-                cores |= 1 << i;
-                let out_path = out_path.clone();
-                let thread_name = format!("thread_{}", n);
-                threads.push(std::thread::spawn(move || {
-                    info!("线程 {} 开始计算", thread_name);
-                    cacluate::cacl(config, n, &out_path);
-                    info!("线程 {} 结束计算", thread_name);
-                }));
-            }
-            set_process_cores(cores);
+        let mut threads = vec![];
+        for i in 0..cli_arg.thread_count {
+            n += 1;
+            let mut config = cli_arg.as_cacl_config(&out_path);
+            // 核心亲和性: n
+            config.core_affinity = Some(1 << i);
+            cores |= 1 << i;
+            let thread_name = format!("thread_{}", n);
+            threads.push(std::thread::spawn(move || {
+                info!("线程 {} 开始计算", thread_name);
+                cacl(config, n);
+                info!("线程 {} 结束计算", thread_name);
+            }));
         }
-    }
-
-    for t in threads {
-        t.join().unwrap();
+        crate::set_process_cores(cores);
+        for t in threads {
+            t.join().unwrap();
+        }
     }
 }
 
 #[inline(always)]
-pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
+pub fn cacl(config: CacluateConfig, id: u64) {
     // 初始猜测的时间间隔
     let mut report_interval = 100000; // 第一次猜测测 10w 次, 获取初始数据
     let mut run_speed = 0.0;
@@ -92,7 +83,7 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
     let mut get_count: u32 = 0;
     // 设置线程亲和性
     if let Some(core_affinity) = config.core_affinity {
-        crate::set_thread2core(core_affinity)
+        crate::set_thread2core(1 << core_affinity)
     }
 
     // 提前准备好 team_namer
@@ -121,9 +112,10 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
                 d_t.as_secs_f64(),
                 // 根据对比上一段运行速度 输出 emoji
                 // ⬆️ ➡️ ⬇️
-                if new_run_speed > run_speed {
+                // 两个值 相差 0.1 之内都是 ➡️
+                if new_run_speed > run_speed + 0.1 {
                     "⬆️".green()
-                } else if new_run_speed < run_speed {
+                } else if new_run_speed < run_speed - 0.1 {
                     // 橙色
                     "⬇️".red()
                 } else {
@@ -161,11 +153,11 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
 
             get_count += 1;
             info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, main_namer.get_info());
-
+            // 写入文件
             let write_in = format!(
                 // <full_name>,<id>,<xu>,<xuqd>,<main_namer.get_info()>
                 "{},{:>15},{:.4},{:.4},{}\n",
-                full_name,
+                main_namer.get_fullname(),
                 i,
                 xu,
                 xu_qd,
@@ -176,12 +168,12 @@ pub fn cacl(config: CacluateConfig, id: u64, outfile: &PathBuf) {
             match std::fs::OpenOptions::new()
                 .append(true)
                 .create(true)
-                .open(outfile)
+                .open(&config.out_file)
                 .and_then(|mut file| file.write(write_in.as_bytes()))
             {
                 Ok(_) => {}
                 Err(e) => {
-                    warn!("写入文件<{:?}>失败: {}", outfile, e);
+                    warn!("写入文件<{:?}>失败: {}", config.out_file, e);
                 }
             }
         }

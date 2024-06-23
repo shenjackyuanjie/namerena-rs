@@ -678,11 +678,7 @@ impl Namer {
     }
 
     pub fn get_fullname(&self) -> String {
-        if self.team.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}@{}", self.name, self.team)
-        }
+        format!("{}@{}", self.name, if self.team.is_empty() { &self.name } else { &self.team })
     }
 }
 

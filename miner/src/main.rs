@@ -36,16 +36,16 @@ pub struct Command {
     /// 预期状态输出时间间隔 (秒)
     #[arg(long, short = 'r', default_value_t = 10)]
     pub report_interval: u64,
-    ///  Windows 下会强制单线程, 且设置线程亲和性为核心 0
-    #[arg(long = "bench", default_value_t = false)]
-    pub bench: bool,
-    /// 单线程模式 / benchmark 模式下的核心亲和性核心号 (从 0 开始)
-    #[arg(long = "core-pick", default_value_t = 0)]
-    pub pick_core: usize,
+    /// 一个 batch 多大 单线程下无效
+    #[arg(long, short = 'b', default_value_t = 100000)]
+    pub batch_size: u64,
+    /// 单线程模式模式下的核心亲和性核心号 (从 0 开始)
+    #[arg(long = "core-pick")]
+    pub pick_core: Option<usize>,
 }
 
 impl Command {
-    pub fn as_cacl_config(&self) -> CacluateConfig {
+    pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
         CacluateConfig {
             start: self.start,
             end: self.end,
@@ -54,13 +54,12 @@ impl Command {
             qp_expect: self.qp_expect,
             team: self.team.clone(),
             report_interval: self.report_interval,
-            core_affinity: if self.bench { Some(1 << self.pick_core) } else { None },
+            core_affinity: self.pick_core.map(|x| 1 << x),
+            out_file: path.clone(),
         }
     }
 
-    pub fn is_single_thread(&self) -> bool {
-        self.thread_count == 1
-    }
+    pub fn is_single_thread(&self) -> bool { self.thread_count == 1 }
 }
 
 pub fn set_thread2core(core: usize) {
@@ -106,7 +105,6 @@ fn main() {
     let left = cli_arg.start % cli_arg.thread_count as u64;
     cli_arg.end = cli_arg.end.wrapping_add(left);
 
-    let mut threads = vec![];
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
     // namerena-<team>-<time>.csv
     // <time>: %Y-%m-%d-%H-%M-%S
@@ -119,14 +117,12 @@ fn main() {
         return;
     }
 
-    info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
-    info!("线程数: {}", cli_arg.thread_count);
-    info!("八围预期: {}", cli_arg.prop_expect);
-    info!("队伍名: {}", cli_arg.team);
-    info!("输出文件名: {:?}", out_path);
-    info!("预期状态输出时间间隔: {} 秒", cli_arg.report_interval);
-    info!("是否启动 benchmark 模式: {}", cli_arg.bench);
+    // info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
+    // info!("线程数: {}", cli_arg.thread_count);
+    // info!("八围预期: {}", cli_arg.prop_expect);
+    // info!("队伍名: {}", cli_arg.team);
+    // info!("输出文件名: {:?}", out_path);
+    // info!("预期状态输出时间间隔: {} 秒", cli_arg.report_interval);
 
     cacluate::start_main(cli_arg, out_path);
-
 }
