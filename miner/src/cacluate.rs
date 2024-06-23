@@ -257,7 +257,6 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
 /// 这里的状态是在所有运算线程中共享的一个状态
 /// 每一个线程运算完一个 batch 后, 都会更新这个状态
 /// 输出的时候顺带输出其他线程的状态
-#[inline(always)]
 pub fn cacl(
     config: CacluateConfig,
     status: &mut ComputeStatus,
@@ -317,10 +316,10 @@ pub fn cacl(
         // 输出状态
         info!(
             // thread_id, top, 当前线程速度, 当前batch用时, emoji, 全局速度, 全局E/d 速度, 算到几个, 进度, 预计时间
-            "|{:>2}|Id:{:>15}|{:6.2}/s {:>5.2}s {}{:>3.3}E/d|{:<3}|{:3.3}% {}:{}:{}|",
+            "|{:>2}|Id:{:>15}|{:6.2}E/d {:>5.2}s{}|{:>4.3}E/d|{:<3}|{:3.3}% {}:{}:{}|",
             config.thread_id,
             top,
-            new_run_speed,
+            new_run_speed * 8.64 / 1_0000.0,
             d_t.as_secs_f64(),
             // 如果速度差 1k 以上, 则输出emoji
             if new_run_speed > run_speed + 1000.0 {
