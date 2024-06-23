@@ -57,6 +57,10 @@ impl Command {
             core_affinity: if self.bench { Some(1 << self.pick_core) } else { None },
         }
     }
+
+    pub fn is_single_thread(&self) -> bool {
+        self.thread_count == 1
+    }
 }
 
 pub fn set_thread2core(core: usize) {
@@ -112,6 +116,7 @@ fn main() {
     // 先创建文件夹
     if let Err(e) = std::fs::create_dir_all(out_path.parent().unwrap()) {
         warn!("创建文件夹失败: {}", e);
+        return;
     }
 
     info!("开始: {} 结尾: {}", cli_arg.start, cli_arg.end);
@@ -122,42 +127,6 @@ fn main() {
     info!("预期状态输出时间间隔: {} 秒", cli_arg.report_interval);
     info!("是否启动 benchmark 模式: {}", cli_arg.bench);
 
-    if cli_arg.bench {
-        info!("开始 benchmark");
-        cli_arg.thread_count = 1;
-        let mut config = cli_arg.as_cacl_config();
-        config.core_affinity = Some(1 << cli_arg.pick_core);
-        set_process_cores(config.core_affinity.unwrap());
-        cacluate::cacl(config, 1, &out_path);
-    } else {
-        let mut n = 0;
-        let mut cores = 0;
-        if cli_arg.thread_count == 1 {
-            // 单线程运行的时候也是让他放在主线程跑
-            let mut config = cli_arg.as_cacl_config();
-            config.core_affinity = Some(1 << cli_arg.pick_core);
-            set_process_cores(config.core_affinity.unwrap());
-            cacluate::cacl(config, 1, &out_path);
-        } else {
-            for i in 0..cli_arg.thread_count {
-                n += 1;
-                let mut config = cli_arg.as_cacl_config();
-                // 核心亲和性: n, n+1
-                config.core_affinity = Some(1 << i);
-                cores |= 1 << i;
-                let out_path = out_path.clone();
-                let thread_name = format!("thread_{}", n);
-                threads.push(std::thread::spawn(move || {
-                    info!("线程 {} 开始计算", thread_name);
-                    cacluate::cacl(config, n, &out_path);
-                    info!("线程 {} 结束计算", thread_name);
-                }));
-            }
-            set_process_cores(cores);
-        }
-    }
+    cacluate::start_main(cli_arg, out_path);
 
-    for t in threads {
-        t.join().unwrap();
-    }
 }
