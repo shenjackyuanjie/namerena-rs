@@ -38,8 +38,8 @@ pub struct CacluateConfig {
     pub xp_expect: u32,
     /// 队伍名称
     pub team: String,
-    /// 预期状态输出时间间隔 (秒)
-    pub report_interval: u64,
+    ///
+    pub time_based: bool,
     /// 可能的设置指定核心亲和性
     pub core_affinity: Option<usize>,
     /// 输出文件名
@@ -118,46 +118,39 @@ pub fn start_main(cli_arg: Command, out_path: PathBuf) {
 /// 3.ended 为 true 的时候, 再发送消息的时候直接发送 None
 /// - 如果是 动态大小 的 batch
 pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
-    if cli_arg.batch_in_time() {
-        schdule_count_batch(cli_arg, out_path);
-    } else {
-        schdule_time_batch(cli_arg, out_path);
-    }
-}
-
-/// 简单的部分
-///
-/// 固定大小的 batch 的分发函数
-pub fn schdule_count_batch(cli_arg: Command, out_path: PathBuf) {
-    let mut n = 0;
+    // if cli_arg.batch_in_time() {
+    //     schdule_count_batch(cli_arg, out_path);
+    // } else {
+    //     schdule_time_batch(cli_arg, out_path);
+    // }
     let mut cores = 0;
-    let mut threads = vec![];
+    let mut thread = vec![];
     let mut shared_status = ComputeStatus::new(&cli_arg);
-    let mut sended = vec![false; cli_arg.thread_count as usize];
-    let (sender, receiver) = bounded::<Option<Range<u64>>>(0);
+    let (work_sender, work_receiver) = bounded::<WorkInfo>(0);
+    let (work_requester, thread_waiter) = bounded::<u32>(0);
     for i in 0..cli_arg.thread_count {
-        n += 1;
+        // 每一个线程
         let mut config = cli_arg.as_cacl_config(&out_path);
-        // 核心亲和性: n
+        let work_receiver = work_receiver.clone();
+        let work_requester = work_requester.clone();
+        let shared_status: &mut ComputeStatus = unsafe {
+            // 直接获取一个共享状态的引用
+            // 这个对象是可以在多个线程之间共享的
+            // 但是 rust 不让我这么干
+            // 所以, unsafe == trust_me
+            std::mem::transmute::<&mut ComputeStatus, &mut ComputeStatus>(&mut shared_status)
+        };
         config.core_affinity = Some(1 << i);
         cores |= 1 << i;
-        let thread_name = format!("thread_{}", n);
-        threads.push(std::thread::spawn(move || {
+        let thread_name = format!("thread_{}", i);
+        thread.push(std::thread::spawn(move || {
             info!("线程 {} 开始计算", thread_name);
-            cacl(config, &shared_status, receiver.clone());
+            cacl(config, shared_status, work_receiver, work_requester);
             info!("线程 {} 结束计算", thread_name);
-        }));
+        }))
     }
-    crate::set_process_cores(cores);
-    for t in threads {
-        t.join().unwrap();
-    }
+    // 任务分发
 }
-
-/// 麻烦的要死的部分
-///
-/// 动态大小的 batch 的分发函数
-pub fn schdule_time_batch(cli_arg: Command, out_path: PathBuf) {}
 
 /// 所有的状态输出都在子线程, 也就是这里
 ///
@@ -168,22 +161,7 @@ pub fn schdule_time_batch(cli_arg: Command, out_path: PathBuf) {}
 /// 每一个线程运算完一个 batch 后, 都会更新这个状态
 /// 输出的时候顺带输出其他线程的状态
 #[inline(always)]
-pub fn cacl(config: CacluateConfig, status: &ComputeStatus, receiver: Receiver<WorkInfo>, work_sender: Sender<u32>) {
-    // 初始猜测的时间间隔
-    // 设置线程亲和性
-    if let Some(core_affinity) = config.core_affinity {
-        crate::set_thread2core(1 << core_affinity)
-    }
-
-    // 提前准备好 team_namer
-    let team_namer = TeamNamer::new(&config.team).unwrap();
-    let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
-
-    let mut start_time = std::time::Instant::now();
-
-    let mut report_interval = 100000; // 第一次猜测测 10w 次, 获取初始数据
-    let mut run_speed = 0.0;
-    let mut k: u64 = 0;
+pub fn cacl(config: CacluateConfig, status: &mut ComputeStatus, receiver: Receiver<WorkInfo>, work_sender: Sender<u32>) {
     // k += 1;
     // if k >= report_interval {
     //     let now = std::time::Instant::now();
@@ -224,16 +202,94 @@ pub fn cacl(config: CacluateConfig, status: &ComputeStatus, receiver: Receiver<W
     // }
 }
 
+/// 简单的部分
+///
+/// 固定大小的 batch 的分发函数
+pub fn schdule_count_batch(cli_arg: Command, out_path: PathBuf) {
+    let mut n = 0;
+    let mut cores = 0;
+    let mut threads = vec![];
+    let mut shared_status = ComputeStatus::new(&cli_arg);
+    let (sender, receiver) = bounded::<WorkInfo>(0);
+    for i in 0..cli_arg.thread_count {
+        n += 1;
+        let mut config = cli_arg.as_cacl_config(&out_path);
+        // 核心亲和性: n
+        config.core_affinity = Some(1 << i);
+        cores |= 1 << i;
+        let thread_name = format!("thread_{}", n);
+        threads.push(std::thread::spawn(move || {
+            info!("线程 {} 开始计算", thread_name);
+            count_batch_cacl(config, &shared_status, receiver.clone());
+            info!("线程 {} 结束计算", thread_name);
+        }));
+    }
+    crate::set_process_cores(cores);
+    for t in threads {
+        t.join().unwrap();
+    }
+}
+
+/// 麻烦的要死的部分
+///
+/// 动态大小的 batch 的分发函数
+pub fn schdule_time_batch(cli_arg: Command, out_path: PathBuf) {
+    todo!("动态大小的 batch 的分发函数");
+    let mut n = 0;
+    let mut cores = 0;
+    let mut threads = vec![];
+    let mut shared_status = ComputeStatus::new(&cli_arg);
+    let mut sended = vec![false; cli_arg.thread_count as usize];
+    let (sender, receiver) = bounded::<Option<Range<u64>>>(0);
+    for i in 0..cli_arg.thread_count {
+        n += 1;
+        let mut config = cli_arg.as_cacl_config(&out_path);
+        // 核心亲和性: n
+        config.core_affinity = Some(1 << i);
+        cores |= 1 << i;
+        let thread_name = format!("thread_{}", n);
+        threads.push(std::thread::spawn(move || {
+            info!("线程 {} 开始计算", thread_name);
+            cacl(config, &shared_status, receiver.clone());
+            info!("线程 {} 结束计算", thread_name);
+        }));
+    }
+    crate::set_process_cores(cores);
+    for t in threads {
+        t.join().unwrap();
+    }
+}
+
 /// 固定 batch 的计算函数
-pub fn count_batch_cacl(config: CacluateConfig, status: &ComputeStatus, receiver: Receiver<Option<u64>>) {}
+pub fn count_batch_cacl(config: CacluateConfig, status: &ComputeStatus, receiver: Receiver<WorkInfo>) {
+    // 初始猜测的时间间隔
+    // 设置线程亲和性
+    if let Some(core_affinity) = config.core_affinity {
+        crate::set_thread2core(1 << core_affinity)
+    }
+    // 提前准备好 team_namer
+    let team_namer = TeamNamer::new(&config.team).unwrap();
+    let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
+
+    let mut start_time = std::time::Instant::now();
+    let mut run_speed = 0.0;
+    let mut k: u64 = 0;
+}
 
 /// 动态 batch 的计算函数
-pub fn time_batch_cacl(
-    config: CacluateConfig,
-    status: &ComputeStatus,
-    receiver: Receiver<Option<u64>>,
-    work_sender: Sender<u32>,
-) {
+pub fn time_batch_cacl(config: CacluateConfig, status: &ComputeStatus, receiver: Receiver<WorkInfo>, work_sender: Sender<u32>) {
+    // 初始猜测的时间间隔
+    // 设置线程亲和性
+    if let Some(core_affinity) = config.core_affinity {
+        crate::set_thread2core(1 << core_affinity)
+    }
+    // 提前准备好 team_namer
+    let team_namer = TeamNamer::new(&config.team).unwrap();
+    let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
+
+    let mut start_time = std::time::Instant::now();
+    let mut run_speed = 0.0;
+    let mut k: u64 = 0;
 }
 
 /// 每一个 batch 的具体运算

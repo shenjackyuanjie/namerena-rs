@@ -54,7 +54,7 @@ impl Command {
             prop_expect: self.prop_expect,
             xp_expect: self.xp_expect,
             team: self.team.clone(),
-            report_interval: self.report_interval,
+            time_based: self.batch_in_time(),
             core_affinity: self.pick_core.map(|x| 1 << x),
             out_file: path.clone(),
         }
