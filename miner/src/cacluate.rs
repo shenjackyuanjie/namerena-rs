@@ -46,7 +46,7 @@ pub struct CacluateConfig {
     pub out_file: PathBuf,
 }
 
-pub type WorkInfo = Option<(u32, u64)>;
+pub type WorkInfo = Option<(ThreadId, Range<u64>)>;
 
 /// 用于在先成之间共享的运行状态
 /// 正常状态下是会在多个线程之间共享的
@@ -73,7 +73,11 @@ impl ComputeStatus {
         }
     }
 
-    pub fn get_first_stoped(&self) -> Option<usize> { self.thread_running.iter().position(|&x| !x) }
+    pub fn get_idle_thread(&self) -> Option<usize> { self.thread_running.iter().position(|&x| !x) }
+    pub fn all_stoped(&self) -> bool { self.thread_running.iter().all(|&x| !x) }
+    pub fn update_speed(&mut self, thread_id: usize, speed: u64) { self.thread_speed[thread_id] = speed; }
+    pub fn update_running(&mut self, thread_id: usize, running: bool) { self.thread_running[thread_id] = running; }
+    pub fn count_speed(&self) -> u64 { self.thread_speed.iter().sum() }
 }
 
 pub fn start_main(cli_arg: Command, out_path: PathBuf) {
@@ -87,6 +91,8 @@ pub fn start_main(cli_arg: Command, out_path: PathBuf) {
         schdule_threads(cli_arg, out_path);
     }
 }
+
+pub type ThreadId = u32;
 
 /// 描述一下思路吧
 ///
@@ -127,7 +133,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     let mut thread = vec![];
     let mut shared_status = ComputeStatus::new(&cli_arg);
     let (work_sender, work_receiver) = bounded::<WorkInfo>(0);
-    let (work_requester, thread_waiter) = bounded::<u32>(0);
+    let (work_requester, thread_waiter) = bounded::<(ThreadId, u32)>(0);
     for i in 0..cli_arg.thread_count {
         // 每一个线程
         let mut config = cli_arg.as_cacl_config(&out_path);
@@ -150,6 +156,90 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
         }))
     }
     // 任务分发
+    // 判断是否所有 work 都分发完了
+    // 当前分发到的 work 的 最大 index
+    let mut top_i = cli_arg.start;
+    if cli_arg.batch_in_time() {
+        let mut sended = vec![false; cli_arg.thread_count as usize];
+        loop {
+            // 等待一个 request work
+            // 大部分时间在这里等待
+            let latest_speed = match thread_waiter.recv() {
+                Ok(info) => info,
+                Err(_) => {
+                    // 如果接收到了错误, 则说明所有线程都结束了, 或者怎么着出毛病了
+                    // 退出
+                    break;
+                }
+            };
+            // 遍历 sended 中 true 的部分, 检查对应 thread_running 是否为 true
+            for (i, sended) in sended.iter_mut().enumerate() {
+                if *sended {
+                    if shared_status.thread_running[i] {
+                        // 如果为 true, 则将对应 sended 置为 false
+                        *sended = false;
+                    }
+                }
+            }
+            // 根据 latest_speed 计算出一个合适的 batch
+            if latest_speed.1 == 0 {
+                // 如果速度为 0, 则说明刚刚开始
+                // 直接发送一个 1w 的 batch
+                let _ = work_sender.send(Some((latest_speed.0, top_i..top_i + 10000)));
+                top_i += 10000;
+            } else {
+                // 计算出一个合适的 batch
+                let batch = latest_speed.1 as u64 * cli_arg.report_interval.unwrap();
+                // 判断是否快完事了
+                // 如果是, 则发送剩余的 work, 然后直接发送 None
+                if top_i + batch > cli_arg.end {
+                    let _ = work_sender.send(Some((latest_speed.0, top_i..cli_arg.end)));
+                    for _ in 0..cli_arg.thread_count {
+                        let _ = work_sender.send(None);
+                        if shared_status.all_stoped() {
+                            break;
+                        }
+                    }
+                    break;
+                } else {
+                    // 如果不是, 则发送一个对应线程 id 的消息
+                    let _ = work_sender.send(Some((latest_speed.0, top_i..top_i + batch)));
+                    top_i += batch;
+                }
+            }
+        }
+    } else {
+        loop {
+            // 等待一个 request work
+            // 大部分时间在这里等待
+            if let Err(_) = thread_waiter.recv() {
+                // 如果接收到了错误, 则说明所有线程都结束了
+                // 退出
+                break;
+            }
+            // work 没分发完
+            // 获取第一个空闲的线程
+            // 这里不确定是不是会有问题, 先用 unwarp 看看
+            let thread_id = shared_status.get_idle_thread().unwrap();
+            // 先检测是否快结束了
+            if top_i + cli_arg.batch_size.unwrap() as u64 >= cli_arg.end {
+                // 如果快结束了, 则发送剩余的 work 然后发送 None
+                let _ = work_sender.send(Some((thread_id as u32, top_i..cli_arg.end)));
+                for _ in 0..cli_arg.thread_count {
+                    let _ = work_sender.send(None);
+                    if shared_status.all_stoped() {
+                        break;
+                    }
+                }
+                break;
+            } else {
+                // 如果没有结束, 则发送一个 batch
+                let _ = work_sender.send(Some((thread_id as u32, top_i..top_i + cli_arg.batch_size.unwrap() as u64)));
+            }
+            // 更新 top_i
+            top_i += cli_arg.batch_size.unwrap() as u64;
+        }
+    }
 }
 
 /// 所有的状态输出都在子线程, 也就是这里
@@ -161,7 +251,12 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
 /// 每一个线程运算完一个 batch 后, 都会更新这个状态
 /// 输出的时候顺带输出其他线程的状态
 #[inline(always)]
-pub fn cacl(config: CacluateConfig, status: &mut ComputeStatus, receiver: Receiver<WorkInfo>, work_sender: Sender<u32>) {
+pub fn cacl(
+    config: CacluateConfig,
+    status: &mut ComputeStatus,
+    receiver: Receiver<WorkInfo>,
+    work_sender: Sender<(ThreadId, u32)>,
+) {
     // k += 1;
     // if k >= report_interval {
     //     let now = std::time::Instant::now();
@@ -202,63 +297,63 @@ pub fn cacl(config: CacluateConfig, status: &mut ComputeStatus, receiver: Receiv
     // }
 }
 
-/// 简单的部分
-///
-/// 固定大小的 batch 的分发函数
-pub fn schdule_count_batch(cli_arg: Command, out_path: PathBuf) {
-    let mut n = 0;
-    let mut cores = 0;
-    let mut threads = vec![];
-    let mut shared_status = ComputeStatus::new(&cli_arg);
-    let (sender, receiver) = bounded::<WorkInfo>(0);
-    for i in 0..cli_arg.thread_count {
-        n += 1;
-        let mut config = cli_arg.as_cacl_config(&out_path);
-        // 核心亲和性: n
-        config.core_affinity = Some(1 << i);
-        cores |= 1 << i;
-        let thread_name = format!("thread_{}", n);
-        threads.push(std::thread::spawn(move || {
-            info!("线程 {} 开始计算", thread_name);
-            count_batch_cacl(config, &shared_status, receiver.clone());
-            info!("线程 {} 结束计算", thread_name);
-        }));
-    }
-    crate::set_process_cores(cores);
-    for t in threads {
-        t.join().unwrap();
-    }
-}
+// /// 简单的部分
+// ///
+// /// 固定大小的 batch 的分发函数
+// pub fn schdule_count_batch(cli_arg: Command, out_path: PathBuf) {
+//     let mut n = 0;
+//     let mut cores = 0;
+//     let mut threads = vec![];
+//     let mut shared_status = ComputeStatus::new(&cli_arg);
+//     let (sender, receiver) = bounded::<WorkInfo>(0);
+//     for i in 0..cli_arg.thread_count {
+//         n += 1;
+//         let mut config = cli_arg.as_cacl_config(&out_path);
+//         // 核心亲和性: n
+//         config.core_affinity = Some(1 << i);
+//         cores |= 1 << i;
+//         let thread_name = format!("thread_{}", n);
+//         threads.push(std::thread::spawn(move || {
+//             info!("线程 {} 开始计算", thread_name);
+//             count_batch_cacl(config, &shared_status, receiver.clone());
+//             info!("线程 {} 结束计算", thread_name);
+//         }));
+//     }
+//     crate::set_process_cores(cores);
+//     for t in threads {
+//         t.join().unwrap();
+//     }
+// }
 
-/// 麻烦的要死的部分
-///
-/// 动态大小的 batch 的分发函数
-pub fn schdule_time_batch(cli_arg: Command, out_path: PathBuf) {
-    todo!("动态大小的 batch 的分发函数");
-    let mut n = 0;
-    let mut cores = 0;
-    let mut threads = vec![];
-    let mut shared_status = ComputeStatus::new(&cli_arg);
-    let mut sended = vec![false; cli_arg.thread_count as usize];
-    let (sender, receiver) = bounded::<Option<Range<u64>>>(0);
-    for i in 0..cli_arg.thread_count {
-        n += 1;
-        let mut config = cli_arg.as_cacl_config(&out_path);
-        // 核心亲和性: n
-        config.core_affinity = Some(1 << i);
-        cores |= 1 << i;
-        let thread_name = format!("thread_{}", n);
-        threads.push(std::thread::spawn(move || {
-            info!("线程 {} 开始计算", thread_name);
-            cacl(config, &shared_status, receiver.clone());
-            info!("线程 {} 结束计算", thread_name);
-        }));
-    }
-    crate::set_process_cores(cores);
-    for t in threads {
-        t.join().unwrap();
-    }
-}
+// /// 麻烦的要死的部分
+// ///
+// /// 动态大小的 batch 的分发函数
+// pub fn schdule_time_batch(cli_arg: Command, out_path: PathBuf) {
+//     todo!("动态大小的 batch 的分发函数");
+//     let mut n = 0;
+//     let mut cores = 0;
+//     let mut threads = vec![];
+//     let mut shared_status = ComputeStatus::new(&cli_arg);
+//     let mut sended = vec![false; cli_arg.thread_count as usize];
+//     let (sender, receiver) = bounded::<Option<Range<u64>>>(0);
+//     for i in 0..cli_arg.thread_count {
+//         n += 1;
+//         let mut config = cli_arg.as_cacl_config(&out_path);
+//         // 核心亲和性: n
+//         config.core_affinity = Some(1 << i);
+//         cores |= 1 << i;
+//         let thread_name = format!("thread_{}", n);
+//         threads.push(std::thread::spawn(move || {
+//             info!("线程 {} 开始计算", thread_name);
+//             cacl(config, &shared_status, receiver.clone());
+//             info!("线程 {} 结束计算", thread_name);
+//         }));
+//     }
+//     crate::set_process_cores(cores);
+//     for t in threads {
+//         t.join().unwrap();
+//     }
+// }
 
 /// 固定 batch 的计算函数
 pub fn count_batch_cacl(config: CacluateConfig, status: &ComputeStatus, receiver: Receiver<WorkInfo>) {
