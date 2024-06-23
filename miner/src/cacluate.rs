@@ -9,7 +9,7 @@ use std::{io::Write, ops::Range, path::PathBuf};
 use base16384::Base16384Utf8;
 use colored::Colorize;
 use crossbeam::channel::{bounded, Receiver, Sender};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// 根据 u64 生成对应的 name
 /// 转换成 base 16384
@@ -133,6 +133,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     for i in 0..cli_arg.thread_count {
         // 每一个线程
         let mut config = cli_arg.as_cacl_config(&out_path);
+        config.thread_id = i;
         let work_receiver = work_receiver.clone();
         let work_requester = work_requester.clone();
         let shared_status: &mut ComputeStatus = unsafe {
@@ -157,6 +158,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     // 当前分发到的 work 的 最大 index
     let mut top_i = cli_arg.start;
     if cli_arg.batch_in_time() {
+        info!("开始分发任务(动态 batch)");
         let mut sended = vec![false; cli_arg.thread_count as usize];
         loop {
             // 等待一个 request work
@@ -206,6 +208,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
             }
         }
     } else {
+        info!("开始分发任务(固定 batch)");
         loop {
             // 等待一个 request work
             // 大部分时间在这里等待
@@ -262,6 +265,8 @@ pub fn cacl(
     let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
     let mut get_count = 0;
     let mut run_speed = 0.0;
+    // 开始之前, 先发送一个 request
+    let _ = work_sender.send((config.thread_id, 0));
     loop {
         // 先 request 一个 work
         let work = match receiver.recv() {
@@ -301,21 +306,22 @@ pub fn cacl(
         status.update_speed(config.thread_id, new_run_speed as u64);
         // 获取一个全局速度预测
         let predict_time = status.predict_time(top);
+        debug!("{:?}", status.thread_speed);
         // 输出状态
         info!(
             // thread_id, top, 当前线程速度, 当前batch用时, emoji, 全局速度, 全局E/d 速度, 算到几个, 进度, 预计时间
-            "|{:>2}|Id:{:>15}|{:6.2}/s {:>5.2}|{:6.2}/s {:>3.3}E/d {}|{:<3}|{:3.2}% 预计:{}:{}:{}|",
+            "|{:>2}|Id:{:>15}|{:6.2}/s {:>5.2}s {}|{:6.2}/s {:>3.3}E/d|{:<3}|{:3.2}% 预计:{}:{}:{}|",
             config.thread_id,
             top,
             new_run_speed,
             d_t.as_secs_f64(),
             // 如果速度差 1k 以上, 则输出emoji
             if new_run_speed > run_speed + 1000.0 {
-                "⬆️".green()
+                "↑".green()
             } else if new_run_speed < run_speed - 1000.0 {
-                "⬇️".red()
+                "↓".red()
             } else {
-                "➡️".blue()
+                "→".blue()
             },
             status.count_speed(),
             status.count_speed() as f64 / 86400.0,

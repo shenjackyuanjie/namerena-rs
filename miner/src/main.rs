@@ -66,9 +66,10 @@ impl Command {
 
     pub fn display_info(&self) -> String {
         format!(
-            "开始: {} 结尾: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n{}",
+            "开始: {} 结尾: {} 总计: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n{}",
             self.start,
             self.end,
+            self.end - self.start,
             self.thread_count,
             self.prop_expect,
             self.xp_expect,
@@ -82,16 +83,16 @@ impl Command {
     }
 }
 
-pub fn set_thread2core(core: usize) {
+pub fn set_thread2core(cores: usize) {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
 
         let thread_id = GetCurrentThread();
-        let core_mask = core;
+        let core_mask = cores;
         match SetThreadAffinityMask(thread_id, core_mask) {
-            0 => warn!("设置线程亲和性失败 {}", std::io::Error::last_os_error()),
-            x => info!("设置线程亲和性成功 {}", x),
+            0 => warn!("设置线程亲和性 {cores} 失败 {}", std::io::Error::last_os_error()),
+            x => info!("设置线程亲和性 {cores} 成功 {}", x),
         }
     }
     #[cfg(unix)]
@@ -107,8 +108,8 @@ pub fn set_process_cores(cores: usize) {
         let process = GetCurrentProcess();
         let core_mask = cores;
         match SetProcessAffinityMask(process, core_mask) {
-            0 => warn!("设置进程亲和性失败 {}", std::io::Error::last_os_error()),
-            x => info!("设置进程亲和性成功 {}", x),
+            0 => warn!("设置进程亲和性 {cores} 失败 {}", std::io::Error::last_os_error()),
+            x => info!("设置进程亲和性 {cores} 成功 {}", x),
         }
     }
     #[cfg(unix)]
