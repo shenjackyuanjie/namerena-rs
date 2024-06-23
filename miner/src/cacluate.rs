@@ -4,12 +4,7 @@ use crate::{
     Command,
 };
 
-use std::{
-    io::Write,
-    ops::Range,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{io::Write, ops::Range, path::PathBuf};
 
 use base16384::Base16384Utf8;
 use colored::Colorize;
@@ -29,10 +24,6 @@ pub fn gen_name(id: u64) -> String {
 }
 
 pub struct CacluateConfig {
-    /// 开始
-    pub start: u64,
-    /// 结束
-    pub end: u64,
     /// 线程 id
     pub thread_id: u32,
     /// 线程数
@@ -312,8 +303,8 @@ pub fn cacl(
         let predict_time = status.predict_time(top);
         // 输出状态
         info!(
-            // thread_id, top, 当前线程速度, 当前batch用时, emoji, 全局速度, 全局E/d 速度, 算到几个, 预计时间
-            "|{:>2}|Id:{:>15}|{:6.2}/s {:>5.2}|{:6.2}/s {:>3.3}E/d {}|{:<3}|预计:{}:{}:{}|",
+            // thread_id, top, 当前线程速度, 当前batch用时, emoji, 全局速度, 全局E/d 速度, 算到几个, 进度, 预计时间
+            "|{:>2}|Id:{:>15}|{:6.2}/s {:>5.2}|{:6.2}/s {:>3.3}E/d {}|{:<3}|{:3.2}% 预计:{}:{}:{}|",
             config.thread_id,
             top,
             new_run_speed,
@@ -329,6 +320,7 @@ pub fn cacl(
             status.count_speed(),
             status.count_speed() as f64 / 86400.0,
             get_count,
+            (top - status.start) as f64 / (status.end - status.start) as f64 * 100.0,
             predict_time.num_hours(),
             predict_time.num_minutes() % 60,
             predict_time.num_seconds() % 60
@@ -336,7 +328,8 @@ pub fn cacl(
         run_speed = new_run_speed;
         // 然后是调度相关
         status.update_running(config.thread_id, false);
-        // 直接下一次循环
+        // 请求一个新的 work
+        let _ = work_sender.send((config.thread_id, if run_speed == 0.0 { 0 } else { run_speed as u32 }));
     }
 }
 

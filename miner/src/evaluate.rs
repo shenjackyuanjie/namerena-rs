@@ -4,6 +4,7 @@ pub mod xuping;
 use crate::name::Namer;
 
 /// 评价器
+#[allow(unused)]
 pub trait NamerEvaluater {
     const NAME: &'static str;
     const VERSION: &'static str;
