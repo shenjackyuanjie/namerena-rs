@@ -33,12 +33,12 @@ pub struct Command {
     /// 队伍名称
     #[arg(long)]
     pub team: String,
-    /// 预期状态输出时间间隔 (秒)
-    #[arg(long, short = 'r', default_value_t = 10)]
-    pub report_interval: u64,
-    /// 一个 batch 多大 单线程下无效
-    #[arg(long, short = 'b', default_value_t = 10_0000)]
-    pub batch_size: u64,
+    /// 如果指定, 则根据线程的实时速度*时间为单位作为 batch 大小
+    #[arg(long, short = 'r')]
+    pub report_interval: Option<u64>,
+    /// 如果指定, 则使用固定的数量作为 batch 大小
+    #[arg(long, short = 'b')]
+    pub batch_size: Option<u64>,
     /// 单线程模式模式下的核心亲和性核心号 (从 0 开始)
     #[arg(long = "core-pick")]
     pub pick_core: Option<usize>,
@@ -50,6 +50,7 @@ impl Command {
             start: self.start,
             end: self.end,
             thread_id: 0,
+            thread_count: self.thread_count,
             prop_expect: self.prop_expect,
             xp_expect: self.xp_expect,
             team: self.team.clone(),
@@ -61,20 +62,23 @@ impl Command {
 
     pub fn is_single_thread(&self) -> bool { self.thread_count == 1 }
 
+    pub fn batch_in_time(&self) -> bool { self.report_interval.is_some() }
+
+    pub fn batch_in_count(&self) -> bool { self.batch_size.is_some() }
+
     pub fn display_info(&self) -> String {
         format!(
-            "开始: {} 结尾: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n预期状态输出时间间隔: {} 秒\n{}",
+            "开始: {} 结尾: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n{}",
             self.start,
             self.end,
             self.thread_count,
             self.prop_expect,
             self.xp_expect,
             self.team,
-            self.report_interval,
-            if self.is_single_thread() {
-                "".to_string()
+            if self.batch_in_count() {
+                format!("固定 batch 大小: {}", self.batch_size.unwrap())
             } else {
-                format!("batch 大小: {}", self.batch_size)
+                format!("时间 batch 大小: {}s", self.report_interval.unwrap())
             }
         )
     }
@@ -118,6 +122,16 @@ pub fn set_process_cores(cores: usize) {
 fn main() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
     let mut cli_arg = Command::parse();
+    // 先验证参数
+    // batch 至少要是 size 或者 count 之一
+    if !cli_arg.batch_in_count() && !cli_arg.batch_in_time() {
+        warn!("必须指定 batch 大小, 请使用 -r 或者 -b 选项");
+        return;
+    }
+    // 如果俩都指定了, 则使用时间为准
+    if cli_arg.batch_in_count() && cli_arg.batch_in_time() {
+        warn!("两个 batch 选项都指定了, 将使用时间为准");
+    }
 
     // 将数据量处理成可被 thread_count 整除
     let left = cli_arg.start % cli_arg.thread_count as u64;
