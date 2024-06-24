@@ -542,18 +542,27 @@ impl Namer {
                     }
                 }
             }
-            if last != -1 {
-                // self.skl_freq[last as usize] <<= 1;
-                unsafe {
+            match last {
+                -1 => (),
+                14 => unsafe {
+                    // 下面这一行应该只在 14 != 0 时运行
+                    // 我试试优化成 *[14] / [14] 看看咋样
+                    *self.skl_freq.get_unchecked_mut(14) += min(
+                        min(*self.name_base.get_unchecked(60), *self.name_base.get_unchecked(61)),
+                        *self.skl_freq.get_unchecked(14),
+                    ) * self.skl_freq.get_unchecked(14)
+                        / self.skl_freq.get_unchecked(14);
+                },
+                15 => unsafe {
+                    *self.skl_freq.get_unchecked_mut(15) += min(
+                        min(*self.name_base.get_unchecked(62), *self.name_base.get_unchecked(63)),
+                        *self.skl_freq.get_unchecked(15),
+                    ) * self.skl_freq.get_unchecked(15)
+                        / self.skl_freq.get_unchecked(15);
+                },
+                _ => unsafe {
                     *self.skl_freq.get_unchecked_mut(last as usize) <<= 1;
-                }
-                // *= 2
-            }
-            if (self.skl_freq[14] != 0) && (last != 14) {
-                self.skl_freq[14] += min(min(self.name_base[60], self.name_base[61]), self.skl_freq[14]);
-            }
-            if (self.skl_freq[15] != 0) && (last != 15) {
-                self.skl_freq[15] += min(min(self.name_base[62], self.name_base[63]), self.skl_freq[15]);
+                },
             }
         }
 
