@@ -494,35 +494,6 @@ impl Namer {
                     }
                 }
             }
-            // let mut simd_val = self.val;
-            // let mut simd_val_b = self.val;
-            // let simd_181 = u8x32::splat(181);
-            // let simd_199 = u8x32::splat(199);
-            // let simd_128 = u8x32::splat(128);
-            // let simd_53 = u8x32::splat(53);
-            // let simd_63 = u8x32::splat(63);
-            // let simd_32 = u8x32::splat(32);
-
-            // for i in (0..256).step_by(32) {
-            //     unsafe {
-            //         let mut x = u8x32::from_slice(simd_val.get_unchecked(i..));
-            //         let mut y = u8x32::from_slice(simd_val_b.get_unchecked(i..));
-            //         x = (x * simd_181 + simd_199) & simd_128;
-            //         y = (y * simd_53) & simd_63 ^ simd_32;
-            //         x.copy_to_slice(simd_val.get_unchecked_mut(i..));
-            //         y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
-            //     }
-            // }
-
-            // let mut mod_count = 0;
-            // for i in 0..256 {
-            //     unsafe {
-            //         if simd_val.get_unchecked(i) != &0 {
-            //             *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
-            //             mod_count += 1;
-            //         }
-            //     }
-            // }
             // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
             let mut a: u8 = 0;
             let mut b: u8 = 0;
