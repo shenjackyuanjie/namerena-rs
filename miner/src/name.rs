@@ -535,7 +535,7 @@ impl Namer {
                     if p > 10 && *self.skl_id.get_unchecked(j) < 35 {
                         *self.skl_freq.get_unchecked_mut(j) = p - 10;
                         if *self.skl_id.get_unchecked(j) < 25 {
-                            last = j as i32;
+                            last = j as i8;
                         }
                     } else {
                         *self.skl_freq.get_unchecked_mut(j) = 0;
