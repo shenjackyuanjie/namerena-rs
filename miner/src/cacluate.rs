@@ -4,7 +4,13 @@ use crate::{
     Command,
 };
 
-use std::{io::Write, ops::Range, path::PathBuf};
+use std::{
+    intrinsics::{likely, unlikely},
+    io::Write,
+    ops::Range,
+    path::PathBuf,
+    time::Instant,
+};
 
 use base16384::Base16384Utf8;
 use colored::Colorize;
@@ -59,6 +65,8 @@ pub struct ComputeStatus {
     pub thread_speed: Vec<u64>,
     /// 当前各个线程是否在运算
     pub thread_running: Vec<bool>,
+    /// 各个线程筛到了几个
+    pub thread_get_count: Vec<u64>,
 }
 
 impl ComputeStatus {
@@ -69,6 +77,7 @@ impl ComputeStatus {
             top_id: config.start,
             thread_speed: vec![0; config.thread_count as usize],
             thread_running: vec![false; config.thread_count as usize],
+            thread_get_count: vec![0; config.thread_count as usize],
         }
     }
 
@@ -76,6 +85,7 @@ impl ComputeStatus {
     pub fn all_stoped(&self) -> bool { self.thread_running.iter().all(|&x| !x) }
     pub fn update_speed(&mut self, thread_id: ThreadId, speed: u64) { self.thread_speed[thread_id as usize] = speed; }
     pub fn update_running(&mut self, thread_id: ThreadId, running: bool) { self.thread_running[thread_id as usize] = running; }
+    pub fn add_get_count(&mut self, thread_id: ThreadId, count: u64) { self.thread_get_count[thread_id as usize] += count; }
     pub fn count_speed(&self) -> u64 { self.thread_speed.iter().sum() }
     pub fn predict_time(&self) -> chrono::Duration {
         let speed = self.count_speed();
@@ -159,6 +169,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     // 任务分发
     // 判断是否所有 work 都分发完了
     // 当前分发到的 work 的 最大 index
+    let full_start_time = Instant::now();
     if cli_arg.batch_in_time() {
         info!("开始分发任务(动态 batch)");
         let mut sended = vec![false; cli_arg.thread_count as usize];
@@ -200,7 +211,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
                         let _ = thread_waiter.try_recv();
                         let _ = work_sender.try_send(None);
                         if thread.iter().all(|t| t.is_finished()) {
-                            return;
+                            break;
                         }
                     }
                 } else {
@@ -233,7 +244,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
                     let _ = thread_waiter.try_recv();
                     let _ = work_sender.try_send(None);
                     if thread.iter().all(|t| t.is_finished()) {
-                        return;
+                        break;
                     }
                 }
             } else {
@@ -247,6 +258,9 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
             shared_status.top_id += cli_arg.batch_size.unwrap() as u64;
         }
     }
+    let full_end_time = Instant::now();
+    info!("所有任务已完成, 耗时: {:?}", full_end_time - full_start_time);
+    info!("各个线程获取数量: {:?}", shared_status.thread_get_count);
 }
 
 /// 所有的状态输出都在子线程, 也就是这里
@@ -302,7 +316,9 @@ pub fn cacl(
         let top = work.end;
         let start_time = std::time::Instant::now();
         // 计算
-        get_count += inner_cacl(&config, work, &mut main_namer, &team_namer);
+        let new_get = inner_cacl(&config, work, &mut main_namer, &team_namer);
+        get_count += new_get;
+        status.add_get_count(config.thread_id, new_get);
         // 完事, 统计
         let now = std::time::Instant::now();
         let d_t: std::time::Duration = now.duration_since(start_time);
@@ -316,7 +332,7 @@ pub fn cacl(
         // 输出状态
         info!(
             // thread_id, top, 当前线程速度, 当前batch用时, emoji, 全局速度, 全局E/d 速度, 算到几个, 进度, 预计时间
-            "|{:>2}|Id:{:>15}|{:6.2}E/d {:>5.2}s{}|{:>4.3}E/d|{:<3}|{:3.3}% {}:{}:{}|",
+            "|{:>2}|Id:{:>15}|{:6.2}E/d {:>5.2}s{}|{:>4.3}E/d|{:<3}|{:>2.3}% {}:{}:{:>2}|",
             config.thread_id,
             top,
             new_run_speed * 8.64 / 1_0000.0,
@@ -353,12 +369,12 @@ pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut N
         // 这堆操作放在这边了, 保证统计没问题
         let name = gen_name(i);
         // 新加的提前检测
-        if !main_namer.replace_name(&team_namer, &name) {
+        if likely(!main_namer.replace_name(&team_namer, &name)) {
             continue;
         }
         let prop = main_namer.get_property();
 
-        if prop > config.prop_expect as f32 {
+        if unlikely(prop > config.prop_expect as f32) {
             let name = gen_name(i);
             let full_name = format!("{}@{}", name, config.team);
             // 虚评

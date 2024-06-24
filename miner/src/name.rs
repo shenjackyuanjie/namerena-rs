@@ -453,7 +453,6 @@ impl Namer {
                 + *prop_name.get_unchecked(6) as u32;
             full += self.name_prop.get_unchecked(0) / 3 + 154;
             if full < 380 {
-                println!("name_prop[0] < 380 {}", self.name);
                 return false;
             }
         }
@@ -534,7 +533,7 @@ impl Namer {
                 unsafe {
                     if p > 10 && *self.skl_id.get_unchecked(j) < 35 {
                         *self.skl_freq.get_unchecked_mut(j) = p - 10;
-                        if *self.skl_id.get_unchecked(j) < 25 {
+                        if p < 35 {
                             last = j as i8;
                         }
                     } else {
@@ -542,27 +541,6 @@ impl Namer {
                     }
                 }
             }
-            // match last {
-            //     -1 => (),
-            //     14 => unsafe {
-            //         // 下面这一行应该只在 14 != 0 时运行
-            //         // 我试试优化成 *[14] / [14] 看看咋样
-            //         *self.skl_freq.get_unchecked_mut(14) += min(
-            //             min(*self.name_base.get_unchecked(60), *self.name_base.get_unchecked(61)),
-            //             *self.skl_freq.get_unchecked(14),
-            //         ) * self.skl_freq.get_unchecked(14)
-            //             / self.skl_freq.get_unchecked(14);
-            //     },
-            //     15 => unsafe {
-            //        if self.skl_freq.get_unchecked(15) != 0 { *self.skl_freq.get_unchecked_mut(15) += min(
-            //             min(*self.name_base.get_unchecked(62), *self.name_base.get_unchecked(63)),
-            //             *self.skl_freq.get_unchecked(15))}
-            //         );
-            //     },
-            //     _ => unsafe {
-            //         *self.skl_freq.get_unchecked_mut(last as usize) <<= 1;
-            //     },
-            // }
             match last {
                 -1 => unsafe {
                     // 判断 14, 15 去

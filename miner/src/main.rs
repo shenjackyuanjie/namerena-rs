@@ -1,4 +1,6 @@
 #![feature(portable_simd)]
+#![allow(internal_features)]
+#![feature(core_intrinsics)]
 #![feature(slice_swap_unchecked)]
 
 mod cacluate;
