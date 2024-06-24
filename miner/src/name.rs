@@ -819,10 +819,10 @@ mod test {
     fn update_name_test() {
         // 先创建一个正常的 namer
         // 然后更新名字
-        let team = TeamNamer::new_unchecked("x");
+        let team = TeamNamer::new_unchecked("shenjack");
         let mut namer = Namer::new_from_team_namer_unchecked(&team, "x");
 
-        let update_name = "k";
+        let update_name = "一一一丑堀㴁";
         namer.replace_name(&team, update_name);
 
         let mut none_update_name = Namer::new_from_team_namer_unchecked(&team, update_name);
