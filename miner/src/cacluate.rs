@@ -382,13 +382,16 @@ pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut N
             // 虚评
             main_namer.update_skill();
 
-            let xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&main_namer);
+            let xu;
             let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&main_namer);
-
-            if xu < config.xp_expect as f64 || xu_qd < config.xp_expect as f64 {
-                continue;
+            if likely((xu_qd as u32) < config.xp_expect) {
+                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&main_namer);
+                if likely((xu as u32) < config.xp_expect) {
+                    continue;
+                }
+            } else {
+                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&main_namer);
             }
-
             get_count += 1;
             info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, main_namer.get_info());
             // 写入文件
