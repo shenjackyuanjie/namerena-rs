@@ -123,6 +123,23 @@ pub fn set_process_cores(cores: usize) {
     }
 }
 
+pub fn set_process_priority_to_high() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::HIGH_PRIORITY_CLASS;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass};
+        let process = GetCurrentProcess();
+        match SetPriorityClass(process, HIGH_PRIORITY_CLASS) {
+            0 => warn!("设置进程优先级为高失败 {}", std::io::Error::last_os_error()),
+            _ => info!("设置进程优先级为高成功"),
+        }
+    }
+    #[cfg(unix)]
+    {
+        warn!("Linux 下不支持设置进程优先级为高 (未实现)")
+    }
+}
+
 fn main() {
     let mut cli_arg = Command::parse();
     tracing_subscriber::fmt()
@@ -160,6 +177,6 @@ fn main() {
     }
 
     info!("{}", cli_arg.display_info());
-
+    set_process_priority_to_high();
     cacluate::start_main(cli_arg, out_path);
 }

@@ -214,6 +214,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
                             break;
                         }
                     }
+                    break;
                 } else {
                     // 如果不是, 则发送一个对应线程 id 的消息
                     let _ = work_sender.send(Some((latest_speed.0, shared_status.top_id..shared_status.top_id + batch)));
@@ -247,6 +248,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
                         break;
                     }
                 }
+                break;
             } else {
                 // 如果没有结束, 则发送一个 batch
                 let _ = work_sender.send(Some((
