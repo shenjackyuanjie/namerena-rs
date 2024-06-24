@@ -542,26 +542,77 @@ impl Namer {
                     }
                 }
             }
+            // match last {
+            //     -1 => (),
+            //     14 => unsafe {
+            //         // 下面这一行应该只在 14 != 0 时运行
+            //         // 我试试优化成 *[14] / [14] 看看咋样
+            //         *self.skl_freq.get_unchecked_mut(14) += min(
+            //             min(*self.name_base.get_unchecked(60), *self.name_base.get_unchecked(61)),
+            //             *self.skl_freq.get_unchecked(14),
+            //         ) * self.skl_freq.get_unchecked(14)
+            //             / self.skl_freq.get_unchecked(14);
+            //     },
+            //     15 => unsafe {
+            //        if self.skl_freq.get_unchecked(15) != 0 { *self.skl_freq.get_unchecked_mut(15) += min(
+            //             min(*self.name_base.get_unchecked(62), *self.name_base.get_unchecked(63)),
+            //             *self.skl_freq.get_unchecked(15))}
+            //         );
+            //     },
+            //     _ => unsafe {
+            //         *self.skl_freq.get_unchecked_mut(last as usize) <<= 1;
+            //     },
+            // }
             match last {
-                -1 => (),
+                -1 => unsafe {
+                    // 判断 14, 15 去
+                    if *self.skl_freq.get_unchecked(14) != 0 {
+                        *self.skl_freq.get_unchecked_mut(14) += min(
+                            min(*self.name_base.get_unchecked(60), *self.name_base.get_unchecked(61)),
+                            *self.skl_freq.get_unchecked(14),
+                        )
+                    }
+                    if *self.skl_freq.get_unchecked(15) != 0 {
+                        *self.skl_freq.get_unchecked_mut(15) += min(
+                            min(*self.name_base.get_unchecked(62), *self.name_base.get_unchecked(63)),
+                            *self.skl_freq.get_unchecked(15),
+                        )
+                    }
+                },
                 14 => unsafe {
-                    // 下面这一行应该只在 14 != 0 时运行
-                    // 我试试优化成 *[14] / [14] 看看咋样
-                    *self.skl_freq.get_unchecked_mut(14) += min(
-                        min(*self.name_base.get_unchecked(60), *self.name_base.get_unchecked(61)),
-                        *self.skl_freq.get_unchecked(14),
-                    ) * self.skl_freq.get_unchecked(14)
-                        / self.skl_freq.get_unchecked(14);
+                    // 判断 15
+                    *self.skl_freq.get_unchecked_mut(14) <<= 1;
+                    if *self.skl_freq.get_unchecked(15) != 0 {
+                        *self.skl_freq.get_unchecked_mut(15) += min(
+                            min(*self.name_base.get_unchecked(62), *self.name_base.get_unchecked(63)),
+                            *self.skl_freq.get_unchecked(15),
+                        )
+                    }
                 },
                 15 => unsafe {
-                    *self.skl_freq.get_unchecked_mut(15) += min(
-                        min(*self.name_base.get_unchecked(62), *self.name_base.get_unchecked(63)),
-                        *self.skl_freq.get_unchecked(15),
-                    ) * self.skl_freq.get_unchecked(15)
-                        / self.skl_freq.get_unchecked(15);
+                    // 判断 14
+                    *self.skl_freq.get_unchecked_mut(15) <<= 1;
+                    if *self.skl_freq.get_unchecked(14) != 0 {
+                        *self.skl_freq.get_unchecked_mut(14) += min(
+                            min(*self.name_base.get_unchecked(60), *self.name_base.get_unchecked(61)),
+                            *self.skl_freq.get_unchecked(14),
+                        )
+                    }
                 },
-                _ => unsafe {
-                    *self.skl_freq.get_unchecked_mut(last as usize) <<= 1;
+                x => unsafe {
+                    *self.skl_freq.get_unchecked_mut(x as usize) <<= 1;
+                    if *self.skl_freq.get_unchecked(14) != 0 {
+                        *self.skl_freq.get_unchecked_mut(14) += min(
+                            min(*self.name_base.get_unchecked(60), *self.name_base.get_unchecked(61)),
+                            *self.skl_freq.get_unchecked(14),
+                        )
+                    }
+                    if *self.skl_freq.get_unchecked(15) != 0 {
+                        *self.skl_freq.get_unchecked_mut(15) += min(
+                            min(*self.name_base.get_unchecked(62), *self.name_base.get_unchecked(63)),
+                            *self.skl_freq.get_unchecked(15),
+                        )
+                    }
                 },
             }
         }
