@@ -28,3 +28,7 @@ windows-sys = { version = "*", features = [
 [features]
 default = ["simd"]
 simd = []
+
+[[bin]]
+name = "xp2"
+path = "./src/xp_eval.rs"
