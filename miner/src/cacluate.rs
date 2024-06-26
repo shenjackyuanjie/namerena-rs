@@ -87,6 +87,7 @@ impl ComputeStatus {
     pub fn update_running(&mut self, thread_id: ThreadId, running: bool) { self.thread_running[thread_id as usize] = running; }
     pub fn add_get_count(&mut self, thread_id: ThreadId, count: u64) { self.thread_get_count[thread_id as usize] += count; }
     pub fn count_speed(&self) -> u64 { self.thread_speed.iter().sum() }
+    pub fn get_sum_count(&self) -> u64 { self.thread_get_count.iter().sum() }
     pub fn predict_time(&self) -> chrono::Duration {
         let speed = self.count_speed();
         let remain = self.end - self.top_id;
@@ -263,6 +264,15 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     let full_end_time = Instant::now();
     info!("所有任务已完成, 耗时: {:?}", full_end_time - full_start_time);
     info!("各个线程获取数量: {:?}", shared_status.thread_get_count);
+    if shared_status.get_sum_count() != 0 {
+        info!(
+            "总计获取: {}, 效率: {}/s",
+            shared_status.get_sum_count(),
+            (shared_status.get_sum_count() as f64) / (full_end_time - full_start_time).as_secs_f64()
+        );
+    } else {
+        info!("这真是太悲伤了呢, 干了这么久的活, 一条数据都没获取到");
+    }
 }
 
 /// 所有的状态输出都在子线程, 也就是这里
