@@ -102,7 +102,7 @@ pub fn set_thread2core(cores: usize) {
     }
     #[cfg(unix)]
     {
-        warn!("Linux 下不支持设置线程亲和性 (未实现) {}", core)
+        warn!("Linux 下不支持设置线程亲和性 (未实现) {}", cores)
     }
 }
 
