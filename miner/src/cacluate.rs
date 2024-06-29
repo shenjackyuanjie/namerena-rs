@@ -40,7 +40,7 @@ pub struct CacluateConfig {
     pub xp_expect: u32,
     /// 队伍名称
     pub team: String,
-    ///
+    /// 是否基于时间
     pub time_based: bool,
     /// 可能的设置指定核心亲和性
     pub core_affinity: Option<usize>,
@@ -134,9 +134,9 @@ pub type ThreadId = u32;
 ///
 /// 最后结尾的时候的逻辑如下:
 /// - 如果是 固定大小 的 batch
-/// 1.每次发送之前检测是不是快完事了 ( batch size > 剩余 work size )
-/// 2.如果是, 则发送剩余的 work, 并且把 ended 置为 true
-/// 3.ended 为 true 的时候, 再发送消息的时候直接发送 None
+/// 1. 每次发送之前检测是不是快完事了 ( batch size > 剩余 work size )
+/// 2. 如果是, 则发送剩余的 work, 并且把 ended 置为 true
+/// 3. ended 为 true 的时候, 再发送消息的时候直接发送 None
 /// - 如果是 动态大小 的 batch
 pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     let mut cores = 0;
@@ -228,7 +228,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
         loop {
             // 等待一个 request work
             // 大部分时间在这里等待
-            if let Err(_) = thread_waiter.recv() {
+            if thread_waiter.recv().is_err() {
                 // 如果接收到了错误, 则说明所有线程都结束了
                 // 退出
                 break;
@@ -238,7 +238,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
             // 这里不确定是不是会有问题, 先用 unwarp 看看
             let thread_id = shared_status.get_idle_thread().unwrap();
             // 先检测是否快结束了
-            if shared_status.top_id + cli_arg.batch_size.unwrap() as u64 >= cli_arg.end {
+            if shared_status.top_id + cli_arg.batch_size.unwrap() >= cli_arg.end {
                 // 如果快结束了, 则发送剩余的 work 然后发送 None
                 let _ = work_sender.send(Some((thread_id as u32, shared_status.top_id..cli_arg.end)));
                 info!("最后一个 batch({}..{}) 已发送", shared_status.top_id, cli_arg.end);
@@ -254,11 +254,11 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
                 // 如果没有结束, 则发送一个 batch
                 let _ = work_sender.send(Some((
                     thread_id as u32,
-                    shared_status.top_id..shared_status.top_id + cli_arg.batch_size.unwrap() as u64,
+                    shared_status.top_id..shared_status.top_id + cli_arg.batch_size.unwrap(),
                 )));
             }
             // 更新 top_i
-            shared_status.top_id += cli_arg.batch_size.unwrap() as u64;
+            shared_status.top_id += cli_arg.batch_size.unwrap();
         }
     }
     let full_end_time = Instant::now();
@@ -279,6 +279,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
 /// 所有的状态输出都在子线程, 也就是这里
 ///
 /// 1. 通过 `Receiver` 获取到主线程的数据
+/// 
 /// 获取到数据后, 开始计算
 /// 计算完一个 batch 后, 输出一次状态
 /// 这里的状态是在所有运算线程中共享的一个状态
@@ -382,7 +383,7 @@ pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut N
         // 这堆操作放在这边了, 保证统计没问题
         let name = gen_name(i);
         // 新加的提前检测
-        if likely(!main_namer.replace_name(&team_namer, &name)) {
+        if likely(!main_namer.replace_name(team_namer, &name)) {
             continue;
         }
         let prop = main_namer.get_property();
@@ -394,14 +395,14 @@ pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut N
             main_namer.update_skill();
 
             let xu;
-            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(&main_namer);
+            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(main_namer);
             if likely((xu_qd as u32) < config.xp_expect) {
-                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&main_namer);
+                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(main_namer);
                 if likely((xu as u32) < config.xp_expect) {
                     continue;
                 }
             } else {
-                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(&main_namer);
+                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(main_namer);
             }
             get_count += 1;
             info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, main_namer.get_info());
