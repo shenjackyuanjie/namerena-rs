@@ -273,6 +273,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     } else {
         info!("这真是太悲伤了呢, 干了这么久的活, 一条数据都没获取到");
     }
+    info!("输出文件名: {:?}", out_path);
 }
 
 /// 所有的状态输出都在子线程, 也就是这里
