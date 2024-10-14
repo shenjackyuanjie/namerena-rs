@@ -279,7 +279,7 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
 /// 所有的状态输出都在子线程, 也就是这里
 ///
 /// 1. 通过 `Receiver` 获取到主线程的数据
-/// 
+///
 /// 获取到数据后, 开始计算
 /// 计算完一个 batch 后, 输出一次状态
 /// 这里的状态是在所有运算线程中共享的一个状态
