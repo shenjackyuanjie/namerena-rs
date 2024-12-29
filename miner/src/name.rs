@@ -597,7 +597,48 @@ impl Namer {
 
         #[cfg(not(feature = "simd"))]
         {
-            todo!("none simd 还没写呢")
+            let mut valb = self.val;
+
+            for val in valb.iter_mut() {
+                *val = ((*val as u32 * 181 + 160) % 256) as u8;
+            }
+            let mut mod_count = 0;
+            for i in 0..256 {
+                if valb[i] > 88 && valb[i] < 217 {
+                    self.name_base[mod_count] = valb[i] & 63;
+                    mod_count += 1;
+                }
+            }
+
+            // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
+            let mut a: u8 = 0;
+            let mut b: u8 = 0;
+            let mut s: u8 = 0;
+            for _ in 0..2 {
+                for i in 0..40 {
+                    let rnd = {
+                        a += 1;
+                        b = b.wrapping_add(self.val[a as usize]);
+                        self.val.swap(a as usize, b as usize);
+                        let u: u8 = self.val[((self.val[a as usize] as u16 + self.val[b as usize] as u16) & 255) as usize];
+                        a += 1;
+                        b = b.wrapping_add(self.val[a as usize]);
+                        self.val.swap(a as usize, b as usize);
+                        let t: u8 = self.val[((self.val[a as usize] as u16 + self.val[b as usize] as u16) & 255) as usize];
+                        (((u as u32) << 8 | t as u32) % 40) as u8
+                    };
+                    s = (s as u16 + rnd as u16 + self.skl_id[i as usize] as u16) as u8 % 40;
+                    self.skl_id.swap(i as usize, s as usize);
+                }
+            }
+
+            let mut last = -1;
+            for (j, i) in (64..128).step_by(4).enumerate() {
+                let p = min(
+                    min(self.name_base[i], self.name_base[i + 1]),
+                    min(self.name_base[i + 2], self.name_base[i + 3]),
+                );
+            }
         }
     }
 
