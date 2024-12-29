@@ -638,6 +638,64 @@ impl Namer {
                     min(self.name_base[i], self.name_base[i + 1]),
                     min(self.name_base[i + 2], self.name_base[i + 3]),
                 );
+                if p > 10 && self.skl_id[j] < 35 {
+                    self.skl_freq[j] = p - 10;
+                    if p < 35 {
+                        last = j as i8;
+                    }
+                } else {
+                    self.skl_freq[j] = 0;
+                }
+            }
+            match last {
+                // 判断 14, 15 去
+                -1 => {
+                    if self.skl_freq[14] != 0 {
+                        self.skl_freq[14] += min(
+                            min(self.name_base[60], self.name_base[61]),
+                            self.skl_freq[14],
+                        )
+                    }
+                    if self.skl_freq[15] != 0 {
+                        self.skl_freq[15] += min(
+                            min(self.name_base[62], self.name_base[63]),
+                            self.skl_freq[15],
+                        )
+                    }
+                },
+                14 => {
+                    self.skl_freq[14] <<= 1;
+                    if self.skl_freq[15] != 0 {
+                        self.skl_freq[15] += min(
+                            min(self.name_base[62], self.name_base[63]),
+                            self.skl_freq[15],
+                        )
+                    }
+                },
+                15 => {
+                    self.skl_freq[15] <<= 1;
+                    if self.skl_freq[14] != 0 {
+                        self.skl_freq[14] += min(
+                            min(self.name_base[60], self.name_base[61]),
+                            self.skl_freq[14],
+                        )
+                    }
+                },
+                x => {
+                    self.skl_freq[x as usize] <<= 1;
+                    if self.skl_freq[14] != 0 {
+                        self.skl_freq[14] += min(
+                            min(self.name_base[60], self.name_base[61]),
+                            self.skl_freq[14],
+                        )
+                    }
+                    if self.skl_freq[15] != 0 {
+                        self.skl_freq[15] += min(
+                            min(self.name_base[62], self.name_base[63]),
+                            self.skl_freq[15],
+                        )
+                    }
+                },
             }
         }
     }
