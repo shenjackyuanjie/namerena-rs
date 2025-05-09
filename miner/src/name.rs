@@ -514,7 +514,7 @@ impl Namer {
                             ((*self.val.get_unchecked(a as usize) as u16 + *self.val.get_unchecked(b as usize) as u16) & 255)
                                 as usize,
                         );
-                        (((u as u32) << 8 | t as u32) % 40) as u8
+                        ((((u as u32) << 8) | t as u32) % 40) as u8
                     };
                     unsafe {
                         s = (s as u16 + rnd as u16 + *self.skl_id.get_unchecked(i as usize) as u16) as u8 % 40;
