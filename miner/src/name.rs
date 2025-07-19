@@ -30,6 +30,7 @@ where
     }
 }
 
+// #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct TeamNamer {
     pub team: String,
