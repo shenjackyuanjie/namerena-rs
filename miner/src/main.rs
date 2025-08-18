@@ -113,13 +113,14 @@ impl Command {
 
     pub fn display_info(&self) -> String {
         format!(
-            "开始: {} 结尾: {} 总计: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n{}\n名字生成算法: {}\n名字模板: {}",
+            "开始: {} 结尾: {} 总计: {}\n线程数: {}\n八围预期: {}\n虚评阈值: {}|虚单阈值: {}\n队伍名: {}\n{}\n名字生成算法: {}\n名字模板: {}",
             self.start,
             self.end,
             self.end - self.start,
             self.thread_count,
             self.prop_expect,
             self.xp_expect,
+            self.xd_expect,
             self.team,
             if self.batch_in_count() {
                 format!("固定 batch 大小: {}", self.batch_size.unwrap())
