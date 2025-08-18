@@ -10,7 +10,7 @@ mod name;
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tracing::{info, warn};
 
 use crate::cacluate::CacluateConfig;
@@ -47,8 +47,40 @@ pub struct Command {
     /// 是否为 debug 模式
     #[arg(long, short = 'd')]
     pub debug: bool,
-
+    /// 名字生成算法, 默认为 base 16384
+    #[arg(long, short = 'n', value_enum, default_value_t = GenMethods::Base16384)]
+    pub name_gen: GenMethods,
+    /// 名字模板, 默认为 {}, 将使用 生成的内容替换 {}
+    #[arg(long, short = 'm', default_value_t = String::from("{}"))]
+    pub name_template: String,
 }
+
+use std::fmt::Display;
+
+/// 名字生成算法
+#[derive(Debug, Clone, ValueEnum)]
+pub enum GenMethods {
+    /// Base 16384
+    Base16384,
+    /// base 64 std
+    Base64Std,
+    /// base 64 url safe encode
+    Base64Url,
+    /// 直接 xxxxx
+    Number,
+}
+
+impl Display for GenMethods {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GenMethods::Base16384 => write!(f, "Base16384"),
+            GenMethods::Base64Std => write!(f, "Base64Std"),
+            GenMethods::Base64Url => write!(f, "Base64Url"),
+            GenMethods::Number => write!(f, "Number"),
+        }
+    }
+}
+
 
 impl Command {
     pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
@@ -61,6 +93,8 @@ impl Command {
             time_based: self.batch_in_time(),
             core_affinity: self.pick_core.map(|x| 1 << x),
             out_file: path.clone(),
+            algorithm: self.name_gen.clone(),
+            template: self.name_template.clone()
         }
     }
 
@@ -72,7 +106,7 @@ impl Command {
 
     pub fn display_info(&self) -> String {
         format!(
-            "开始: {} 结尾: {} 总计: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n{}",
+            "开始: {} 结尾: {} 总计: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n{}\n名字生成算法: {}\n名字模板: {}",
             self.start,
             self.end,
             self.end - self.start,
@@ -84,7 +118,9 @@ impl Command {
                 format!("固定 batch 大小: {}", self.batch_size.unwrap())
             } else {
                 format!("时间 batch 大小: {}s", self.report_interval.unwrap())
-            }
+            },
+            self.name_gen,
+            self.name_template,
         )
     }
 }

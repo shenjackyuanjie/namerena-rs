@@ -1,7 +1,7 @@
 use crate::{
     evaluate::NamerEvaluater,
     name::{Namer, TeamNamer},
-    Command,
+    Command, GenMethods,
 };
 
 use std::{
@@ -12,22 +12,9 @@ use std::{
     time::Instant,
 };
 
-use base16384::Base16384Utf8;
 use colored::Colorize;
 use crossbeam::channel::{bounded, Receiver, Sender};
 use tracing::{debug, info, warn};
-
-/// 根据 u64 生成对应的 name
-/// 转换成 base 16384
-/// 禁用:
-/// U00 ~ U1F ，换行，制表符 等
-/// ? , 问号
-/// U2000 - U202F , unicode特殊空格 等
-/// 不可以空格开头
-pub fn gen_name(id: u64) -> String {
-    // 手动把 u64 转换成 8 个 u8
-    Base16384Utf8::encode(&id.to_be_bytes())
-}
 
 pub struct CacluateConfig {
     /// 线程 id
@@ -46,6 +33,10 @@ pub struct CacluateConfig {
     pub core_affinity: Option<usize>,
     /// 输出文件名
     pub out_file: PathBuf,
+    /// 生成算法
+    pub algorithm: GenMethods,
+    /// 模板
+    pub template: String,
 }
 
 pub type WorkInfo = Option<(ThreadId, Range<u64>)>;
@@ -381,7 +372,7 @@ pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut N
     let mut get_count = 0;
     for i in range {
         // 这堆操作放在这边了, 保证统计没问题
-        let name = gen_name(i);
+        let name = config.algorithm.gen_name(&config.template, i);
         // 新加的提前检测
         if likely(!main_namer.replace_name(team_namer, &name)) {
             continue;
@@ -389,7 +380,7 @@ pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut N
         let prop = main_namer.get_property();
 
         if unlikely(prop > config.prop_expect as f32) {
-            let name = gen_name(i);
+            let name = config.algorithm.gen_name(&config.template, i);
             let full_name = format!("{}@{}", name, config.team);
             // 虚评
             main_namer.update_skill();
