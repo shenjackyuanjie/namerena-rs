@@ -1,4 +1,6 @@
+#[allow(unused)]
 pub mod base;
+#[allow(unused)]
 pub mod xuping;
 
 use crate::name::Namer;

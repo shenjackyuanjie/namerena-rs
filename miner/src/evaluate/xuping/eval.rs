@@ -1,4 +1,4 @@
-/// 虚评 1.3.1
+//! 虚评 1.3.1
 
 #[cfg(feature = "simd")]
 use std::simd::f64x64;
