@@ -27,11 +27,14 @@ pub struct Command {
     #[arg(long, short = 't', default_value_t = 10)]
     pub thread_count: u32,
     /// 八围预期值
-    #[arg(long = "prop-expected", short = 'p', default_value_t = 640)]
+    #[arg(long = "prop-expected", short = 'p', default_value_t = 600)]
     pub prop_expect: u32,
     /// xp 预期值
-    #[arg(long = "xp-expected", short = 'x', default_value_t = 0)]
+    #[arg(long = "xp-exp", short = 'x', default_value_t = 4900)]
     pub xp_expect: u32,
+    /// xd 预测值
+    #[arg(long = "xd-exp", short = 'd', default_value_t = 5600)]
+    pub xd_expect: u32,
     /// 队伍名称
     #[arg(long)]
     pub team: String,
@@ -92,6 +95,7 @@ impl Command {
             thread_count: self.thread_count,
             prop_expect: self.prop_expect,
             xp_expect: self.xp_expect,
+            xd_expect: self.xd_expect,
             team: self.team.clone(),
             time_based: self.batch_in_time(),
             core_affinity: self.pick_core.map(|x| 1 << x),
