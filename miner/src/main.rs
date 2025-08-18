@@ -50,8 +50,8 @@ pub struct Command {
     /// 名字生成算法, 默认为 base 16384
     #[arg(long, short = 'n', value_enum, default_value_t = GenMethods::Base16384)]
     pub name_gen: GenMethods,
-    /// 名字模板, 默认为 {}, 将使用 生成的内容替换 {}
-    #[arg(long, short = 'm', default_value_t = String::from("{}"))]
+    /// 名字模板, 默认为 [], 将使用 生成的内容替换 []
+    #[arg(long, short = 'm', default_value_t = String::from("[]"))]
     pub name_template: String,
 }
 
@@ -84,6 +84,9 @@ impl Display for GenMethods {
 
 impl Command {
     pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
+        if !self.name_template.contains("[]") {
+             panic!("Name template must contain a placeholder for the name ([])");
+        }
         CacluateConfig {
             thread_id: 0,
             thread_count: self.thread_count,

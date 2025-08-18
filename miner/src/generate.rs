@@ -11,8 +11,9 @@ impl GenMethods {
     /// ? , 问号
     /// U2000 - U202F , unicode特殊空格 等
     /// 不可以空格开头
+    #[inline(always)]
     pub fn gen_name(&self, template: &str, id: u64) -> String {
-        template.replace("{}",
+        template.replace("[]",
         &match self {
             GenMethods::Base16384 => {
                 Base16384Utf8::encode(&id.to_be_bytes())
