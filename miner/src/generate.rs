@@ -18,10 +18,10 @@ impl GenMethods {
                 Base16384Utf8::encode(&id.to_be_bytes())
             }
             GenMethods::Base64Std => {
-                base64::engine::general_purpose::STANDARD.encode(&id.to_be_bytes())
+                base64::engine::general_purpose::STANDARD.encode(id.to_be_bytes())
             }
             GenMethods::Base64Url => {
-                base64::engine::general_purpose::URL_SAFE.encode(&id.to_be_bytes())
+                base64::engine::general_purpose::URL_SAFE.encode(id.to_be_bytes())
             }
             GenMethods::Number => {
                 id.to_string()
