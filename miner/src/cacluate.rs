@@ -165,24 +165,12 @@ pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
     if cli_arg.batch_in_time() {
         info!("开始分发任务(动态 batch)");
         let mut sended = vec![false; cli_arg.thread_count as usize];
-        loop {
-            // 等待一个 request work
-            // 大部分时间在这里等待
-            let latest_speed = match thread_waiter.recv() {
-                Ok(info) => info,
-                Err(_) => {
-                    // 如果接收到了错误, 则说明所有线程都结束了, 或者怎么着出毛病了
-                    // 退出
-                    break;
-                }
-            };
+        while let Ok(latest_speed) = thread_waiter.recv() {
             // 遍历 sended 中 true 的部分, 检查对应 thread_running 是否为 true
             for (i, sended) in sended.iter_mut().enumerate() {
-                if *sended {
-                    if shared_status.thread_running[i] {
-                        // 如果为 true, 则将对应 sended 置为 false
-                        *sended = false;
-                    }
+                if *sended && shared_status.thread_running[i] {
+                    // 如果为 true, 则将对应 sended 置为 false
+                    *sended = false;
                 }
             }
             // 根据 latest_speed 计算出一个合适的 batch
