@@ -47,6 +47,7 @@ pub struct Command {
     /// 是否为 debug 模式
     #[arg(long, short = 'd')]
     pub debug: bool,
+
 }
 
 impl Command {
