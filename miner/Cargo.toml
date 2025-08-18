@@ -18,6 +18,7 @@ chrono = "0.4"
 colored = "3"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 base64 = "0.22.1"
+reqwest = { version = "0.12.23", features = ["json", "rustls-tls"], default-features = false}
 
 # windows 下额外指定一个 windows 依赖 (微软赛高!)
 # 用于在 bench 状态下指定核心(就是闲得)
