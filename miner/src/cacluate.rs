@@ -23,8 +23,10 @@ pub struct CacluateConfig {
     pub thread_count: u32,
     /// 八围预期值
     pub prop_expect: u32,
-    /// qp 预期值
+    /// xp 预期值
     pub xp_expect: u32,
+    /// xd 预期值
+    pub xd_expect: u32,
     /// 队伍名称
     pub team: String,
     /// 是否基于时间
@@ -375,13 +377,13 @@ pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut N
 
             let xu;
             let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(main_namer);
-            if likely((xu_qd as u32) < config.xp_expect) {
+            if likely((xu_qd as u32) < config.xd_expect) {
+                continue;
+            } else {
                 xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(main_namer);
                 if likely((xu as u32) < config.xp_expect) {
                     continue;
                 }
-            } else {
-                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(main_namer);
             }
             get_count += 1;
             info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, main_namer.get_info());

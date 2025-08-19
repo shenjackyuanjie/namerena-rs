@@ -27,11 +27,14 @@ pub struct Command {
     #[arg(long, short = 't', default_value_t = 10)]
     pub thread_count: u32,
     /// 八围预期值
-    #[arg(long = "prop-expected", short = 'p', default_value_t = 640)]
+    #[arg(long = "prop-expected", short = 'p', default_value_t = 600)]
     pub prop_expect: u32,
     /// xp 预期值
-    #[arg(long = "xp-expected", short = 'x', default_value_t = 0)]
+    #[arg(long = "xp-exp", short = 'x', default_value_t = 4900)]
     pub xp_expect: u32,
+    /// xd 预测值
+    #[arg(long = "xd-exp", short = 'd', default_value_t = 5600)]
+    pub xd_expect: u32,
     /// 队伍名称
     #[arg(long)]
     pub team: String,
@@ -92,6 +95,7 @@ impl Command {
             thread_count: self.thread_count,
             prop_expect: self.prop_expect,
             xp_expect: self.xp_expect,
+            xd_expect: self.xd_expect,
             team: self.team.clone(),
             time_based: self.batch_in_time(),
             core_affinity: self.pick_core.map(|x| 1 << x),
@@ -109,13 +113,14 @@ impl Command {
 
     pub fn display_info(&self) -> String {
         format!(
-            "开始: {} 结尾: {} 总计: {}\n线程数: {}\n八围预期: {}\n强评/强单最低值: {}\n队伍名: {}\n{}\n名字生成算法: {}\n名字模板: {}",
+            "开始: {} 结尾: {} 总计: {}\n线程数: {}\n八围预期: {}\n虚评阈值: {}|虚单阈值: {}\n队伍名: {}\n{}\n名字生成算法: {}\n名字模板: {}",
             self.start,
             self.end,
             self.end - self.start,
             self.thread_count,
             self.prop_expect,
             self.xp_expect,
+            self.xd_expect,
             self.team,
             if self.batch_in_count() {
                 format!("固定 batch 大小: {}", self.batch_size.unwrap())
