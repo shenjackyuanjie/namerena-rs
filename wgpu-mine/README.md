@@ -68,6 +68,8 @@ CSV 固定 15 列：id,name,team,hp,attack,defense,speed,agility,magic,resistanc
 
 2026-10-30，Ryzen 7 5800X（6 worker）+ NVIDIA GeForce RTX 5060 Ti / Vulkan，Release，批 65536。先跑 1 轮完整预热，再跑 3 轮正式测量取中位数；GPU/CPU 顺序交替，测速期间没有并行构建或其他本项目性能测试。
 
+另有用户原来的旧无限测号进程自当天 01:27 一直运行，占约两核 CPU。本任务没有终止或修改它；GPU 和 CPU 对照在同一背景负载下串行运行，因此下面是该桌面负载下的实测，不是独占整机的峰值。需要纯净峰值时，由用户先自行结束原后台任务，再用相同命令复测。
+
 | 负载 | 数量/命中 | GPU E2E | 内置 CPU 六线程 E2E | 加速比 |
 | --- | ---: | ---: | ---: | ---: |
 | 原参数 p550/x4000/d5000 | 5000000 / 0 | 414.2 万名/s（1.2071s） | 118.4 万名/s（4.2235s） | 3.50× |
@@ -75,6 +77,12 @@ CSV 固定 15 列：id,name,team,hp,attack,defense,speed,agility,magic,resistanc
 | 大量输出 p550/x0/d0 | 100000 / 66707 | 47.8 万名/s（0.2091s） | 38.6 万名/s（0.2589s） | 1.24× |
 
 原始数据：[原参数](benchmarks/e2e-fast-5800x-6t-original.csv)、[实际命中](benchmarks/e2e-fast-5800x-6t-matches.csv)、[大量输出](benchmarks/e2e-fast-5800x-6t-output.csv)。每一轮输出的全部 ID、名字、属性、技能均一致，两个评分逐记录误差 <10。该 CPU 对照是 GPU 包内的完整金标准池，不等同另行优化后的 tswn.exe 性能；CPU miner 队友的独立结果另记。
+
+### 另行优化后的 CPU miner
+
+上表是输出格式相同的包内 CPU 金标准对照。另行优化后的 CPU miner 使用四路 KSA、前缀复用与 f64 流式模型，在相同五百万原阈值下最终复核为 **167.2 万名/s**，含启动和 sync_all 的墙钟为 **166.1 万名/s**，相对正确性修复基线提升 **4.46×**。与 GPU 的 414.2 万名/s 两组独立实测相比约为 **2.48×**，不应继续把包内基准的 3.50× 当成对这个优化版 CPU 的加速比。
+
+两边批大小及输出格式不同，且高输出时优化版 CPU 序列化可更快；详细负载与限制见 [CPU 报告](../miner/docs/cpu-2026-10-30.md) 和 [CPU 最终复核数据](../miner/benchmarks/cpu-final-5800x-2026-10-30.csv)。零命中原参数不存在 CSV 正文大小差异，但初始化仍应另外考虑。
 
 ### 计时解释
 
@@ -116,4 +124,4 @@ cargo clippy -p wgpu-mine --all-targets --locked -j 2 -- -D warnings
 - 878e440：E2E CLI、安全工作池、名字范围、CSV 和集成测试。
 - 773beb7：仅边界精算、完整精算选项、取消/轮数边界验证。
 
-所有提交仅保存在本地；未推送。CPU miner 另由独占 miner/ 的 Agent Teams 队友分块处理，不与 GPU 核心混写。
+所有提交仅保存在本地；未推送。CPU miner 已由独占 miner/ 的 Agent Teams 队友完成，见 [CPU 优化与验收报告](../miner/docs/cpu-2026-10-30.md)。edbf51e 修复正确性，e8d3525 优化热点，b833926 保存报告与原始基准。未与 GPU 核心混写。

@@ -6,6 +6,7 @@
 
 - 依赖升级、API 适配、验证结果与后续优化/移植边界见 [依赖升级与 GPU MVP 迁移说明](docs/dependency-upgrade.md)。
 - `miner` 提供 CPU 矿工；`wgpu-mine` 已提供 [完整 GPU E2E 测号 CLI、误差验证与六线程对照](wgpu-mine/README.md)，支持原基本参数，涵盖属性、技能、shadow、XP/XD 与 CSV。纯 RC4 基准保留在 `--bench` 模式。
+- CPU miner 已补完安全调度、范围、输出和中断，并做四路 KSA/前缀/生成与 f64 模型优化，见 [CPU 优化与验证报告](miner/docs/cpu-2026-10-30.md)。
 - [maker-py](maker-py/README.md) 已弃用，不再维护。
 
 ## 用法
