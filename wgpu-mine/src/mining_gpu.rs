@@ -19,6 +19,7 @@ pub struct GpuBatch {
     pub kernel_time: Option<Duration>,
     pub wall_time: Duration,
     pub max_error: [f64; 2],
+    pub refined: usize,
 }
 
 /// GPU 上执行 RC4、属性、技能、shadow 和 f32 模型，只回传可能命中的紧凑记录。
@@ -39,6 +40,8 @@ pub struct GpuMiner {
     metadata: Vec<[u32; 2]>,
     bytes: Vec<u8>,
     pub adapter_description: String,
+    /// 全部候选使用 f64 重算；默认仅对距非零阈值 10 分内的候选重算。
+    pub exact_scores: bool,
 }
 
 impl GpuMiner {
@@ -195,6 +198,7 @@ impl GpuMiner {
             metadata: Vec::with_capacity(capacity),
             bytes: Vec::new(),
             adapter_description,
+            exact_scores: false,
         })
     }
 
@@ -221,6 +225,7 @@ impl GpuMiner {
                 kernel_time: None,
                 wall_time: start.elapsed(),
                 max_error: [0.0; 2],
+                refined: 0,
             });
         }
         self.bytes.resize(self.bytes.len().max(1).div_ceil(4) * 4, 0);
@@ -277,6 +282,7 @@ impl GpuMiner {
         });
         let mut records = Vec::with_capacity(count);
         let mut max_error = [0.0_f64; 2];
+        let mut refined = 0;
         if count != 0 {
             let bytes = (count * RECORD_BYTES) as u64;
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -305,14 +311,22 @@ impl GpuMiner {
                 if !approximate.iter().all(|x| x.is_finite()) {
                     return Err("GPU 返回非有限评分".to_owned());
                 }
-                let exact = core::scores(&props, &skill_ids, &skill_freqs, shadow_numerator);
-                for i in 0..2 {
-                    let error = (f64::from(approximate[i]) - exact[i]).abs();
-                    max_error[i] = max_error[i].max(error);
-                    if error >= 10.0 {
-                        return Err(format!("GPU 评分误差超过约定：候选 {index}，模型 {i}，绝对误差 {error}"));
+                let near_boundary = (thresholds.xp != 0 && (f64::from(approximate[0]) - f64::from(thresholds.xp)).abs() <= 10.0)
+                    || (thresholds.xd != 0 && (f64::from(approximate[1]) - f64::from(thresholds.xd)).abs() <= 10.0);
+                let exact = if capture_all || self.exact_scores || near_boundary {
+                    let exact = core::scores(&props, &skill_ids, &skill_freqs, shadow_numerator);
+                    refined += 1;
+                    for i in 0..2 {
+                        let error = (f64::from(approximate[i]) - exact[i]).abs();
+                        max_error[i] = max_error[i].max(error);
+                        if error >= 10.0 {
+                            return Err(format!("GPU 评分误差超过约定：候选 {index}，模型 {i}，绝对误差 {error}"));
+                        }
                     }
-                }
+                    exact
+                } else {
+                    approximate.map(f64::from)
+                };
                 let value = Evaluation {
                     props,
                     skill_ids,
@@ -342,6 +356,7 @@ impl GpuMiner {
             kernel_time,
             wall_time: start.elapsed(),
             max_error,
+            refined,
         })
     }
 }

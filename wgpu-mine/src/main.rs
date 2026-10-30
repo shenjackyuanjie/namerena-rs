@@ -90,6 +90,9 @@ struct Args {
     /// 对最终 GPU 命中额外做完整 CPU 属性/技能复核。
     #[arg(long)]
     verify: bool,
+    /// 对全部 GPU 候选用 f64 重算评分；默认仅阈值附近重算。
+    #[arg(long)]
+    exact_scores: bool,
     /// 对指定数量候选做完整 GPU/CPU 对拍并统计模型误差，不执行测号输出。
     #[arg(long)]
     validate: Option<u64>,
@@ -138,7 +141,7 @@ fn run_tag() -> String {
     )
 }
 fn range_end(args: &Args) -> Result<u64, String> {
-    if let Some(count) = args.count {
+    if let Some(count) = args.validate.or(args.count) {
         args.start.checked_add(count).ok_or_else(|| "start+count 超出 u64 范围".to_owned())
     } else {
         Ok(args.end.unwrap_or(u64::MAX))
@@ -157,6 +160,12 @@ fn check_options(args: &Args) -> Result<(), String> {
     }
     if args.team.len() > 256 {
         return Err("队伍名超过256个UTF-8字节".to_owned());
+    }
+    if args.e2e_bench && args.warmup.checked_add(args.rounds).is_none() {
+        return Err("warmup+rounds 超出 usize 范围".to_owned());
+    }
+    if args.validate == Some(0) {
+        return Err("验证样本数必须大于零".to_owned());
     }
     let end = range_end(args)?;
     if args.start > end {
@@ -372,7 +381,22 @@ fn same_csv(a: &Path, b: &Path) -> Result<(), String> {
     loop {
         match (ra.next(), rb.next()) {
             (None, None) => return Ok(()),
-            (Some(Ok(a)), Some(Ok(b))) if a == b => {}
+            (Some(Ok(a)), Some(Ok(b))) => {
+                if a.len() != b.len() {
+                    return Err("CSV列数不一致".to_owned());
+                }
+                for i in 0..a.len() {
+                    if i == 12 || i == 13 {
+                        let x = a[i].parse::<f64>().map_err(|e| e.to_string())?;
+                        let y = b[i].parse::<f64>().map_err(|e| e.to_string())?;
+                        if !x.is_finite() || !y.is_finite() || (x - y).abs() >= 10.0 {
+                            return Err(format!("CSV记录{index}评分列{i}误差不满足<10：{x} vs {y}"));
+                        }
+                    } else if a[i] != b[i] {
+                        return Err(format!("CSV记录{index}的列{i}不一致"));
+                    }
+                }
+            }
             (Some(Err(e)), _) | (_, Some(Err(e))) => return Err(e.to_string()),
             _ => return Err(format!("GPU/CPU E2E输出第{index}条记录不一致")),
         }
@@ -394,9 +418,12 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
     if let Some(gpu) = &gpu {
         eprintln!("GPU：{}", gpu.adapter_description);
     }
+    if let Some(gpu) = &mut gpu {
+        gpu.exact_scores = args.exact_scores || args.verify;
+    }
     let initialization = setup.elapsed();
     eprintln!(
-        "初始化={:.3}s；范围=[{}, {})；线程={}；批大小={}；评分GPU误差余量10，候选使用f64精筛",
+        "初始化={:.3}s；范围=[{}, {})；线程={}；批大小={}；评分GPU误差余量10，默认边界精算，可选exact-scores",
         initialization.as_secs_f64(),
         args.start,
         range_end(&args)?,
@@ -429,8 +456,8 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
                     "compute_s",
                     "output_s",
                     "gpu_kernel_s",
-                    "xp_max_error",
-                    "xd_max_error",
+                    "refined_xp_max_error",
+                    "refined_xd_max_error",
                     "setup_s",
                 ])
                 .map_err(|e| e.to_string())?;
@@ -482,7 +509,7 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
             if stats[0].processed != stats[1].processed {
                 return Err("E2E对照范围不一致".to_owned());
             }
-            eprintln!("第{round}轮：GPU/CPU CSV逐字段一致");
+            eprintln!("第{round}轮：GPU/CPU CSV整数/名字逐字段一致，评分误差<10");
         }
         for values in &mut times {
             values.sort_unstable_by(f64::total_cmp);
@@ -585,5 +612,41 @@ mod tests {
             let args = Args::try_parse_from([vec!["wgpu-mine", "--team", "x"], options].concat()).unwrap();
             assert!(check_options(&args).is_err());
         }
+    }
+
+    #[test]
+    fn overflowing_rounds_and_cancelled_resume_cursor() {
+        let mut args = Args::try_parse_from([
+            "wgpu-mine",
+            "--team",
+            "x",
+            "--backend",
+            "cpu",
+            "--count",
+            "513",
+            "--start",
+            "17",
+        ])
+        .unwrap();
+        args.e2e_bench = true;
+        args.warmup = usize::MAX;
+        args.rounds = 1;
+        assert!(check_options(&args).is_err());
+        args.e2e_bench = false;
+        args.validate = Some(0);
+        assert!(check_options(&args).is_err());
+        args.validate = None;
+        args.warmup = 0;
+        let generator = Generator::new(args.template.clone(), args.encoding).unwrap();
+        let mut pool = CpuPool::new(generator, &args.team, 2).unwrap();
+        let path = std::env::temp_dir().join(format!("namerena-cancel-{}.csv", run_tag()));
+        let result = run_once(&args, Backend::Cpu, &mut pool, None, &path, &AtomicBool::new(true)).unwrap();
+        assert_eq!(result.processed, 0);
+        assert_eq!(result.next, 17);
+        let mut csv = csv::Reader::from_path(&path).unwrap();
+        assert_eq!(csv.headers().unwrap().len(), 15);
+        assert_eq!(csv.records().count(), 0);
+        drop(csv);
+        std::fs::remove_file(&path).unwrap();
     }
 }
