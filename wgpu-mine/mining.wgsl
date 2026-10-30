@@ -52,6 +52,7 @@ const LANES: u32 = 32u;
 const WORDS: u32 = 8192u;
 const PACKED: bool = false;
 const GENERATED: bool = false;
+const COMPACT_MODEL: bool = false;
 var<workgroup> values: array<u32, WORDS>;
 
 fn read_sbox(lane: u32, slot: u32) -> u32 {
@@ -293,6 +294,31 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
     // 与 poly 完全相同的 44 个线性项及 i=0..43,j=i..43 二次项次序。
     // 不构造 1034 项多项式数组；零特征跳过乘加但仍推进权重索引。
     var score = weights[0];
+    if (COMPACT_MODEL) {
+        // 最多8属性+16非零技能+1影子=25项；保持原特征索引顺序，32槽留余量。
+        var active_indices: array<u32, 32>;
+        var active_count = 0u;
+        for (var original = 0u; original < 44u; original += 1u) {
+            let value = features[original];
+            if (value != 0.0) {
+                active_indices[active_count] = original;
+                features[active_count] = value;
+                active_count += 1u;
+            }
+        }
+        for (var i = 0u; i < active_count; i += 1u) {
+            score += weights[1u + active_indices[i]] * features[i];
+        }
+        for (var a = 0u; a < active_count; a += 1u) {
+            let i = active_indices[a];
+            let row = 45u + i * (89u - i) / 2u;
+            for (var b = a; b < active_count; b += 1u) {
+                let j = active_indices[b];
+                let term = features[a] * features[b];
+                score += weights[row + j - i] * term;
+            }
+        }
+    } else {
     var weight_index = 1u;
     for (var i = 0u; i < 44u; i += 1u) {
         if (features[i] != 0.0) {
@@ -312,6 +338,7 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
             }
             weight_index += 1u;
         }
+    }
     }
     atomicAdd(&output.scored, 1u);
 

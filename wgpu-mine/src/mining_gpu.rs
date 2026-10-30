@@ -16,12 +16,14 @@ pub enum SboxLayout {
 pub struct GpuOptions {
     pub sbox: SboxLayout,
     pub workgroup_size: u32,
+    pub compact_model: bool,
 }
 impl Default for GpuOptions {
     fn default() -> Self {
         Self {
             sbox: SboxLayout::Packed,
             workgroup_size: 32,
+            compact_model: true,
         }
     }
 }
@@ -44,6 +46,10 @@ impl GpuOptions {
                 "const PACKED: bool = false;",
                 &format!("const PACKED: bool = {};", self.sbox == SboxLayout::Packed),
             );
+        source = source.replace(
+            "const COMPACT_MODEL: bool = false;",
+            &format!("const COMPACT_MODEL: bool = {};", self.compact_model),
+        );
         if generated {
             source = source.replace("const GENERATED: bool = false;", "const GENERATED: bool = true;");
             let (before, rest) = source.split_once("// KEY_BEGIN").ok_or("着色器缺少KEY_BEGIN")?;
@@ -611,14 +617,17 @@ mod tests {
                 GpuOptions {
                     sbox: SboxLayout::Packed,
                     workgroup_size: 32,
+                    compact_model: true,
                 },
                 GpuOptions {
                     sbox: SboxLayout::Packed,
                     workgroup_size: 64,
+                    compact_model: true,
                 },
                 GpuOptions {
                     sbox: SboxLayout::Packed,
                     workgroup_size: 128,
+                    compact_model: true,
                 },
             ] {
                 let mut gpu = GpuMiner::with_options("边界队伍4", 257, options).await.unwrap();
@@ -659,15 +668,18 @@ mod tests {
                 GpuOptions {
                     sbox: SboxLayout::Wide,
                     workgroup_size: 32,
+                    compact_model: true,
                 },
                 GpuOptions::default(),
                 GpuOptions {
                     sbox: SboxLayout::Packed,
                     workgroup_size: 64,
+                    compact_model: true,
                 },
                 GpuOptions {
                     sbox: SboxLayout::Packed,
                     workgroup_size: 128,
+                    compact_model: true,
                 },
             ] {
                 cases.push((Encoding::Base16384, "中文😀[]/[]tail".to_owned(), options));

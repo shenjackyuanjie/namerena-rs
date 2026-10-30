@@ -93,6 +93,9 @@ struct Args {
     /// 固定宽度编码默认在GPU按ID生成，Number自动回退上传。
     #[arg(long, value_enum, default_value = "auto")]
     gpu_input: GpuInputMode,
+    /// 使用旧稠密遍历作对照；默认按非零特征压缩执行相同模型。
+    #[arg(long)]
+    dense_model: bool,
     /// 进度报告秒数；不改变范围或筛选语义。
     #[arg(short = 'r', long = "report-interval", default_value_t = 10)]
     report: u64,
@@ -186,6 +189,7 @@ fn check_options(args: &Args) -> Result<(), String> {
     GpuOptions {
         sbox: args.sbox,
         workgroup_size: args.workgroup_size,
+        compact_model: !args.dense_model,
     }
     .shared_bytes()?;
     let end = range_end(args)?;
@@ -438,6 +442,7 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
         let options = GpuOptions {
             sbox: args.sbox,
             workgroup_size: args.workgroup_size,
+            compact_model: !args.dense_model,
         };
         let input = match args.gpu_input {
             GpuInputMode::Uploaded => None,
@@ -511,6 +516,7 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
                     "gpu_input",
                     "sbox",
                     "workgroup_size",
+                    "model_execution",
                 ])
                 .map_err(|e| e.to_string())?;
         }
@@ -559,6 +565,7 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
                                 },
                                 format!("{:?}", args.sbox).to_lowercase(),
                                 args.workgroup_size.to_string(),
+                                if args.dense_model { "dense" } else { "compact" }.to_owned(),
                             ])
                             .map_err(|e| e.to_string())?;
                     }
