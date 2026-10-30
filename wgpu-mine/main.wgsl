@@ -1,48 +1,42 @@
-@group(0) @binding(0) var<uniform> first_step: array<vec4<u32>, 64>;
+// 每个候选在独立 invocation 内执行两轮名字 KSA；队伍 KSA 在 CPU 预计算一次。
+@group(0) @binding(0) var<uniform> team_state: array<vec4<u32>, 64>;
+struct NameInfo { offset: u32, length: u32, }
+@group(0) @binding(1) var<storage, read> names: array<NameInfo>;
+// UTF-8 字节连续打包，每个 u32 的低字节在前，避免将每个输入字节扩张成 u32。
+@group(0) @binding(2) var<storage, read> name_bytes: array<u32>;
+@group(0) @binding(3) var<storage, read_write> output_states: array<u32>;
+struct Params { count: u32, padding0: u32, padding1: u32, padding2: u32, }
+@group(0) @binding(4) var<uniform> params: Params;
 
-@group(1) @binding(0) var<storage, read> name_len: array<u32, 256>;
-@group(1) @binding(1) var<storage, read> name_bytes: array<array<u32, 256>, 256>;
-
-@compute
-@workgroup_size(16, 16)
-// 处理第二步的两次 rc4 名称, 输入名字 bytes, 从第一步得到的 val
-// fn rc4_name(@location(0) workname_bytes: array<u32, 256>, @location(1) name_len: u32) -> @location(0) array<u32, 256> {
-// 输入计算着色器的 index, 从全局数据中取对应位置的数据
-fn rc4_name(@builtin(local_invocation_id) compute_pos: vec3<u32>) {
-    // 计算线程的 index
-    var index: u32 = compute_pos.x + compute_pos.y * 16u;
-    // 从全局数据中取对应位置的数据
-    var name_bytes: array<u32, 256> = name_bytes[index];
-    var name_len: u32 = name_len[index];
-
-    var val: array<u32, 256> = array<u32, 256>();
-    // 把 first_step 的值复制到 val
-    // first_step 内当成连续的内存即可
-    for (var i: u32 = 0; i < 64; i = i + 1) {
-        val[i * 4] = first_step[i].x;
-        val[i * 4 + 1] = first_step[i].y;
-        val[i * 4 + 2] = first_step[i].z;
-        val[i * 4 + 3] = first_step[i].w;
+@compute @workgroup_size(64)
+fn rc4_name(@builtin(global_invocation_id) position: vec3<u32>) {
+    let index = position.x;
+    if (index >= params.count) { return; }
+    let info = names[index];
+    var values: array<u32, 256>;
+    for (var i = 0u; i < 256u; i += 1u) {
+        values[i] = team_state[i / 4u][i % 4u];
     }
-    // 上面的重复两次
-    for (var n: u32 = 0; n < 2; n++) {    
-        var s: u32 = 0u;
-        var k: u32 = 0u;
-        for (var i: u32 = 0; i < 256; i = i + 1) {
-            if (k != 0) {
-                s = s + val[k - 1];
+    // 密钥为 [0, UTF-8(name)...]；每一轮都重置局部 j 和密钥游标。
+    for (var round = 0u; round < 2u; round += 1u) {
+        var j = 0u;
+        var k = 0u;
+        for (var i = 0u; i < 256u; i += 1u) {
+            if (k != 0u) {
+                let address = info.offset + k - 1u;
+                j += (name_bytes[address / 4u] >> ((address % 4u) * 8u)) & 255u;
             }
-            s = s + val[i];
-            s = s % 256u;
-            var tmp = val[i];
-            val[i] = val[s];
-            val[s] = tmp;
-            if (k == name_len - 1) {
-                k = 0u;
-            } else {
-                k++;
-            }
+            j = (j + values[i]) & 255u;
+            let temporary = values[i];
+            values[i] = values[j];
+            values[j] = temporary;
+            if (k == info.length) { k = 0u; } else { k += 1u; }
         }
     }
-    return;
+    // 保留完整置换但只回读 256 字节/名字，而不是原型的 1024 字节。
+    for (var i = 0u; i < 64u; i += 1u) {
+        let base = i * 4u;
+        output_states[index * 64u + i] = values[base] | (values[base + 1u] << 8u)
+            | (values[base + 2u] << 16u) | (values[base + 3u] << 24u);
+    }
 }

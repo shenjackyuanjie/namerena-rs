@@ -9,22 +9,21 @@ edition = "2024"
 default-run = "tswn"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 base16384 = "0.1.0"
 
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["time"] }
-chrono = "0.4"
-colored = "3"
-crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
-base64 = "0.22.1"
-reqwest = { version = "0.12.23", features = ["json", "rustls-tls"], default-features = false}
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["time"] }
+chrono = "0.4.45"
+colored = "3.1.1"
+crossbeam = { version = "0.8.5", features = ["crossbeam-channel"] }
+base64 = "0.23.1"
 
 # windows 下额外指定一个 windows 依赖 (微软赛高!)
 # 用于在 bench 状态下指定核心(就是闲得)
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "*", features = [
+windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
 ] }

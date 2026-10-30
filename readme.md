@@ -2,6 +2,12 @@
 
 [https://deepmess.com/namerena/](https://deepmess.com/namerena/)
 
+## 当前工程状态
+
+- 依赖升级、API 适配、验证结果与后续优化/移植边界见 [依赖升级与 GPU MVP 迁移说明](docs/dependency-upgrade.md)。
+- `miner` 提供现有 CPU 矿工；`wgpu-mine` 提供 [批量 RC4 GPU 移植与六线程测速实验](wgpu-mine/README.md)，本机大批量端到端约 2.3～2.4× 六线程 CPU，目前不是完整 GPU 测号程序。
+- [maker-py](maker-py/README.md) 已弃用，不再维护。
+
 ## 用法
 
 ```text

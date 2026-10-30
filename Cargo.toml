@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["miner", "openbox", "wgpu-mine"]
+members = ["miner", "wgpu-mine"]
 
 [profile.miner]
 inherits = "release"

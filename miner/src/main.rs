@@ -48,7 +48,7 @@ pub struct Command {
     #[arg(long = "core-pick")]
     pub pick_core: Option<usize>,
     /// 是否为 debug 模式
-    #[arg(long, short = 'd')]
+    #[arg(long)]
     pub debug: bool,
     /// 名字生成算法, 默认为 base 16384
     #[arg(long, short = 'n', value_enum, default_value_t = GenMethods::Base16384)]
@@ -84,11 +84,10 @@ impl Display for GenMethods {
     }
 }
 
-
 impl Command {
     pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
         if !self.name_template.contains("[]") {
-             panic!("Name template must contain a placeholder for the name ([])");
+            panic!("Name template must contain a placeholder for the name ([])");
         }
         CacluateConfig {
             thread_id: 0,
@@ -101,7 +100,7 @@ impl Command {
             core_affinity: self.pick_core.map(|x| 1 << x),
             out_file: path.clone(),
             algorithm: self.name_gen.clone(),
-            template: self.name_template.clone()
+            template: self.name_template.clone(),
         }
     }
 
@@ -224,4 +223,50 @@ fn main() {
     info!("{}", cli_arg.display_info());
     set_process_priority_to_high();
     cacluate::start_main(cli_arg, out_path);
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_has_no_conflicts() { Command::command().debug_assert(); }
+
+    #[test]
+    fn parses_basic_mining_command() {
+        let args = Command::try_parse_from([
+            "tswn",
+            "-t",
+            "2",
+            "-p",
+            "550",
+            "-x",
+            "4000",
+            "-d",
+            "5000",
+            "--team",
+            "shenjack",
+            "-r",
+            "10",
+            "-m",
+            "我也不知道我要测多少 []",
+        ])
+        .unwrap();
+        assert_eq!(args.thread_count, 2);
+        assert_eq!(args.prop_expect, 550);
+        assert_eq!(args.xp_expect, 4000);
+        assert_eq!(args.xd_expect, 5000);
+        assert_eq!(args.team, "shenjack");
+        assert_eq!(args.report_interval, Some(10));
+        assert_eq!(args.name_template, "我也不知道我要测多少 []");
+        assert!(!args.debug);
+    }
+
+    #[test]
+    fn debug_is_long_only_and_separate_from_xd() {
+        let args = Command::try_parse_from(["tswn", "--team", "shenjack", "-d", "5000", "--debug"]).unwrap();
+        assert_eq!(args.xd_expect, 5000);
+        assert!(args.debug);
+    }
 }
