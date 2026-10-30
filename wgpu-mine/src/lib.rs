@@ -2,4 +2,7 @@
 pub mod core;
 pub mod cpu;
 pub mod gpu;
+pub mod input;
 pub mod mining_gpu;
+pub mod output;
+pub mod pool;

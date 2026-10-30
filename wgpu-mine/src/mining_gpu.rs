@@ -285,7 +285,7 @@ impl GpuMiner {
             encoder.copy_buffer_to_buffer(&self.output, 16, &self.record_staging, 0, bytes);
             self.queue.submit(Some(encoder.finish()));
             let data = map_read(&self.device, &self.record_staging, bytes)?;
-            for record in data.chunks_exact(RECORD_BYTES) {
+            for record in data.as_chunks::<RECORD_BYTES>().0 {
                 let mut words = [0_u32; RECORD_WORDS];
                 for (word, bytes) in words.iter_mut().zip(record.as_chunks::<4>().0) {
                     *word = u32::from_le_bytes(*bytes);

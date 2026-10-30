@@ -1,217 +1,542 @@
-use wgpu_mine::{cpu, gpu};
+mod rc4_bench;
 
 use clap::{Parser, ValueEnum};
 use std::{
-    fs::File,
-    hint::black_box,
+    fs::{self, File, OpenOptions},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use wgpu_mine::{
+    core::{self, Thresholds},
+    input::{batch_ranges, Encoding, Generator},
+    mining_gpu::GpuMiner,
+    output::CsvOutput,
+    pool::CpuPool,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum Encoding {
-    Base16384,
-    Number,
+enum Backend {
+    Gpu,
+    Cpu,
+}
+impl Backend {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Gpu => "gpu",
+            Self::Cpu => "cpu",
+        }
+    }
 }
 
-#[derive(Debug, Parser)]
-#[command(about = "RC4 GPU 移植实验：只计算两轮名字 KSA，不计算属性或评分")]
+#[derive(Parser, Debug)]
+#[command(about = "E2E GPU 测号：生成 → RC4 → 属性/技能 → XP/XD → CSV")]
 struct Args {
-    /// 运行 CPU/GPU 正确性与性能对照；不指定时只展示两个名字的 RC4 状态。
     #[arg(long)]
-    bench: bool,
-    /// private 保留每 invocation 私有 Sbox；shared 使用转置共享 Sbox。
-    #[arg(long, value_enum, default_value = "shared")]
-    kernel: gpu::Kernel,
-    #[arg(long, default_value = "shenjack")]
     team: String,
-    /// 生成名字时替换所有 []，按 UTF-8 字节上传。
-    #[arg(short = 'm', long, default_value = "我也不知道我要测多少 []")]
+    #[arg(
+        short = 'm',
+        long = "name-template",
+        alias = "template",
+        default_value = "[]"
+    )]
     template: String,
-    #[arg(long, value_enum, default_value = "base16384")]
+    #[arg(
+        short = 'n',
+        long = "name-gen",
+        alias = "encoding",
+        value_enum,
+        default_value = "base16384"
+    )]
     encoding: Encoding,
     #[arg(long, default_value_t = 0)]
     start: u64,
-    /// 依次测试不同批大小；设备和最大容量缓冲只初始化一次。
+    /// 结束 ID（不含）；不指定时运行到 u64::MAX 或 Ctrl+C。
+    #[arg(long, conflicts_with = "count")]
+    end: Option<u64>,
+    #[arg(long, conflicts_with = "end")]
+    count: Option<u64>,
+    /// GPU 模式的名字生成线程数；CPU 模式同时用于完整计算。
     #[arg(
-        long,
-        value_delimiter = ',',
-        default_value = "256,4096,65536"
+        short = 't',
+        long = "thread-count",
+        alias = "cpu-threads",
+        default_value_t = 6
     )]
-    batch_sizes: Vec<usize>,
-    /// 多线程 CPU 基线的 worker 数，所有线程数共用同一通用路径。
-    #[arg(short = 't', long, default_value_t = 6)]
-    cpu_threads: usize,
-    /// 每个批大小的正式重复次数。
-    #[arg(long, default_value_t = 5)]
-    rounds: usize,
-    #[arg(long, default_value_t = 2)]
-    warmup: usize,
-    /// 可选的 CSV 实测结果文件。
+    threads: usize,
+    #[arg(short = 'p', long = "prop-expected", default_value_t = 600)]
+    prop: u32,
+    #[arg(short = 'x', long = "xp-exp", default_value_t = 4900)]
+    xp: u32,
+    #[arg(short = 'd', long = "xd-exp", default_value_t = 5600)]
+    xd: u32,
+    #[arg(short = 'b', long = "batch-size", default_value_t = 65536)]
+    batch_size: usize,
+    /// 进度报告秒数；不改变范围或筛选语义。
+    #[arg(short = 'r', long = "report-interval", default_value_t = 10)]
+    report: u64,
+    #[arg(long, value_enum, default_value = "gpu")]
+    backend: Backend,
+    /// 指定新输出文件；禁止覆盖。- 表示 CSV 写到标准输出。
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+    #[arg(long, default_value = "namerena")]
+    output_dir: PathBuf,
+    /// 对最终 GPU 命中额外做完整 CPU 属性/技能复核。
     #[arg(long)]
-    csv: Option<PathBuf>,
+    verify: bool,
+    /// 对指定数量候选做完整 GPU/CPU 对拍并统计模型误差，不执行测号输出。
+    #[arg(long)]
+    validate: Option<u64>,
+    /// 在相同范围内交替执行 GPU/CPU，包含生成、CSV创建、格式化和flush。
+    #[arg(long)]
+    e2e_bench: bool,
+    #[arg(long, default_value_t = 3)]
+    rounds: usize,
+    #[arg(long, default_value_t = 1)]
+    warmup: usize,
+    /// 验证或 E2E 基准的指标文件；禁止覆盖。
+    #[arg(long)]
+    metrics: Option<PathBuf>,
 }
 
-fn make_names(args: &Args, count: usize) -> Result<Arc<[String]>, String> {
-    if !args.template.contains("[]") {
-        return Err("名字模板必须包含 []".to_owned());
-    }
-    let mut names = Vec::with_capacity(count);
-    for offset in 0..count {
-        let id = args
-            .start
-            .checked_add(u64::try_from(offset).map_err(|_| "候选编号溢出")?)
-            .ok_or("候选编号溢出")?;
-        let value = match args.encoding {
-            Encoding::Base16384 => base16384::Base16384Utf8::encode(&id.to_be_bytes()),
-            Encoding::Number => id.to_string(),
-        };
-        let name = args.template.replace("[]", &value);
-        if name.len() > gpu::MAX_NAME_BYTES {
-            return Err(format!("编号 {id} 的名字超过 256 个 UTF-8 字节"));
-        }
-        names.push(name);
-    }
-    Ok(names.into())
+#[derive(Default, Clone)]
+struct Stats {
+    processed: u64,
+    hits: u64,
+    prop_pass: u64,
+    shadows: u64,
+    next: u64,
+    elapsed: Duration,
+    generation: Duration,
+    compute: Duration,
+    output: Duration,
+    kernel: Duration,
+    max_error: [f64; 2],
+}
+impl Stats {
+    fn rate(&self) -> f64 { self.processed as f64 / self.elapsed.as_secs_f64().max(1e-9) }
 }
 
-fn median(samples: &[Duration]) -> Duration {
-    let mut samples = samples.to_vec();
-    samples.sort_unstable();
-    if samples.len().is_multiple_of(2) {
-        samples[samples.len() / 2 - 1] / 2 + samples[samples.len() / 2] / 2
+fn fresh_file(path: &Path) -> Result<File, String> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("创建输出失败（不覆盖已有文件）{}：{e}", path.display()))
+}
+fn run_tag() -> String {
+    format!(
+        "{}-{}",
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
+        std::process::id()
+    )
+}
+fn range_end(args: &Args) -> Result<u64, String> {
+    if let Some(count) = args.count {
+        args.start.checked_add(count).ok_or_else(|| "start+count 超出 u64 范围".to_owned())
     } else {
-        samples[samples.len() / 2]
+        Ok(args.end.unwrap_or(u64::MAX))
     }
 }
-
-fn throughput(count: usize, duration: Duration) -> f64 { count as f64 / duration.as_secs_f64() / 1e6 }
-
-fn check_equal(cpu: &[u8], gpu: &[u8]) -> Result<(), String> {
-    if cpu.len() != gpu.len() {
-        return Err("CPU/GPU 返回状态长度不一致".to_owned());
+fn thresholds(args: &Args) -> Thresholds {
+    Thresholds {
+        prop: args.prop,
+        xp: args.xp,
+        xd: args.xd,
     }
-    if let Some(offset) = cpu.iter().zip(gpu).position(|(a, b)| a != b) {
-        return Err(format!(
-            "CPU/GPU 不一致：名字 {}，状态下标 {}，CPU={} GPU={}",
-            offset / gpu::STATE_SIZE,
-            offset % gpu::STATE_SIZE,
-            cpu[offset],
-            gpu[offset]
-        ));
+}
+fn check_options(args: &Args) -> Result<(), String> {
+    if args.threads == 0 || args.threads > 256 || args.report == 0 || args.batch_size == 0 || args.batch_size > 524287 {
+        return Err("线程数须为1..=256，报告间隔须大于零，批大小须为1..=524287".to_owned());
+    }
+    if args.team.len() > 256 {
+        return Err("队伍名超过256个UTF-8字节".to_owned());
+    }
+    let end = range_end(args)?;
+    if args.start > end {
+        return Err("start 不能大于 end".to_owned());
+    }
+    if args.e2e_bench
+        && (args.rounds == 0 || (args.end.is_none() && args.count.is_none()) || args.output.is_some() || args.validate.is_some())
+    {
+        return Err("E2E基准须指定有限end或count、rounds>0，使用output-dir而非output，不能同时validate".to_owned());
+    }
+    Generator::new(args.template.clone(), args.encoding)?.generate(args.start)?;
+    Ok(())
+}
+
+fn run_once(
+    args: &Args,
+    backend: Backend,
+    pool: &mut CpuPool,
+    mut gpu: Option<&mut GpuMiner>,
+    path: &Path,
+    cancel: &AtomicBool,
+) -> Result<Stats, String> {
+    let start = Instant::now();
+    let writer: Box<dyn Write> = if path == Path::new("-") {
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(fresh_file(path)?)
+    };
+    let mut output = CsvOutput::new(writer)?;
+    let mut stats = Stats {
+        next: args.start,
+        ..Default::default()
+    };
+    let mut reported = Instant::now();
+    let end = range_end(args)?;
+    for range in batch_ranges(args.start, end, args.batch_size)? {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let generated = Instant::now();
+        let names = pool.generate(range.clone())?;
+        stats.generation += generated.elapsed();
+        let computed = Instant::now();
+        let records = match backend {
+            Backend::Cpu => {
+                let batch = pool.evaluate(Arc::clone(&names), thresholds(args), false)?;
+                stats.prop_pass += batch.prop_pass;
+                stats.shadows += batch.shadows;
+                batch.records.into_iter().map(|r| (r.index, r.value)).collect::<Vec<_>>()
+            }
+            Backend::Gpu => {
+                let batch = gpu.as_deref_mut().ok_or("GPU尚未初始化")?.run(&names, thresholds(args), false)?;
+                stats.prop_pass += u64::from(batch.prop_pass);
+                stats.shadows += u64::from(batch.shadows);
+                stats.kernel += batch.kernel_time.unwrap_or_default();
+                for i in 0..2 {
+                    stats.max_error[i] = stats.max_error[i].max(batch.max_error[i]);
+                }
+                if args.verify {
+                    for record in &batch.records {
+                        let wanted = core::evaluate(&args.team, &names[record.index]);
+                        compare_values(&record.value, &wanted)?;
+                    }
+                }
+                batch.records.into_iter().map(|r| (r.index, r.value)).collect::<Vec<_>>()
+            }
+        };
+        stats.compute += computed.elapsed();
+        let written = Instant::now();
+        for (index, value) in records {
+            let id = range.start + index as u64;
+            output.write_record(id, &names[index], &args.team, &value)?;
+            stats.hits += 1;
+        }
+        stats.output += written.elapsed();
+        stats.processed += range.end - range.start;
+        stats.next = range.end;
+        if reported.elapsed() >= Duration::from_secs(args.report) {
+            eprintln!(
+                "[{}] 完成={} 命中={} 下一ID={} E2E={:.0}名/s",
+                backend.label(),
+                stats.processed,
+                stats.hits,
+                stats.next,
+                stats.processed as f64 / start.elapsed().as_secs_f64()
+            );
+            reported = Instant::now();
+        }
+    }
+    let flushed = Instant::now();
+    output.flush()?;
+    stats.output += flushed.elapsed();
+    stats.elapsed = start.elapsed();
+    eprintln!(
+        "[{}] {}：完成={} 命中={} 下一ID={} E2E={:.3}s {:.0}名/s，生成={:.3}s 计算/回读={:.3}s 输出={:.3}s GPU内核={:.3}s",
+        backend.label(),
+        if cancel.load(Ordering::Relaxed) {
+            "已停止并flush"
+        } else {
+            "完成"
+        },
+        stats.processed,
+        stats.hits,
+        stats.next,
+        stats.elapsed.as_secs_f64(),
+        stats.rate(),
+        stats.generation.as_secs_f64(),
+        stats.compute.as_secs_f64(),
+        stats.output.as_secs_f64(),
+        stats.kernel.as_secs_f64()
+    );
+    Ok(stats)
+}
+
+fn compare_values(actual: &core::Evaluation, expected: &core::Evaluation) -> Result<(), String> {
+    if actual.props != expected.props
+        || actual.skill_ids != expected.skill_ids
+        || actual.skill_freqs != expected.skill_freqs
+        || actual.shadow_numerator != expected.shadow_numerator
+        || (actual.xp - expected.xp).abs() > 1e-7
+        || (actual.xd - expected.xd).abs() > 1e-7
+    {
+        return Err(format!("GPU/CPU完整结果不一致：GPU={actual:?} CPU={expected:?}"));
     }
     Ok(())
 }
 
-async fn run(args: Args) -> Result<(), String> {
-    if args.cpu_threads == 0 || args.rounds == 0 || args.batch_sizes.is_empty() || args.batch_sizes.contains(&0) {
-        return Err("CPU 线程数、正式重复次数与批大小必须大于零".to_owned());
-    }
-    if !args.bench {
-        let names = make_names(&args, 2)?;
-        let mut gpu = gpu::GpuRc4::new(&args.team, 2, args.kernel).await?;
-        let result = gpu.run(&names)?;
-        println!("GPU：{}；内核：{}", gpu.adapter_description, args.kernel.label());
-        println!("以下仅为两轮名字 RC4 KSA 后的完整置换，不是测号筛选结果：");
-        for (name, state) in names.iter().zip(result.states.as_chunks::<{ gpu::STATE_SIZE }>().0) {
-            assert_eq!(*state, cpu::reference(&args.team, name));
-            println!("{name:?}: {state:?}");
+fn validate(args: &Args, pool: &mut CpuPool, gpu: &mut GpuMiner, count: u64, cancel: &AtomicBool) -> Result<(), String> {
+    let end = args.start.checked_add(count).ok_or("验证范围溢出")?;
+    let start = Instant::now();
+    let mut errors = [Vec::<f64>::new(), Vec::<f64>::new()];
+    let mut checked = 0_u64;
+    let mut shadows = 0_u64;
+    for range in batch_ranges(args.start, end, args.batch_size)? {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("验证被取消，尚未完成全部样本".to_owned());
         }
-        return Ok(());
+        let names = pool.generate(range)?;
+        let expected = pool.evaluate(Arc::clone(&names), Thresholds::default(), true)?;
+        let actual = gpu.run(&names, Thresholds::default(), true)?;
+        if actual.records.len() != expected.records.len() || actual.records.len() != names.len() {
+            return Err("完整验证漏号或重复号".to_owned());
+        }
+        shadows += u64::from(actual.shadows);
+        for (record, wanted) in actual.records.iter().zip(&expected.records) {
+            if record.index != wanted.index {
+                return Err("完整验证候选顺序不一致".to_owned());
+            }
+            compare_values(&record.value, &wanted.value)?;
+            for (i, expected_score) in [wanted.value.xp, wanted.value.xd].iter().enumerate() {
+                let error = (f64::from(record.approximate[i]) - expected_score).abs();
+                if !error.is_finite() || error >= 10.0 {
+                    return Err(format!("模型{i}绝对误差不满足<10：{error}"));
+                }
+                errors[i].push(error);
+            }
+            checked += 1;
+        }
     }
-    let initialization = Instant::now();
-    let capacity = *args.batch_sizes.iter().max().unwrap();
-    let mut gpu = gpu::GpuRc4::new(&args.team, capacity, args.kernel).await?;
-    let mut cpu = cpu::CpuRc4::new(&args.team, args.cpu_threads)?;
-    println!("GPU：{}；内核：{}", gpu.adapter_description, args.kernel.label());
-    println!(
-        "初始化：{:.3}s（不计入下表），GPU 时间戳：{}",
-        initialization.elapsed().as_secs_f64(),
-        gpu.has_timestamps()
-    );
-    println!(
-        "固定队伍 {:?}；CPU {} workers；{} 次预热、{} 次正式测量取中位数",
-        args.team, args.cpu_threads, args.warmup, args.rounds
-    );
-    println!("运算：缓存队伍 KSA 后，执行两轮名字 KSA；每名返回完整 256 字节状态。");
-    println!("端到端：GPU 包含名字打包、上传、命令提交、状态回读与复制；CPU 包含持久 worker 派发、计算和结果归并。");
-    println!("两者均不包含名字生成、设备/管线/线程初始化；不含属性、PRGA、技能或虚评。");
-    println!("批大小,名字字节数,CPU毫秒,GPU端到端毫秒,GPU内核毫秒,GPU准备毫秒,CPU百万名每秒,GPU端到端百万名每秒,GPU内核百万名每秒,端到端加速比");
-    let mut csv = if let Some(path) = &args.csv {
-        let mut file = File::create(path).map_err(|error| format!("创建 CSV 失败：{error}"))?;
-        writeln!(file, "kernel,batch_size,name_bytes,cpu_threads,rounds,cpu_ms,gpu_wall_ms,gpu_kernel_ms,gpu_prepare_ms,cpu_mnames_s,gpu_wall_mnames_s,gpu_kernel_mnames_s,speedup,verified")
-            .map_err(|error| error.to_string())?;
-        Some(file)
+    let mut metric = if let Some(path) = &args.metrics {
+        Some(csv::Writer::from_writer(fresh_file(path)?))
     } else {
         None
     };
-    for &count in &args.batch_sizes {
-        let generation_start = Instant::now();
-        let names = make_names(&args, count)?;
-        let generation_time = generation_start.elapsed();
-        let name_bytes: usize = names.iter().map(String::len).sum();
-        // 全量正确性检查在正式计时之前；后续每轮也在计时结束后逐字节校验。
-        let expected = cpu.run(Arc::clone(&names))?;
-        check_equal(&expected, &gpu.run(&names)?.states)?;
-        for _ in 0..args.warmup {
-            black_box(cpu.run(Arc::clone(&names))?);
-            black_box(gpu.run(&names)?);
-        }
-        let mut cpu_times = Vec::with_capacity(args.rounds);
-        let mut gpu_times = Vec::with_capacity(args.rounds);
-        let mut kernel_times = Vec::with_capacity(args.rounds);
-        let mut preparation_times = Vec::with_capacity(args.rounds);
-        for _ in 0..args.rounds {
-            let start = Instant::now();
-            let cpu_result = cpu.run(Arc::clone(&names))?;
-            cpu_times.push(start.elapsed());
-            let gpu_result = gpu.run(&names)?;
-            gpu_times.push(gpu_result.wall_time);
-            preparation_times.push(gpu_result.preparation_time);
-            if let Some(kernel_time) = gpu_result.kernel_time {
-                kernel_times.push(kernel_time);
-            }
-            check_equal(black_box(&cpu_result), black_box(&gpu_result.states))?;
-        }
-        let cpu_time = median(&cpu_times);
-        let gpu_time = median(&gpu_times);
-        let prepare = median(&preparation_times);
-        let kernel = (!kernel_times.is_empty()).then(|| median(&kernel_times));
-        let cpu_rate = throughput(count, cpu_time);
-        let gpu_rate = throughput(count, gpu_time);
-        let kernel_ms = kernel.map(|time| format!("{:.6}", time.as_secs_f64() * 1e3)).unwrap_or_default();
-        let kernel_rate = kernel.map(|time| format!("{:.6}", throughput(count, time))).unwrap_or_default();
-        let speedup = cpu_time.as_secs_f64() / gpu_time.as_secs_f64();
-        println!(
-            "{count},{name_bytes},{:.6},{:.6},{kernel_ms},{:.6},{cpu_rate:.6},{gpu_rate:.6},{kernel_rate},{speedup:.4}",
-            cpu_time.as_secs_f64() * 1e3,
-            gpu_time.as_secs_f64() * 1e3,
-            prepare.as_secs_f64() * 1e3
-        );
-        eprintln!(
-            "批 {count}：全量逐项一致；名字生成 {:.3}ms（不计时）；读回 {} 字节/轮",
-            generation_time.as_secs_f64() * 1e3,
-            count * gpu::STATE_SIZE
-        );
-        if let Some(file) = &mut csv {
-            writeln!(file, "{},{count},{name_bytes},{},{},{:.6},{:.6},{kernel_ms},{:.6},{cpu_rate:.6},{gpu_rate:.6},{kernel_rate},{speedup:.6},true",
-                args.kernel.label(), args.cpu_threads, args.rounds, cpu_time.as_secs_f64() * 1e3, gpu_time.as_secs_f64() * 1e3, prepare.as_secs_f64() * 1e3)
-                .map_err(|error| error.to_string())?;
+    if let Some(writer) = &mut metric {
+        writer
+            .write_record([
+                "model",
+                "samples",
+                "shadows",
+                "max_abs_error",
+                "mean_abs_error",
+                "p99_abs_error",
+                "seconds",
+            ])
+            .map_err(|e| e.to_string())?;
+    }
+    for (i, model) in ["xp", "xd"].iter().enumerate() {
+        errors[i].sort_unstable_by(f64::total_cmp);
+        let max = errors[i].last().copied().unwrap_or_default();
+        let mean = errors[i].iter().sum::<f64>() / checked.max(1) as f64;
+        let p99 = errors[i].get(errors[i].len().saturating_sub(1) * 99 / 100).copied().unwrap_or_default();
+        eprintln!("验证 {model}：样本={checked} shadow={shadows} max={max:.8} mean={mean:.8} p99={p99:.8}，要求<10");
+        if let Some(writer) = &mut metric {
+            writer
+                .write_record([
+                    model.to_string(),
+                    checked.to_string(),
+                    shadows.to_string(),
+                    max.to_string(),
+                    mean.to_string(),
+                    p99.to_string(),
+                    start.elapsed().as_secs_f64().to_string(),
+                ])
+                .map_err(|e| e.to_string())?;
         }
     }
+    if let Some(writer) = &mut metric {
+        writer.flush().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn same_csv(a: &Path, b: &Path) -> Result<(), String> {
+    let mut a = csv::Reader::from_path(a).map_err(|e| e.to_string())?;
+    let mut b = csv::Reader::from_path(b).map_err(|e| e.to_string())?;
+    if a.headers().map_err(|e| e.to_string())? != b.headers().map_err(|e| e.to_string())? {
+        return Err("对照CSV表头不一致".to_owned());
+    }
+    let mut ra = a.records();
+    let mut rb = b.records();
+    let mut index = 0;
+    loop {
+        match (ra.next(), rb.next()) {
+            (None, None) => return Ok(()),
+            (Some(Ok(a)), Some(Ok(b))) if a == b => {}
+            (Some(Err(e)), _) | (_, Some(Err(e))) => return Err(e.to_string()),
+            _ => return Err(format!("GPU/CPU E2E输出第{index}条记录不一致")),
+        }
+        index += 1;
+    }
+}
+
+async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
+    check_options(&args)?;
+    let setup = Instant::now();
+    let generator = Generator::new(args.template.clone(), args.encoding)?;
+    let mut pool = CpuPool::new(generator, &args.team, args.threads)?;
+    let needs_gpu = args.e2e_bench || args.validate.is_some() || matches!(args.backend, Backend::Gpu);
+    let mut gpu = if needs_gpu {
+        Some(GpuMiner::new(&args.team, args.batch_size).await?)
+    } else {
+        None
+    };
+    if let Some(gpu) = &gpu {
+        eprintln!("GPU：{}", gpu.adapter_description);
+    }
+    let initialization = setup.elapsed();
+    eprintln!(
+        "初始化={:.3}s；范围=[{}, {})；线程={}；批大小={}；评分GPU误差余量10，候选使用f64精筛",
+        initialization.as_secs_f64(),
+        args.start,
+        range_end(&args)?,
+        args.threads,
+        args.batch_size
+    );
+    if let Some(count) = args.validate {
+        return validate(&args, &mut pool, gpu.as_mut().ok_or("验证需要GPU")?, count, &cancel);
+    }
+    if args.e2e_bench {
+        fs::create_dir_all(&args.output_dir).map_err(|e| e.to_string())?;
+        let tag = run_tag();
+        let mut metrics = if let Some(path) = &args.metrics {
+            Some(csv::Writer::from_writer(fresh_file(path)?))
+        } else {
+            None
+        };
+        if let Some(writer) = &mut metrics {
+            writer
+                .write_record([
+                    "round",
+                    "backend",
+                    "threads",
+                    "batch_size",
+                    "processed",
+                    "hits",
+                    "seconds",
+                    "names_per_second",
+                    "generation_s",
+                    "compute_s",
+                    "output_s",
+                    "gpu_kernel_s",
+                    "xp_max_error",
+                    "xd_max_error",
+                    "setup_s",
+                ])
+                .map_err(|e| e.to_string())?;
+        }
+        let mut times = [Vec::<f64>::new(), Vec::<f64>::new()];
+        for round in 0..args.warmup + args.rounds {
+            let mut paths = Vec::new();
+            let mut stats = Vec::new();
+            let order = if round % 2 == 0 {
+                [Backend::Gpu, Backend::Cpu]
+            } else {
+                [Backend::Cpu, Backend::Gpu]
+            };
+            for backend in order {
+                let path = args.output_dir.join(format!("e2e-{tag}-{round}-{}.csv", backend.label()));
+                let value = run_once(&args, backend, &mut pool, gpu.as_mut(), &path, &cancel)?;
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("E2E基准被取消".to_owned());
+                }
+                if round >= args.warmup {
+                    let i = usize::from(matches!(backend, Backend::Cpu));
+                    times[i].push(value.elapsed.as_secs_f64());
+                    if let Some(writer) = &mut metrics {
+                        writer
+                            .write_record([
+                                (round - args.warmup).to_string(),
+                                backend.label().to_owned(),
+                                args.threads.to_string(),
+                                args.batch_size.to_string(),
+                                value.processed.to_string(),
+                                value.hits.to_string(),
+                                value.elapsed.as_secs_f64().to_string(),
+                                value.rate().to_string(),
+                                value.generation.as_secs_f64().to_string(),
+                                value.compute.as_secs_f64().to_string(),
+                                value.output.as_secs_f64().to_string(),
+                                value.kernel.as_secs_f64().to_string(),
+                                value.max_error[0].to_string(),
+                                value.max_error[1].to_string(),
+                                initialization.as_secs_f64().to_string(),
+                            ])
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                paths.push(path);
+                stats.push(value);
+            }
+            same_csv(&paths[0], &paths[1])?;
+            if stats[0].processed != stats[1].processed {
+                return Err("E2E对照范围不一致".to_owned());
+            }
+            eprintln!("第{round}轮：GPU/CPU CSV逐字段一致");
+        }
+        for values in &mut times {
+            values.sort_unstable_by(f64::total_cmp);
+        }
+        let gpu_time = times[0][times[0].len() / 2];
+        let cpu_time = times[1][times[1].len() / 2];
+        eprintln!(
+            "E2E中位数：GPU={gpu_time:.6}s CPU={cpu_time:.6}s，加速比={:.3}x（含名字生成、完整输出；初始化另列）",
+            cpu_time / gpu_time
+        );
+        if let Some(writer) = &mut metrics {
+            writer.flush().map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    let path = if let Some(path) = &args.output {
+        path.clone()
+    } else {
+        fs::create_dir_all(&args.output_dir).map_err(|e| e.to_string())?;
+        args.output_dir.join(format!("namerena-{}-{}.csv", args.backend.label(), run_tag()))
+    };
+    eprintln!("输出：{}", path.display());
+    let stats = run_once(&args, args.backend, &mut pool, gpu.as_mut(), &path, &cancel)?;
+    eprintln!(
+        "含初始化总耗时={:.3}s，已完成范围=[{}, {})",
+        setup.elapsed().as_secs_f64(),
+        args.start,
+        stats.next
+    );
     Ok(())
 }
 
 fn main() -> ExitCode {
+    if std::env::args_os().any(|arg| arg == "--bench") {
+        return rc4_bench::entry();
+    }
     let args = Args::parse();
     tracing_subscriber::fmt().with_writer(std::io::stderr).init();
-    match pollster::block_on(run(args)) {
-        Ok(()) => ExitCode::SUCCESS,
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    if let Err(error) = ctrlc::set_handler(move || flag.store(true, Ordering::Relaxed)) {
+        eprintln!("注册Ctrl+C失败：{error}");
+        return ExitCode::FAILURE;
+    }
+    match pollster::block_on(run(args, Arc::clone(&cancel))) {
+        Ok(()) => {
+            if cancel.load(Ordering::Relaxed) {
+                ExitCode::from(130)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
         Err(error) => {
-            eprintln!("RC4 实验失败：{error}");
+            eprintln!("测号失败：{error}");
             ExitCode::FAILURE
         }
     }
@@ -221,46 +546,44 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use clap::CommandFactory;
-
     #[test]
-    fn experiment_options_and_template_are_validated() {
+    fn original_basic_command_parses() {
         Args::command().debug_assert();
         let args = Args::try_parse_from([
             "wgpu-mine",
-            "--bench",
-            "--batch-sizes",
-            "1,65,513",
             "-t",
             "2",
+            "-p",
+            "550",
+            "-x",
+            "4000",
+            "-d",
+            "5000",
+            "--team",
+            "shenjack",
+            "-r",
+            "10",
             "-m",
-            "中文 [] []",
+            "我也不知道我要测多少 []",
         ])
         .unwrap();
-        assert_eq!(args.batch_sizes, [1, 65, 513]);
-        let names = make_names(&args, 2).unwrap();
-        let encoded = base16384::Base16384Utf8::encode(&0_u64.to_be_bytes());
-        assert_eq!(names[0], format!("中文 {encoded} {encoded}"));
-    }
-
-    #[test]
-    fn generation_rejects_invalid_lengths_and_overflow() {
-        let mut args = Args::parse_from(["wgpu-mine"]);
-        args.start = u64::MAX;
-        assert!(make_names(&args, 2).is_err());
-        args.start = 0;
-        args.template = "无占位符".to_owned();
-        assert!(make_names(&args, 1).is_err());
-        args.template = format!("{}[]", "中".repeat(86));
-        assert!(make_names(&args, 1).is_err());
-    }
-
-    #[test]
-    fn median_and_mismatch_reporting() {
         assert_eq!(
-            median(&[Duration::from_millis(4), Duration::from_millis(2)]),
-            Duration::from_millis(3)
+            (args.threads, args.prop, args.xp, args.xd, args.report),
+            (2, 550, 4000, 5000, 10)
         );
-        assert!(check_equal(&[1], &[2]).unwrap_err().contains("状态下标 0"));
-        assert!(check_equal(&[], &[0]).is_err());
+        assert!(check_options(&args).is_ok());
+    }
+    #[test]
+    fn invalid_and_overflow_ranges_are_rejected() {
+        for options in [
+            vec!["--thread-count", "0"],
+            vec!["--batch-size", "0"],
+            vec!["--report-interval", "0"],
+            vec!["--start", "10", "--end", "9"],
+            vec!["--start", "18446744073709551615", "--count", "1"],
+        ] {
+            let args = Args::try_parse_from([vec!["wgpu-mine", "--team", "x"], options].concat()).unwrap();
+            assert!(check_options(&args).is_err());
+        }
     }
 }

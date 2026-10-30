@@ -180,6 +180,7 @@ fn features(props: &[u32; 8], ids: &[u32; 16], freqs: &[u32; 16], shadow: i32) -
     st
 }
 
+#[cfg(test)]
 fn poly(st: &[f64; 44]) -> [f64; 1034] {
     let mut result = [0.0; 1034];
     result[..44].copy_from_slice(st);
@@ -195,11 +196,29 @@ fn poly(st: &[f64; 44]) -> [f64; 1034] {
 
 /// 同时计算原虚评 2.0 XP 与 QD，使用原始 f64 权重与标量求和顺序。
 pub fn scores(props: &[u32; 8], ids: &[u32; 16], freq: &[u32; 16], shadow_numerator: i32) -> [f64; 2] {
-    let expanded = poly(&features(props, ids, freq, shadow_numerator));
+    let features = features(props, ids, freq, shadow_numerator);
     let mut result = [model20::BASE, model20::BASE_QD];
-    for (i, feature) in expanded.iter().enumerate() {
-        result[0] += feature * model20::MODEL[i];
-        result[1] += feature * model20::MODEL_QD[i];
+    // 与稠密多项式相同的累加顺序；跳过零项，避免每个候选物化 1034 个 f64。
+    for (i, &feature) in features.iter().enumerate() {
+        if feature != 0.0 {
+            result[0] += feature * model20::MODEL[i];
+            result[1] += feature * model20::MODEL_QD[i];
+        }
+    }
+    let mut index = 44;
+    for i in 0..44 {
+        if features[i] == 0.0 {
+            index += 44 - i;
+            continue;
+        }
+        for j in i..44 {
+            if features[j] != 0.0 {
+                let term = features[i] * features[j];
+                result[0] += term * model20::MODEL[index];
+                result[1] += term * model20::MODEL_QD[index];
+            }
+            index += 1;
+        }
     }
     result
 }
@@ -340,7 +359,7 @@ mod tests {
         }
         let mut ids = std::array::from_fn(|i| i as u32);
         let mut s = 0;
-        for (step, pair) in stream.chunks_exact(2).enumerate() {
+        for (step, pair) in stream.as_chunks::<2>().0.iter().enumerate() {
             let i = step % 40;
             let random = (u32::from(pair[0]) * 256 + u32::from(pair[1])) % 40;
             s = ((s + random + ids[i]) % 256) % 40;
@@ -407,9 +426,9 @@ mod tests {
         let expanded = original_poly(&st);
         let mut xp = model20::BASE;
         let mut xd = model20::BASE_QD;
-        for i in 0..1034 {
-            xp += expanded[i] * model20::MODEL[i];
-            xd += expanded[i] * model20::MODEL_QD[i];
+        for (i, &term) in expanded.iter().enumerate() {
+            xp += term * model20::MODEL[i];
+            xd += term * model20::MODEL_QD[i];
         }
         Evaluation {
             props,
@@ -619,8 +638,8 @@ mod tests {
         let weights = model_weights();
         assert_eq!(weights.len(), 1035);
         assert_eq!(weights[0], [model20::BASE as f32, model20::BASE_QD as f32]);
-        for i in 0..1034 {
-            assert_eq!(weights[i + 1], [model20::MODEL[i] as f32, model20::MODEL_QD[i] as f32]);
+        for (i, &weight) in weights.iter().skip(1).enumerate() {
+            assert_eq!(weight, [model20::MODEL[i] as f32, model20::MODEL_QD[i] as f32]);
         }
     }
 
@@ -673,9 +692,9 @@ mod tests {
         assert_eq!(st[43], 68.0 / 3.0 * 19.0 / 100.0);
         let expanded = original_poly(&st);
         let mut expected = [model20::BASE, model20::BASE_QD];
-        for i in 0..1034 {
-            expected[0] += expanded[i] * model20::MODEL[i];
-            expected[1] += expanded[i] * model20::MODEL_QD[i];
+        for (i, &term) in expanded.iter().enumerate() {
+            expected[0] += term * model20::MODEL[i];
+            expected[1] += term * model20::MODEL_QD[i];
         }
         assert_eq!(scores(&props, &ids, &freq, 68), expected);
         assert!(features(&props, &ids, &freq, -1)[43] < 0.0);
