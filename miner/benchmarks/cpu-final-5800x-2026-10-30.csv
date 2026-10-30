@@ -1,0 +1,4 @@
+"binary","round","threads","candidates","hits","seconds","candidates_per_second","wall_seconds","wall_candidates_per_second","property","xp","xd","sink"
+"target/release/tswn.exe","1","6","5000000","0","2.967548","1684892.83","2.9879115","1673409.670935702","550","4000","5000","False"
+"target/release/tswn.exe","2","6","5000000","0","3.043583","1642800.71","3.0603076","1633822.6915490457","550","4000","5000","False"
+"target/release/tswn.exe","3","6","5000000","0","2.990599","1671905.69","3.0102685","1660981.4041504934","550","4000","5000","False"
