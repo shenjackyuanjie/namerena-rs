@@ -1,416 +1,371 @@
 use crate::{
-    evaluate::NamerEvaluater,
-    name::{Namer, TeamNamer},
     Command, GenMethods,
+    evaluate::{
+        NamerEvaluater,
+        xuping::{XuPing2_0_1015, XuPing2_0_1015_QD},
+    },
+    name::{Namer, TeamNamer},
 };
-
+use crossbeam::channel::{Receiver, Sender, bounded};
 use std::{
-    intrinsics::{likely, unlikely},
-    io::Write,
+    io::{self, BufWriter, Write},
     ops::Range,
     path::PathBuf,
-    time::Instant,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
+use tracing::info;
 
-use colored::Colorize;
-use crossbeam::channel::{bounded, Receiver, Sender};
-use tracing::{debug, info, warn};
-
+#[derive(Clone)]
 pub struct CacluateConfig {
-    /// 线程 id
-    pub thread_id: u32,
-    /// 线程数
-    pub thread_count: u32,
-    /// 八围预期值
     pub prop_expect: u32,
-    /// xp 预期值
     pub xp_expect: u32,
-    /// xd 预期值
     pub xd_expect: u32,
-    /// 队伍名称
     pub team: String,
-    /// 是否基于时间
-    pub time_based: bool,
-    /// 可能的设置指定核心亲和性
     pub core_affinity: Option<usize>,
-    /// 输出文件名
-    pub out_file: PathBuf,
-    /// 生成算法
     pub algorithm: GenMethods,
-    /// 模板
     pub template: String,
 }
 
-pub type WorkInfo = Option<(ThreadId, Range<u64>)>;
-
-/// 用于在先成之间共享的运行状态
-/// 正常状态下是会在多个线程之间共享的
-/// 单线程状态下就直接在主线程里面
-/// 用于记录当前各个线程的计算状态
-pub struct ComputeStatus {
-    /// 总计算数
-    pub start: u64,
-    /// 总计算数
-    pub end: u64,
-    /// top
-    pub top_id: u64,
-    /// 当前各个线程的计算速度
-    pub thread_speed: Vec<u64>,
-    /// 当前各个线程是否在运算
-    pub thread_running: Vec<bool>,
-    /// 各个线程筛到了几个
-    pub thread_get_count: Vec<u64>,
+#[derive(Debug, Default)]
+pub struct RunSummary {
+    pub computed: u64,
+    pub hits: u64,
+    pub elapsed: Duration,
 }
 
-impl ComputeStatus {
-    pub fn new(config: &Command) -> Self {
-        ComputeStatus {
-            start: config.start,
-            end: config.end,
-            top_id: config.start,
-            thread_speed: vec![0; config.thread_count as usize],
-            thread_running: vec![false; config.thread_count as usize],
-            thread_get_count: vec![0; config.thread_count as usize],
+/// 只有调度线程拥有游标。先求剩余量，绝不执行可能溢出的 top + batch。
+struct WorkCursor {
+    next: u64,
+    end: u64,
+}
+impl WorkCursor {
+    fn take(&mut self, batch: u64) -> Option<Range<u64>> {
+        if self.next >= self.end {
+            return None;
         }
-    }
-
-    pub fn get_idle_thread(&self) -> Option<usize> { self.thread_running.iter().position(|&x| !x) }
-    pub fn all_stoped(&self) -> bool { self.thread_running.iter().all(|&x| !x) }
-    pub fn update_speed(&mut self, thread_id: ThreadId, speed: u64) { self.thread_speed[thread_id as usize] = speed; }
-    pub fn update_running(&mut self, thread_id: ThreadId, running: bool) { self.thread_running[thread_id as usize] = running; }
-    pub fn add_get_count(&mut self, thread_id: ThreadId, count: u64) { self.thread_get_count[thread_id as usize] += count; }
-    pub fn count_speed(&self) -> u64 { self.thread_speed.iter().sum() }
-    pub fn get_sum_count(&self) -> u64 { self.thread_get_count.iter().sum() }
-    pub fn predict_time(&self) -> chrono::Duration {
-        let speed = self.count_speed();
-        let remain = self.end - self.top_id;
-        chrono::Duration::milliseconds((remain as f64 / speed as f64 * 1000.0) as i64)
+        let end = self.next + batch.max(1).min(self.end - self.next);
+        let range = self.next..end;
+        self.next = end;
+        Some(range)
     }
 }
 
-pub fn start_main(cli_arg: Command, out_path: PathBuf) {
-    if cli_arg.is_single_thread() {
-        // 单线程运行的时候也是让他放在主线程跑
-        let config = cli_arg.as_cacl_config(&out_path);
-        crate::set_process_cores(config.core_affinity.unwrap());
-        // cacl(config);
-        todo!("单线程模式下的调度逻辑没写完呢, 为了保证性能")
-    } else {
-        schdule_threads(cli_arg, out_path);
-    }
+enum Event {
+    Hit(String),
+    Done {
+        worker: usize,
+        computed: u64,
+        elapsed: Duration,
+    },
 }
 
-pub type ThreadId = u32;
+pub fn start_main(cli: Command, out_path: PathBuf) -> io::Result<RunSummary> {
+    cli.validate().map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+    // 文件在 worker 启动之前创建；零命中和空范围也有完整表头。绝不覆盖已有结果。
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&out_path)?;
+    let mut writer = BufWriter::new(file);
+    let summary = schedule(&cli, &mut writer)?;
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    info!(
+        "实际计算: {}，命中: {}，耗时: {:.6}s，速度: {:.2}/s，输出: {:?}",
+        summary.computed,
+        summary.hits,
+        summary.elapsed.as_secs_f64(),
+        summary.computed as f64 / summary.elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+        out_path
+    );
+    Ok(summary)
+}
 
-/// 描述一下思路吧
-///
-/// 首先, 本地有几个信息
-/// sended: 一个数组, 用于记录每个线程是否已经发送了消息
-/// shared_status: 一个共享的状态, 用于记录每个线程的状态
-/// threads: 一个线程数组, 用于 hold 住线程
-///
-/// 其中, shared_status 里面记录了每个线程的状态
-/// 里面的 thread_running 用于在分发任务的时候判断是否有线程空闲和哪个线程空闲
-///
-/// 初始化分发的时候的逻辑如下:
-/// 1. 初始化一个 0 大小的 bounded channel
-///
-/// 分发任务(消息)的时候的逻辑如下:
-/// - 如果是 固定大小 的 batch
-/// 1. 每次直接发送一个 id 为 -1 (即任意线程都可以接收的) 的消息
-/// - 如果是 动态大小 的 batch
-/// 0. 等待回返的 request work 的消息
-/// 1. 遍历 sended 中 true 的部分, 检查对应 thread_running 是否为 true
-/// 2. 如果为 true, 则将对应 sended 置为 false
-/// 3. 找到 sended 中 第一个为 false 的线程, 根据 thread_speed 计算出一个合适的 batch
-/// 4. 发送一个对应线程 id 的消息
-///
-/// 最后结尾的时候的逻辑如下:
-/// - 如果是 固定大小 的 batch
-/// 1. 每次发送之前检测是不是快完事了 ( batch size > 剩余 work size )
-/// 2. 如果是, 则发送剩余的 work, 并且把 ended 置为 true
-/// 3. ended 为 true 的时候, 再发送消息的时候直接发送 None
-/// - 如果是 动态大小 的 batch
-pub fn schdule_threads(cli_arg: Command, out_path: PathBuf) {
-    let mut cores = 0;
-    let mut thread = vec![];
-    let mut shared_status = ComputeStatus::new(&cli_arg);
-    let (work_sender, work_receiver) = bounded::<WorkInfo>(0);
-    let (work_requester, thread_waiter) = bounded::<(ThreadId, u32)>(0);
-    for i in 0..cli_arg.thread_count {
-        // 每一个线程
-        let mut config = cli_arg.as_cacl_config(&out_path);
-        config.thread_id = i;
-        let work_receiver = work_receiver.clone();
-        let work_requester = work_requester.clone();
-        let shared_status: &mut ComputeStatus = unsafe {
-            // 直接获取一个共享状态的引用
-            // 这个对象是可以在多个线程之间共享的
-            // 但是 rust 不让我这么干
-            // 所以, unsafe == trust_me
-            std::mem::transmute::<&mut ComputeStatus, &mut ComputeStatus>(&mut shared_status)
-        };
-        config.core_affinity = Some(1 << i);
-        cores |= 1 << i;
-        let thread_name = format!("thread_{}", i);
-        thread.push(std::thread::spawn(move || {
-            info!("线程 {} 开始计算", thread_name);
-            cacl(config, shared_status, work_receiver, work_requester);
-            info!("线程 {} 结束计算", thread_name);
-        }));
-    }
-    crate::set_process_cores(cores);
-    // 任务分发
-    // 判断是否所有 work 都分发完了
-    // 当前分发到的 work 的 最大 index
-    let full_start_time = Instant::now();
-    if cli_arg.batch_in_time() {
-        info!("开始分发任务(动态 batch)");
-        let mut sended = vec![false; cli_arg.thread_count as usize];
-        while let Ok(latest_speed) = thread_waiter.recv() {
-            // 遍历 sended 中 true 的部分, 检查对应 thread_running 是否为 true
-            for (i, sended) in sended.iter_mut().enumerate() {
-                if *sended && shared_status.thread_running[i] {
-                    // 如果为 true, 则将对应 sended 置为 false
-                    *sended = false;
+/// 每个 worker 一个私有任务通道；状态和输出仅由主线程修改。
+/// 写入错误时取消后续计算，但继续接收事件并 join 所有 worker，避免有界通道死锁。
+fn schedule(cli: &Command, writer: &mut impl Write) -> io::Result<RunSummary> {
+    writeln!(writer, "{}", csv_header())?;
+    writer.flush()?;
+    let start = Instant::now();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let (events_tx, events_rx) = bounded((cli.thread_count as usize).saturating_mul(2).max(1));
+    let mut cursor = WorkCursor {
+        next: cli.start,
+        end: cli.end,
+    };
+    let mut work_senders = Vec::new();
+    let mut handles = Vec::new();
+    let mut failure = None;
+    for worker in 0..cli.thread_count as usize {
+        let (tx, rx) = bounded(1);
+        let mut config = cli.as_cacl_config();
+        // 保留用户的可选亲和性语义；不指定时由操作系统调度，不强制绑定相邻 SMT。
+        config.core_affinity = cli.pick_core.and_then(|core| 1_usize.checked_shl(core as u32));
+        let events = events_tx.clone();
+        let cancel = cancelled.clone();
+        match std::thread::Builder::new().name(format!("miner-{worker}")).spawn(move || {
+            worker_loop(worker, config, rx, events, cancel);
+        }) {
+            Ok(handle) => {
+                handles.push(handle);
+                if let Some(range) = cursor.take(cli.batch_size_for(0.0)) {
+                    tx.send(range).map_err(|_| io::Error::other("worker 启动失败"))?;
+                    work_senders.push(Some(tx));
+                } else {
+                    work_senders.push(None);
                 }
             }
-            // 根据 latest_speed 计算出一个合适的 batch
-            if latest_speed.1 == 0 {
-                // 如果速度为 0, 则说明刚刚开始
-                // 直接发送一个 1w 的 batch
-                let _ = work_sender.send(Some((latest_speed.0, shared_status.top_id..shared_status.top_id + 10000)));
-                shared_status.top_id += 10000;
-            } else {
-                // 计算出一个合适的 batch
-                let batch = latest_speed.1 as u64 * cli_arg.report_interval.unwrap();
-                // 判断是否快完事了
-                // 如果是, 则发送剩余的 work, 然后直接发送 None
-                if shared_status.top_id + batch > cli_arg.end {
-                    let _ = work_sender.send(Some((latest_speed.0, shared_status.top_id..cli_arg.end)));
-                    info!("最后一个 batch({}..{}) 已发送", shared_status.top_id, cli_arg.end);
-                    loop {
-                        let _ = thread_waiter.try_recv();
-                        let _ = work_sender.try_send(None);
-                        if thread.iter().all(|t| t.is_finished()) {
-                            break;
+            Err(error) => {
+                failure = Some(error);
+                cancelled.store(true, Ordering::Relaxed);
+                work_senders.clear();
+                break;
+            }
+        }
+    }
+    drop(events_tx);
+    let mut summary = RunSummary::default();
+    for event in events_rx {
+        match event {
+            Event::Hit(row) => {
+                if failure.is_none() {
+                    match writer.write_all(row.as_bytes()) {
+                        Ok(()) => summary.hits += 1,
+                        Err(error) => {
+                            failure = Some(error);
                         }
                     }
-                    break;
-                } else {
-                    // 如果不是, 则发送一个对应线程 id 的消息
-                    let _ = work_sender.send(Some((latest_speed.0, shared_status.top_id..shared_status.top_id + batch)));
-                    shared_status.top_id += batch;
                 }
             }
-        }
-    } else {
-        info!("开始分发任务(固定 batch)");
-        loop {
-            // 等待一个 request work
-            // 大部分时间在这里等待
-            if thread_waiter.recv().is_err() {
-                // 如果接收到了错误, 则说明所有线程都结束了
-                // 退出
-                break;
-            }
-            // work 没分发完
-            // 获取第一个空闲的线程
-            // 这里不确定是不是会有问题, 先用 unwarp 看看
-            let thread_id = shared_status.get_idle_thread().unwrap();
-            // 先检测是否快结束了
-            if shared_status.top_id + cli_arg.batch_size.unwrap() >= cli_arg.end {
-                // 如果快结束了, 则发送剩余的 work 然后发送 None
-                let _ = work_sender.send(Some((thread_id as u32, shared_status.top_id..cli_arg.end)));
-                info!("最后一个 batch({}..{}) 已发送", shared_status.top_id, cli_arg.end);
-                loop {
-                    let _ = thread_waiter.try_recv();
-                    let _ = work_sender.try_send(None);
-                    if thread.iter().all(|t| t.is_finished()) {
-                        break;
+            Event::Done {
+                worker,
+                computed,
+                elapsed,
+            } => {
+                summary.computed += computed;
+                let speed = computed as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+                info!(
+                    "worker {worker}: 已完成 {}，本批 {:.2}/s，累计命中 {}",
+                    summary.computed, speed, summary.hits
+                );
+                if failure.is_none() {
+                    if let Err(error) = writer.flush() {
+                        failure = Some(error);
                     }
                 }
-                break;
-            } else {
-                // 如果没有结束, 则发送一个 batch
-                let _ = work_sender.send(Some((
-                    thread_id as u32,
-                    shared_status.top_id..shared_status.top_id + cli_arg.batch_size.unwrap(),
-                )));
+                if failure.is_none() {
+                    if let Some(range) = cursor.take(cli.batch_size_for(speed)) {
+                        if work_senders[worker].as_ref().unwrap().send(range).is_err() {
+                            failure = Some(io::Error::other("worker 意外退出"));
+                        }
+                    } else {
+                        work_senders[worker] = None;
+                    }
+                }
             }
-            // 更新 top_i
-            shared_status.top_id += cli_arg.batch_size.unwrap();
+        }
+        if failure.is_some() {
+            cancelled.store(true, Ordering::Relaxed);
+            work_senders.clear();
         }
     }
-    let full_end_time = Instant::now();
-    info!("所有任务已完成, 耗时: {:?}", full_end_time - full_start_time);
-    info!("各个线程获取数量: {:?}", shared_status.thread_get_count);
-    if shared_status.get_sum_count() != 0 {
-        info!(
-            "总计获取: {}, 效率: {}/s",
-            shared_status.get_sum_count(),
-            (shared_status.get_sum_count() as f64) / (full_end_time - full_start_time).as_secs_f64()
-        );
-    } else {
-        info!("这真是太悲伤了呢, 干了这么久的活, 一条数据都没获取到");
+    drop(work_senders);
+    for handle in handles {
+        if handle.join().is_err() && failure.is_none() {
+            failure = Some(io::Error::other("worker panic"));
+        }
     }
-    info!("输出文件名: {:?}", out_path);
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    writer.flush()?;
+    summary.elapsed = start.elapsed();
+    if summary.computed != cli.end - cli.start {
+        return Err(io::Error::other("实际计算数量与请求范围不一致"));
+    }
+    Ok(summary)
 }
 
-/// 所有的状态输出都在子线程, 也就是这里
-///
-/// 1. 通过 `Receiver` 获取到主线程的数据
-///
-/// 获取到数据后, 开始计算
-/// 计算完一个 batch 后, 输出一次状态
-/// 这里的状态是在所有运算线程中共享的一个状态
-/// 每一个线程运算完一个 batch 后, 都会更新这个状态
-/// 输出的时候顺带输出其他线程的状态
-pub fn cacl(
+fn worker_loop(
+    worker: usize,
     config: CacluateConfig,
-    status: &mut ComputeStatus,
-    receiver: Receiver<WorkInfo>,
-    work_sender: Sender<(ThreadId, u32)>,
+    work: Receiver<Range<u64>>,
+    events: Sender<Event>,
+    cancelled: Arc<AtomicBool>,
 ) {
-    if let Some(core_affinity) = config.core_affinity {
-        crate::set_thread2core(core_affinity);
+    if let Some(affinity) = config.core_affinity {
+        crate::set_thread2core(affinity);
     }
-    // 提前准备好 team_namer
-    let team_namer = TeamNamer::new(&config.team).unwrap();
-    let mut main_namer = Namer::new_from_team_namer_unchecked(&team_namer, "dummy");
-    let mut get_count = 0;
-    let mut run_speed = 0.0;
-    // 开始之前, 先发送一个 request
-    let _ = work_sender.send((config.thread_id, 0));
-    loop {
-        // 先 request 一个 work
-        let work = match receiver.recv() {
-            Ok(work) => match work {
-                Some(work) => {
-                    if work.0 == config.thread_id {
-                        work.1
-                    } else {
-                        // 如果不是自己的 work, 则再次发送一个 request
-                        let _ = work_sender.send((config.thread_id, if run_speed == 0.0 { 0 } else { run_speed as u32 }));
-                        // 然后进入下一次循环
-                        continue;
-                    }
-                }
-                None => {
-                    // 如果接收到了 None, 则说明活都干完了, 退出
-                    return;
-                }
-            },
-            Err(_) => {
-                // 如果接收到了错误, 则说明主线程已经结束了, 退出
+    let team = TeamNamer::new_unchecked(&config.team);
+    let mut namer = Namer::new_from_team_namer_unchecked(&team, "");
+    for range in work {
+        let start = Instant::now();
+        let mut computed = 0;
+        for id in range {
+            if cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            let name = config.algorithm.gen_name(&config.template, id);
+            namer.replace_name(&team, &name);
+            computed += 1;
+            if !property_matches(&namer.name_prop, config.prop_expect) {
+                continue;
+            }
+            namer.update_skill();
+            let xd = XuPing2_0_1015_QD::evaluate(&namer);
+            if (xd as u32) < config.xd_expect {
+                continue;
+            }
+            let xp = XuPing2_0_1015::evaluate(&namer);
+            if (xp as u32) < config.xp_expect {
+                continue;
+            }
+            if events.send(Event::Hit(csv_row(id, &namer, xp, xd))).is_err() {
                 return;
             }
-        };
-        // 开始计算
-        let count = work.end - work.start;
-        let top = work.end;
-        let start_time = std::time::Instant::now();
-        // 计算
-        let new_get = inner_cacl(&config, work, &mut main_namer, &team_namer);
-        get_count += new_get;
-        status.add_get_count(config.thread_id, new_get);
-        // 完事, 统计
-        let now = std::time::Instant::now();
-        let d_t: std::time::Duration = now.duration_since(start_time);
-        let new_run_speed = count as f64 / d_t.as_secs_f64();
-        // 预估剩余时间
-        // 先更新自己的状态上去
-        status.update_speed(config.thread_id, new_run_speed as u64);
-        // 获取一个全局速度预测
-        let predict_time = status.predict_time();
-        debug!("{:?}", status.thread_speed);
-        // 输出状态
-        info!(
-            // thread_id, top, 当前线程速度, 当前batch用时, emoji, 全局速度, 全局E/d 速度, 算到几个, 进度, 预计时间
-            "|{:>2}|Id:{:>15}|{:6.2}E/d {:>5.2}s{}|{:>4.3}E/d|{:<3}|{:>2.3}% {}:{}:{:>2}|",
-            config.thread_id,
-            top,
-            new_run_speed * 8.64 / 1_0000.0,
-            d_t.as_secs_f64(),
-            // 如果速度差 1k 以上, 则输出emoji
-            if new_run_speed > run_speed + 1000.0 {
-                "↑".green()
-            } else if new_run_speed < run_speed - 1000.0 {
-                "↓".red()
-            } else {
-                "→".blue()
-            },
-            status.count_speed() as f64 * 8.64 / 1_0000.0,
-            get_count,
-            (status.top_id - status.start) as f64 / (status.end - status.start) as f64 * 100.0,
-            predict_time.num_hours(),
-            predict_time.num_minutes() % 60,
-            predict_time.num_seconds() % 60
-        );
-        run_speed = new_run_speed;
-        // 然后是调度相关
-        status.update_running(config.thread_id, false);
-        // 请求一个新的 work
-        let _ = work_sender.send((config.thread_id, if run_speed == 0.0 { 0 } else { run_speed as u32 }));
+        }
+        if events
+            .send(Event::Done {
+                worker,
+                computed,
+                elapsed: start.elapsed(),
+            })
+            .is_err()
+        {
+            return;
+        }
     }
 }
 
-/// 每一个 batch 的具体运算
-/// 不负责状态统计
-/// 状态统计的最小颗粒度是整个 batch
-pub fn inner_cacl(config: &CacluateConfig, range: Range<u64>, main_namer: &mut Namer, team_namer: &TeamNamer) -> u64 {
-    let mut get_count = 0;
-    for i in range {
-        // 这堆操作放在这边了, 保证统计没问题
-        let name = config.algorithm.gen_name(&config.template, i);
-        // 新加的提前检测
-        if likely(!main_namer.replace_name(team_namer, &name)) {
-            continue;
+/// 属性阈值严格 >，整数三倍值避免 f32 舍入，也适用于 u32::MAX 阈值。
+fn property_matches(props: &[u32; 8], threshold: u32) -> bool {
+    u64::from(props[0]) + 3 * props[1..].iter().map(|&p| u64::from(p)).sum::<u64>() > 3 * u64::from(threshold)
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\r', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+fn csv_header() -> String {
+    let mut header =
+        String::from("full_name,id,xp,xd,name,team,hp,attack,defense,speed,agility,magic,resistance,wisdom,property");
+    for skill in 0..40 {
+        header.push_str(&format!(",skill_{skill}"));
+    }
+    header
+}
+
+fn csv_row(id: u64, name: &Namer, xp: f64, xd: f64) -> String {
+    let mut row = format!(
+        "{},{id},{xp:.4},{xd:.4},{},{}",
+        csv_escape(&name.get_fullname()),
+        csv_escape(&name.name),
+        csv_escape(&name.team)
+    );
+    for prop in name.name_prop {
+        row.push_str(&format!(",{prop}"));
+    }
+    row.push_str(&format!(",{}", name.get_property()));
+    let mut skills = [0; 40];
+    for (&id, &freq) in name.skl_id.iter().zip(&name.skl_freq) {
+        skills[id as usize] = freq;
+    }
+    for freq in skills {
+        row.push_str(&format!(",{freq}"));
+    }
+    row.push('\n');
+    row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn command(threads: u32, start: u64, end: u64, dynamic: bool) -> Command {
+        let mut cli = Command::parse_from([
+            "tswn", "--team", "shenjack", "-b", "7", "-n", "number", "-p", "0", "-x", "0", "-d", "0",
+        ]);
+        cli.thread_count = threads;
+        cli.start = start;
+        cli.end = end;
+        if dynamic {
+            cli.report_interval = Some(10);
         }
-        let prop = main_namer.get_property();
+        cli
+    }
 
-        if unlikely(prop > config.prop_expect as f32) {
-            let name = config.algorithm.gen_name(&config.template, i);
-            let full_name = format!("{}@{}", name, config.team);
-            // 虚评
-            main_namer.update_skill();
+    #[test]
+    fn cursor_clamps_and_never_overflows() {
+        let mut cursor = WorkCursor {
+            next: u64::MAX - 3,
+            end: u64::MAX,
+        };
+        assert_eq!(cursor.take(u64::MAX), Some(u64::MAX - 3..u64::MAX));
+        assert_eq!(cursor.take(1), None);
+        let mut cursor = WorkCursor { next: 2, end: 4 };
+        assert_eq!(cursor.take(0), Some(2..3));
+        assert_eq!(cursor.take(9), Some(3..4));
+    }
 
-            let xu;
-            let xu_qd = crate::evaluate::xuping::XuPing2_0_1015_QD::evaluate(main_namer);
-            if likely((xu_qd as u32) < config.xd_expect) {
-                continue;
-            } else {
-                xu = crate::evaluate::xuping::XuPing2_0_1015::evaluate(main_namer);
-                if likely((xu as u32) < config.xp_expect) {
-                    continue;
-                }
-            }
-            get_count += 1;
-            info!("Id:{:>15}|{}|{:.4}|{:.4}|{}", i, full_name, xu, xu_qd, main_namer.get_info());
-            // 写入文件
-            let write_in = format!(
-                // <full_name>,<id>,<xu>,<xuqd>,<main_namer.get_info()>
-                "{},{:>15},{:.4},{:.4},{}\n",
-                main_namer.get_fullname(),
-                i,
-                xu,
-                xu_qd,
-                main_namer.get_info_csv()
-            );
-
-            // 写入 (写到最后一行)
-            match std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&config.out_file)
-                .and_then(|mut file| file.write(write_in.as_bytes()))
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    warn!("写入文件<{:?}>失败: {}", config.out_file, e);
+    #[test]
+    fn all_worker_modes_visit_each_id_once() {
+        for threads in [1, 2, 6] {
+            for dynamic in [false, true] {
+                for (start, end) in [(0, 0), (5, 8), (17, 70), (u64::MAX - 9, u64::MAX)] {
+                    let cli = command(threads, start, end, dynamic);
+                    let mut csv = Vec::new();
+                    let summary = schedule(&cli, &mut csv).unwrap();
+                    assert_eq!(summary.computed, end - start);
+                    assert_eq!(summary.hits, end - start);
+                    let csv = String::from_utf8(csv).unwrap();
+                    let mut ids: Vec<u64> =
+                        csv.lines().skip(1).map(|line| line.split(',').nth(1).unwrap().parse().unwrap()).collect();
+                    ids.sort_unstable();
+                    assert_eq!(ids, (start..end).collect::<Vec<_>>());
+                    assert!(csv.lines().all(|line| line.split(',').count() == 55));
                 }
             }
         }
     }
-    get_count
+
+    #[test]
+    fn strict_property_threshold_and_csv_quoting() {
+        assert!(!property_matches(&[300, 0, 0, 0, 0, 0, 0, 0], 100));
+        assert!(property_matches(&[301, 0, 0, 0, 0, 0, 0, 0], 100));
+        assert!(!property_matches(&[406, 99, 99, 99, 99, 99, 99, 99], u32::MAX));
+        assert_eq!(
+            csv_escape(
+                "a,\"b\"
+c"
+            ),
+            "\"a,\"\"b\"\"
+c\""
+        );
+        assert_eq!(csv_escape("中文"), "中文");
+    }
+
+    #[test]
+    fn output_failure_cancels_and_joins_workers() {
+        struct BrokenWriter {
+            remaining: usize,
+        }
+        impl Write for BrokenWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(io::Error::other("测试写失败"));
+                }
+                let len = bytes.len().min(self.remaining);
+                self.remaining -= len;
+                Ok(len)
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        assert!(schedule(&command(6, 0, 1000, false), &mut BrokenWriter { remaining: 650 }).is_err());
+    }
 }

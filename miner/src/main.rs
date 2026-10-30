@@ -85,26 +85,63 @@ impl Display for GenMethods {
 }
 
 impl Command {
-    pub fn as_cacl_config(&self, path: &PathBuf) -> CacluateConfig {
-        if !self.name_template.contains("[]") {
-            panic!("Name template must contain a placeholder for the name ([])");
-        }
+    pub fn as_cacl_config(&self) -> CacluateConfig {
         CacluateConfig {
-            thread_id: 0,
-            thread_count: self.thread_count,
             prop_expect: self.prop_expect,
             xp_expect: self.xp_expect,
             xd_expect: self.xd_expect,
             team: self.team.clone(),
-            time_based: self.batch_in_time(),
-            core_affinity: self.pick_core.map(|x| 1 << x),
-            out_file: path.clone(),
+            core_affinity: self.pick_core.and_then(|core| 1_usize.checked_shl(core as u32)),
             algorithm: self.name_gen.clone(),
             template: self.name_template.clone(),
         }
     }
 
-    pub fn is_single_thread(&self) -> bool { self.thread_count == 1 }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.thread_count == 0 {
+            return Err("线程数必须大于 0".into());
+        }
+        if self.end < self.start {
+            return Err("--end 必须大于或等于 --start（右边界不包含）".into());
+        }
+        if self.report_interval == Some(0) || self.batch_size == Some(0) {
+            return Err("batch 大小和报告间隔必须大于 0".into());
+        }
+        if !self.batch_in_time() && !self.batch_in_count() {
+            return Err("请通过 -r 或 -b 指定 batch".into());
+        }
+        if !self.name_template.contains("[]") {
+            return Err("名字模板必须含有 []".into());
+        }
+        if self.team.len() > 256 {
+            return Err("队伍名不能超过 256 个 UTF-8 字节".into());
+        }
+        let max_suffix = match self.name_gen {
+            GenMethods::Number => 20,
+            GenMethods::Base16384 => 18,
+            _ => 12,
+        };
+        let placeholders = self.name_template.matches("[]").count();
+        if self.name_template.len().saturating_add(placeholders.saturating_mul(max_suffix - 2)) > 256 {
+            return Err("生成的名字可能超过 256 个 UTF-8 字节".into());
+        }
+        if self.pick_core.is_some_and(|core| core >= usize::BITS as usize) {
+            return Err("核心号超出本平台亲和性掩码宽度".into());
+        }
+        Ok(())
+    }
+
+    pub fn batch_size_for(&self, speed: f64) -> u64 {
+        if let Some(seconds) = self.report_interval {
+            if speed <= 0.0 {
+                10_000
+            } else {
+                (speed as u64).saturating_mul(seconds).max(1)
+            }
+        } else {
+            self.batch_size.unwrap_or(10_000).max(1)
+        }
+    }
 
     pub fn batch_in_time(&self) -> bool { self.report_interval.is_some() }
 
@@ -121,7 +158,7 @@ impl Command {
             self.xp_expect,
             self.xd_expect,
             self.team,
-            if self.batch_in_count() {
+            if !self.batch_in_time() {
                 format!("固定 batch 大小: {}", self.batch_size.unwrap())
             } else {
                 format!("时间 batch 大小: {}s", self.report_interval.unwrap())
@@ -185,7 +222,7 @@ pub fn set_process_priority_to_high() {
 }
 
 fn main() {
-    let mut cli_arg = Command::parse();
+    let cli_arg = Command::parse();
     tracing_subscriber::fmt()
         .with_max_level(if cli_arg.debug {
             tracing::Level::DEBUG
@@ -193,36 +230,43 @@ fn main() {
             tracing::Level::INFO
         })
         .init();
-    // 先验证参数
-    // batch 至少要是 size 或者 count 之一
-    if !cli_arg.batch_in_count() && !cli_arg.batch_in_time() {
-        warn!("必须指定 batch 大小, 请使用 -r 或者 -b 选项");
-        return;
+    if let Err(error) = cli_arg.validate() {
+        eprintln!("参数错误: {error}");
+        std::process::exit(2);
     }
-    // 如果俩都指定了, 则使用时间为准
     if cli_arg.batch_in_count() && cli_arg.batch_in_time() {
-        warn!("两个 batch 选项都指定了, 将使用时间为准");
+        warn!("两个 batch 选项都指定了，将使用时间为准");
     }
 
-    // 将数据量处理成可被 thread_count 整除
-    let left = cli_arg.start % cli_arg.thread_count as u64;
-    cli_arg.end = cli_arg.end.wrapping_add(left);
-
-    let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+    let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%f").to_string();
     // namerena-<team>-<time>.csv
     // <time>: %Y-%m-%d-%H-%M-%S
-    let output_filename = format!("namerena-{}-{}.csv", cli_arg.team, now);
+    let safe_team: String = cli_arg
+        .team
+        .chars()
+        .map(|c| {
+            if c.is_control() || r#"<>:"/\|?*"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let output_filename = format!("namerena-{}-{}.csv", safe_team, now);
     let out_path = PathBuf::from(format!("./namerena/{}", output_filename));
     info!("输出文件: {:?}", out_path);
     // 先创建文件夹
     if let Err(e) = std::fs::create_dir_all(out_path.parent().unwrap()) {
         warn!("创建文件夹失败: {}", e);
-        return;
+        std::process::exit(1);
     }
 
     info!("{}", cli_arg.display_info());
     set_process_priority_to_high();
-    cacluate::start_main(cli_arg, out_path);
+    if let Err(error) = cacluate::start_main(cli_arg, out_path) {
+        eprintln!("计算失败: {error}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
