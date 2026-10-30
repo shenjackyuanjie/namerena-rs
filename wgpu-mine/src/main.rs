@@ -14,6 +14,7 @@ use std::{
 };
 use wgpu_mine::{
     core::{self, Thresholds},
+    gpu_input::GpuInput,
     input::{batch_ranges, Encoding, Generator},
     mining_gpu::{GpuMiner, GpuOptions, SboxLayout},
     output::CsvOutput,
@@ -32,6 +33,13 @@ impl Backend {
             Self::Cpu => "cpu",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum GpuInputMode {
+    Auto,
+    Uploaded,
+    Generated,
 }
 
 #[derive(Parser, Debug)]
@@ -82,6 +90,9 @@ struct Args {
     sbox: SboxLayout,
     #[arg(long, default_value_t = 32)]
     workgroup_size: u32,
+    /// 固定宽度编码默认在GPU按ID生成，Number自动回退上传。
+    #[arg(long, value_enum, default_value = "auto")]
+    gpu_input: GpuInputMode,
     /// 进度报告秒数；不改变范围或筛选语义。
     #[arg(short = 'r', long = "report-interval", default_value_t = 10)]
     report: u64,
@@ -205,40 +216,44 @@ fn run_once(
         Box::new(fresh_file(path)?)
     };
     let mut output = CsvOutput::new(writer)?;
+    let generator = Generator::new(args.template.clone(), args.encoding)?;
+    let generated = matches!(backend, Backend::Gpu) && gpu.as_ref().is_some_and(|gpu| gpu.uses_generated_names());
     let mut stats = Stats {
         next: args.start,
         ..Default::default()
     };
     let mut reported = Instant::now();
-    let end = range_end(args)?;
-    for range in batch_ranges(args.start, end, args.batch_size)? {
+    for range in batch_ranges(args.start, range_end(args)?, args.batch_size)? {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let generated = Instant::now();
-        let names = pool.generate(range.clone())?;
-        stats.generation += generated.elapsed();
+        let generated_at = Instant::now();
+        let names = if generated {
+            None
+        } else {
+            Some(pool.generate(range.clone())?)
+        };
+        stats.generation += generated_at.elapsed();
         let computed = Instant::now();
         let records = match backend {
             Backend::Cpu => {
-                let batch = pool.evaluate(Arc::clone(&names), thresholds(args), false)?;
+                let batch = pool.evaluate(Arc::clone(names.as_ref().ok_or("CPU名字尚未生成")?), thresholds(args), false)?;
                 stats.prop_pass += batch.prop_pass;
                 stats.shadows += batch.shadows;
                 batch.records.into_iter().map(|r| (r.index, r.value)).collect::<Vec<_>>()
             }
             Backend::Gpu => {
-                let batch = gpu.as_deref_mut().ok_or("GPU尚未初始化")?.run(&names, thresholds(args), false)?;
+                let gpu = gpu.as_deref_mut().ok_or("GPU尚未初始化")?;
+                let batch = if generated {
+                    gpu.run_range(range.start, (range.end - range.start) as usize, thresholds(args), false)?
+                } else {
+                    gpu.run(names.as_ref().ok_or("名字尚未生成")?, thresholds(args), false)?
+                };
                 stats.prop_pass += u64::from(batch.prop_pass);
                 stats.shadows += u64::from(batch.shadows);
                 stats.kernel += batch.kernel_time.unwrap_or_default();
                 for i in 0..2 {
                     stats.max_error[i] = stats.max_error[i].max(batch.max_error[i]);
-                }
-                if args.verify {
-                    for record in &batch.records {
-                        let wanted = core::evaluate(&args.team, &names[record.index]);
-                        compare_values(&record.value, &wanted)?;
-                    }
                 }
                 batch.records.into_iter().map(|r| (r.index, r.value)).collect::<Vec<_>>()
             }
@@ -247,7 +262,17 @@ fn run_once(
         let written = Instant::now();
         for (index, value) in records {
             let id = range.start + index as u64;
-            output.write_record(id, &names[index], &args.team, &value)?;
+            let generated_name;
+            let name = if let Some(names) = &names {
+                &names[index]
+            } else {
+                generated_name = generator.generate(id)?;
+                &generated_name
+            };
+            if args.verify && matches!(backend, Backend::Gpu) {
+                compare_values(&value, &core::evaluate(&args.team, name))?;
+            }
+            output.write_record(id, name, &args.team, &value)?;
             stats.hits += 1;
         }
         stats.output += written.elapsed();
@@ -269,24 +294,9 @@ fn run_once(
     output.flush()?;
     stats.output += flushed.elapsed();
     stats.elapsed = start.elapsed();
-    eprintln!(
-        "[{}] {}：完成={} 命中={} 下一ID={} E2E={:.3}s {:.0}名/s，生成={:.3}s 计算/回读={:.3}s 输出={:.3}s GPU内核={:.3}s",
-        backend.label(),
-        if cancel.load(Ordering::Relaxed) {
-            "已停止并flush"
-        } else {
-            "完成"
-        },
-        stats.processed,
-        stats.hits,
-        stats.next,
-        stats.elapsed.as_secs_f64(),
-        stats.rate(),
-        stats.generation.as_secs_f64(),
-        stats.compute.as_secs_f64(),
-        stats.output.as_secs_f64(),
-        stats.kernel.as_secs_f64()
-    );
+    eprintln!("[{}] {}：完成={} 命中={} 下一ID={} E2E={:.3}s {:.0}名/s，CPU批量生成={:.3}s 计算/回读={:.3}s 输出/复核={:.3}s GPU内核={:.3}s", backend.label(),
+        if cancel.load(Ordering::Relaxed) { "已停止并flush" } else { "完成" }, stats.processed, stats.hits, stats.next, stats.elapsed.as_secs_f64(), stats.rate(),
+        stats.generation.as_secs_f64(), stats.compute.as_secs_f64(), stats.output.as_secs_f64(), stats.kernel.as_secs_f64());
     Ok(stats)
 }
 
@@ -313,9 +323,13 @@ fn validate(args: &Args, pool: &mut CpuPool, gpu: &mut GpuMiner, count: u64, can
         if cancel.load(Ordering::Relaxed) {
             return Err("验证被取消，尚未完成全部样本".to_owned());
         }
-        let names = pool.generate(range)?;
+        let names = pool.generate(range.clone())?;
         let expected = pool.evaluate(Arc::clone(&names), Thresholds::default(), true)?;
-        let actual = gpu.run(&names, Thresholds::default(), true)?;
+        let actual = if gpu.uses_generated_names() {
+            gpu.run_range(range.start, names.len(), Thresholds::default(), true)?
+        } else {
+            gpu.run(&names, Thresholds::default(), true)?
+        };
         if actual.records.len() != expected.records.len() || actual.records.len() != names.len() {
             return Err("完整验证漏号或重复号".to_owned());
         }
@@ -421,22 +435,37 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
     let mut pool = CpuPool::new(generator, &args.team, args.threads)?;
     let needs_gpu = args.e2e_bench || args.validate.is_some() || matches!(args.backend, Backend::Gpu);
     let mut gpu = if needs_gpu {
-        Some(
-            GpuMiner::with_options(
-                &args.team,
-                args.batch_size,
-                GpuOptions {
-                    sbox: args.sbox,
-                    workgroup_size: args.workgroup_size,
-                },
-            )
-            .await?,
-        )
+        let options = GpuOptions {
+            sbox: args.sbox,
+            workgroup_size: args.workgroup_size,
+        };
+        let input = match args.gpu_input {
+            GpuInputMode::Uploaded => None,
+            _ => GpuInput::new(&args.team, &args.template, args.encoding)?,
+        };
+        if matches!(args.gpu_input, GpuInputMode::Generated) && input.is_none() {
+            return Err("该编码不支持GPU直接生成，请用auto或uploaded".to_owned());
+        }
+        Some(if let Some(input) = input {
+            GpuMiner::with_generated(&args.team, args.batch_size, options, input).await?
+        } else {
+            GpuMiner::with_options(&args.team, args.batch_size, options).await?
+        })
     } else {
         None
     };
     if let Some(gpu) = &gpu {
-        eprintln!("GPU：{}", gpu.adapter_description);
+        eprintln!(
+            "GPU：{}；输入={}；Sbox={:?}；工作组={}",
+            gpu.adapter_description,
+            if gpu.uses_generated_names() {
+                "GPU按ID生成"
+            } else {
+                "CPU上传"
+            },
+            args.sbox,
+            args.workgroup_size
+        );
     }
     if let Some(gpu) = &mut gpu {
         gpu.exact_scores = args.exact_scores || args.verify;
@@ -479,6 +508,9 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
                     "refined_xp_max_error",
                     "refined_xd_max_error",
                     "setup_s",
+                    "gpu_input",
+                    "sbox",
+                    "workgroup_size",
                 ])
                 .map_err(|e| e.to_string())?;
         }
@@ -518,6 +550,15 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
                                 value.max_error[0].to_string(),
                                 value.max_error[1].to_string(),
                                 initialization.as_secs_f64().to_string(),
+                                if matches!(backend, Backend::Cpu) {
+                                    "cpu".to_owned()
+                                } else if gpu.as_ref().is_some_and(GpuMiner::uses_generated_names) {
+                                    "generated".to_owned()
+                                } else {
+                                    "uploaded".to_owned()
+                                },
+                                format!("{:?}", args.sbox).to_lowercase(),
+                                args.workgroup_size.to_string(),
                             ])
                             .map_err(|e| e.to_string())?;
                     }

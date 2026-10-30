@@ -1,4 +1,5 @@
 use crate::core::{self, Evaluation, Thresholds};
+use crate::gpu_input::GpuInput;
 use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
@@ -31,9 +32,9 @@ impl GpuOptions {
         }
         Ok(self.workgroup_size * if self.sbox == SboxLayout::Packed { 256 } else { 1024 })
     }
-    fn shader_source(self) -> Result<String, String> {
+    fn shader_source(self, generated: bool) -> Result<String, String> {
         let bytes = self.shared_bytes()?;
-        Ok(include_str!("../mining.wgsl")
+        let mut source = include_str!("../mining.wgsl")
             .replace(
                 "const LANES: u32 = 32u;",
                 &format!("const LANES: u32 = {}u;", self.workgroup_size),
@@ -42,7 +43,14 @@ impl GpuOptions {
             .replace(
                 "const PACKED: bool = false;",
                 &format!("const PACKED: bool = {};", self.sbox == SboxLayout::Packed),
-            ))
+            );
+        if generated {
+            source = source.replace("const GENERATED: bool = false;", "const GENERATED: bool = true;");
+            let (before, rest) = source.split_once("// KEY_BEGIN").ok_or("着色器缺少KEY_BEGIN")?;
+            let (_, after) = rest.split_once("// KEY_END").ok_or("着色器缺少KEY_END")?;
+            source = format!("{before}{}\n{after}", include_str!("../generated-key.wgsl"));
+        }
+        Ok(source)
     }
 }
 
@@ -79,6 +87,7 @@ pub struct GpuMiner {
     resolve: Option<wgpu::Buffer>,
     capacity: usize,
     workgroup_size: u32,
+    generated: bool,
     metadata: Vec<[u32; 2]>,
     bytes: Vec<u8>,
     pub adapter_description: String,
@@ -92,11 +101,23 @@ impl GpuMiner {
     }
 
     pub async fn with_options(team: &str, capacity: usize, options: GpuOptions) -> Result<Self, String> {
+        Self::create(team, capacity, options, None).await
+    }
+
+    pub async fn with_generated(team: &str, capacity: usize, options: GpuOptions, input: GpuInput) -> Result<Self, String> {
+        Self::create(team, capacity, options, Some(input)).await
+    }
+
+    async fn create(team: &str, capacity: usize, options: GpuOptions, generated: Option<GpuInput>) -> Result<Self, String> {
         let shared_bytes = options.shared_bytes()?;
         if team.len() > 256 || capacity == 0 {
             return Err("队伍最多 256 个 UTF-8 字节，批大小必须大于零".to_owned());
         }
-        let input_bytes = capacity.checked_mul(256).ok_or("批大小溢出")? as u64;
+        let input_bytes = if let Some(input) = &generated {
+            (input.template_map.len() * 4) as u64
+        } else {
+            capacity.checked_mul(256).ok_or("批大小溢出")? as u64
+        };
         let output_bytes = capacity
             .checked_mul(RECORD_BYTES)
             .and_then(|n| n.checked_add(16))
@@ -138,7 +159,7 @@ impl GpuMiner {
         let errors = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("完整测号内核"),
-            source: wgpu::ShaderSource::Wgsl(options.shader_source()?.into()),
+            source: wgpu::ShaderSource::Wgsl(options.shader_source(generated.is_some())?.into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("RC4 属性 技能 shadow XP/XD"),
@@ -160,7 +181,9 @@ impl GpuMiner {
                 mapped_at_creation: false,
             })
         };
-        let state = crate::cpu::team_state(team).map(u32::from);
+        let state = generated
+            .as_ref()
+            .map_or_else(|| crate::cpu::team_state(team).map(u32::from), |input| input.prefix_state);
         let team_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("缓存队伍状态"),
             contents: bytemuck::cast_slice(&state),
@@ -168,7 +191,11 @@ impl GpuMiner {
         });
         let metadata_buffer = create(
             "候选偏移与长度",
-            (capacity * 8).max(16) as u64,
+            if generated.is_some() {
+                16
+            } else {
+                (capacity * 8).max(16) as u64
+            },
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
         let bytes_buffer = create(
@@ -229,6 +256,14 @@ impl GpuMiner {
         if let Some(error) = errors.pop().await {
             return Err(format!("创建测号缓冲失败：{error}"));
         }
+        if let Some(input) = &generated {
+            queue.write_buffer(
+                &metadata_buffer,
+                0,
+                bytemuck::cast_slice(&[[input.prefix_steps, input.name_len], [input.prefix_j, input.encoding]]),
+            );
+            queue.write_buffer(&bytes_buffer, 0, bytemuck::cast_slice(&input.template_map));
+        }
         Ok(Self {
             device,
             queue,
@@ -244,7 +279,8 @@ impl GpuMiner {
             resolve,
             capacity,
             workgroup_size: options.workgroup_size,
-            metadata: Vec::with_capacity(capacity),
+            generated: generated.is_some(),
+            metadata: Vec::with_capacity(if generated.is_some() { 0 } else { capacity }),
             bytes: Vec::new(),
             adapter_description,
             exact_scores: false,
@@ -253,6 +289,9 @@ impl GpuMiner {
 
     pub fn run(&mut self, names: &[String], thresholds: Thresholds, capture_all: bool) -> Result<GpuBatch, String> {
         let start = Instant::now();
+        if self.generated {
+            return Err("GPU直接生成管线须调用run_range".to_owned());
+        }
         if names.len() > self.capacity {
             return Err("候选数超过 GPU 批容量".to_owned());
         }
@@ -265,7 +304,45 @@ impl GpuMiner {
             self.metadata.push([self.bytes.len() as u32, name.len() as u32]);
             self.bytes.extend_from_slice(name.as_bytes());
         }
-        if names.is_empty() {
+        if !names.is_empty() {
+            self.bytes.resize(self.bytes.len().max(1).div_ceil(4) * 4, 0);
+            self.queue.write_buffer(&self.metadata_buffer, 0, bytemuck::cast_slice(&self.metadata));
+            self.queue.write_buffer(&self.bytes_buffer, 0, &self.bytes);
+        }
+        self.execute(names.len(), thresholds, capture_all, 0, start)
+    }
+
+    pub fn uses_generated_names(&self) -> bool { self.generated }
+
+    pub fn run_range(
+        &mut self,
+        first_id: u64,
+        count: usize,
+        thresholds: Thresholds,
+        capture_all: bool,
+    ) -> Result<GpuBatch, String> {
+        let start = Instant::now();
+        if !self.generated {
+            return Err("上传管线须调用run".to_owned());
+        }
+        if count > self.capacity {
+            return Err("候选数超过GPU批容量".to_owned());
+        }
+        if count != 0 {
+            first_id.checked_add(count as u64 - 1).ok_or("GPU生成ID溢出")?;
+        }
+        self.execute(count, thresholds, capture_all, first_id, start)
+    }
+
+    fn execute(
+        &mut self,
+        input_count: usize,
+        thresholds: Thresholds,
+        capture_all: bool,
+        first_id: u64,
+        start: Instant,
+    ) -> Result<GpuBatch, String> {
+        if input_count == 0 {
             return Ok(GpuBatch {
                 records: vec![],
                 prop_pass: 0,
@@ -277,22 +354,19 @@ impl GpuMiner {
                 refined: 0,
             });
         }
-        self.bytes.resize(self.bytes.len().max(1).div_ceil(4) * 4, 0);
-        self.queue.write_buffer(&self.metadata_buffer, 0, bytemuck::cast_slice(&self.metadata));
-        self.queue.write_buffer(&self.bytes_buffer, 0, &self.bytes);
         self.queue.write_buffer(&self.output, 0, bytemuck::cast_slice(&[0_u32; 4]));
         // 八围物理上界远低于 10000，钳制仅避免 shader 中 3*p 的 u32 溢出，不改变判定。
         self.queue.write_buffer(
             &self.params,
             0,
             bytemuck::cast_slice(&[
-                names.len() as u32,
+                input_count as u32,
                 thresholds.prop.min(10000),
                 thresholds.xp,
                 thresholds.xd,
                 u32::from(capture_all),
-                0,
-                0,
+                first_id as u32,
+                (first_id >> 32) as u32,
                 0,
             ]),
         );
@@ -310,7 +384,7 @@ impl GpuMiner {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.group, &[]);
-            pass.dispatch_workgroups((names.len() as u32).div_ceil(self.workgroup_size), 1, 1);
+            pass.dispatch_workgroups((input_count as u32).div_ceil(self.workgroup_size), 1, 1);
         }
         encoder.copy_buffer_to_buffer(&self.output, 0, &self.header_staging, 0, 16);
         if let (Some(query), Some(resolve)) = (&self.query, &self.resolve) {
@@ -321,7 +395,7 @@ impl GpuMiner {
         let header = map_read(&self.device, &self.header_staging, if self.query.is_some() { 32 } else { 16 })?;
         let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
         let count = word(0) as usize;
-        if count > names.len() || word(1) as usize > names.len() || word(2) as usize > names.len() {
+        if count > input_count || word(1) as usize > input_count || word(2) as usize > input_count {
             return Err("GPU 候选计数超出输入范围".to_owned());
         }
         let kernel_time = self.query.as_ref().map(|_| {
@@ -346,7 +420,7 @@ impl GpuMiner {
                     *word = u32::from_le_bytes(*bytes);
                 }
                 let index = words[0] as usize;
-                if index >= names.len() {
+                if index >= input_count {
                     return Err("GPU 返回了无效候选下标".to_owned());
                 }
                 let props: [u32; 8] = words[1..9].try_into().unwrap();
@@ -569,6 +643,81 @@ mod tests {
                     actual.records.iter().map(|record| record.index).collect::<Vec<_>>(),
                     wanted,
                     "{options:?}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "需要GPU：nonce生成、进位、编码和公共前缀完整对拍"]
+    fn gpu_generated_names_match_reference_at_u64_boundaries() {
+        use crate::input::{Encoding, Generator};
+        pollster::block_on(async {
+            let team = "生成@队伍";
+            let mut cases = Vec::new();
+            for options in [
+                GpuOptions {
+                    sbox: SboxLayout::Wide,
+                    workgroup_size: 32,
+                },
+                GpuOptions::default(),
+                GpuOptions {
+                    sbox: SboxLayout::Packed,
+                    workgroup_size: 64,
+                },
+                GpuOptions {
+                    sbox: SboxLayout::Packed,
+                    workgroup_size: 128,
+                },
+            ] {
+                cases.push((Encoding::Base16384, "中文😀[]/[]tail".to_owned(), options));
+            }
+            for encoding in [Encoding::Base16384, Encoding::Base64Std, Encoding::Base64Url] {
+                cases.push((encoding, "中文😀[]/[]tail".to_owned(), GpuOptions::default()));
+                let prefix = match encoding {
+                    Encoding::Base16384 => format!("{}a", "中".repeat(79)),
+                    _ => format!("{}a", "中".repeat(81)),
+                };
+                cases.push((encoding, format!("{prefix}[]"), GpuOptions::default()));
+            }
+            for (encoding, template, options) in cases {
+                let input = GpuInput::new(team, &template, encoding).unwrap().unwrap();
+                let generator = Generator::new(template, encoding).unwrap();
+                let mut gpu = GpuMiner::with_generated(team, 65, options, input).await.unwrap();
+                for first in [0, 1, u64::from(u32::MAX) - 31, 1_u64 << 32, u64::MAX - 64] {
+                    let names: Vec<_> = (0..65).map(|offset| generator.generate(first + offset).unwrap()).collect();
+                    let expected: Vec<_> = names.iter().map(|name| core::evaluate(team, name)).collect();
+                    let actual = gpu.run_range(first, 65, Thresholds::default(), true).unwrap();
+                    assert_eq!(actual.records.len(), 65, "{encoding:?} {first}");
+                    for record in actual.records {
+                        equal(&record.value, &expected[record.index]);
+                    }
+                    let thresholds = Thresholds {
+                        prop: 550,
+                        xp: 1500,
+                        xd: 3000,
+                    };
+                    let actual = gpu.run_range(first, 65, thresholds, false).unwrap();
+                    let wanted: Vec<_> = expected
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, value)| value.matches(thresholds))
+                        .map(|(i, _)| i)
+                        .collect();
+                    assert_eq!(
+                        actual.records.iter().map(|record| record.index).collect::<Vec<_>>(),
+                        wanted,
+                        "{encoding:?} {first}"
+                    );
+                }
+                assert!(gpu.run_range(u64::MAX, 2, Thresholds::default(), true).is_err());
+                assert!(gpu.run_range(0, 66, Thresholds::default(), true).is_err());
+                assert!(gpu.run(&[], Thresholds::default(), true).is_err());
+                assert!(gpu.run_range(u64::MAX, 0, Thresholds::default(), true).unwrap().records.is_empty());
+                let actual = gpu.run_range(u64::MAX, 1, Thresholds::default(), true).unwrap();
+                equal(
+                    &actual.records[0].value,
+                    &core::evaluate(team, &generator.generate(u64::MAX).unwrap()),
                 );
             }
         });
