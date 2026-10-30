@@ -1,7 +1,7 @@
-// 一候选一 lane；转置 Sbox 共占 32KiB，每个 invocation 独占一列。
+// 一候选一lane，转置Sbox每候选packed256B或wide1024B；LANES32/64/128编译期选择。
 // 本文件不含跨 lane barrier，因此尾批与属性筛选均可直接 return。
 // host 每批清零 Output 的 16B header，records 至少分配 count 个 176B 槽。
-// team_state 是 host 对 raw team 执行一次 KSA 后缓存的 256 个字节（各占 u32）。
+// team_state为raw队伍KSA状态；GENERATED模式则为名字公共前缀KSA快照（各字节占u32）。
 @group(0) @binding(0) var<uniform> team_state: array<vec4<u32>, 64>;
 
 struct NameInfo {
@@ -9,7 +9,7 @@ struct NameInfo {
     length: u32,
 }
 @group(0) @binding(1) var<storage, read> names: array<NameInfo>;
-// 紧凑 UTF-8：offset/length 均以字节计，每个 u32 低字节在先。
+// 上传模式为紧凑UTF8；GENERATED模式为逐u32模板映射，offset复用为prefix_steps。
 @group(0) @binding(2) var<storage, read> name_bytes: array<u32>;
 
 // 严格 44 个 32bit 字，align=4、size/stride=176；不增加 vec3 对齐填充。
@@ -38,8 +38,8 @@ struct Params {
     xp_threshold: u32,
     xd_threshold: u32,
     capture_all: u32,
-    pad0: u32,
-    pad1: u32,
+    pad0: u32, // GENERATED: 起始ID低32bit
+    pad1: u32, // GENERATED: 起始ID高32bit
     pad2: u32,
 }
 @group(0) @binding(4) var<uniform> params: Params;
@@ -342,7 +342,7 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
     }
     atomicAdd(&output.scored, 1u);
 
-    // 10 分安全余量只做保守候选筛选；host 用整数记录重建 f64 后精筛。
+    // 10分余量做候选粗筛；阈值附近由host基于整数记录重建f64精筛。
     // 非有限结果强制记录，交由 host validation 明确报告，不静默通过/丢弃。
     let invalid_score = !finite_score(score.x) || !finite_score(score.y);
     // Rust as u32 将负分饱和为 0：阈值为 0 时不能丢弃负分候选。

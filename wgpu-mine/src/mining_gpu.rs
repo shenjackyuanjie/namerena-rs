@@ -692,11 +692,24 @@ mod tests {
                 };
                 cases.push((encoding, format!("{prefix}[]"), GpuOptions::default()));
             }
+            cases.push((
+                Encoding::Base16384,
+                format!("原始@{}[]/[]😀", char::from(0)),
+                GpuOptions::default(),
+            ));
             for (encoding, template, options) in cases {
                 let input = GpuInput::new(team, &template, encoding).unwrap().unwrap();
                 let generator = Generator::new(template, encoding).unwrap();
                 let mut gpu = GpuMiner::with_generated(team, 65, options, input).await.unwrap();
-                for first in [0, 1, u64::from(u32::MAX) - 31, 1_u64 << 32, u64::MAX - 64] {
+                for first in [
+                    0,
+                    1,
+                    u64::from(u32::MAX) - 31,
+                    1_u64 << 32,
+                    0x0123_4567_89ab_cdef,
+                    0x8000_0000_0000_0000,
+                    u64::MAX - 64,
+                ] {
                     let names: Vec<_> = (0..65).map(|offset| generator.generate(first + offset).unwrap()).collect();
                     let expected: Vec<_> = names.iter().map(|name| core::evaluate(team, name)).collect();
                     let actual = gpu.run_range(first, 65, Thresholds::default(), true).unwrap();

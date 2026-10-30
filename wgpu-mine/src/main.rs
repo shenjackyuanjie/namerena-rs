@@ -69,7 +69,7 @@ struct Args {
     end: Option<u64>,
     #[arg(long, conflicts_with = "end")]
     count: Option<u64>,
-    /// GPU 模式的名字生成线程数；CPU 模式同时用于完整计算。
+    /// CPU对照/验证或上传模式的worker数；GPU直接生成时不参与逐名计算。
     #[arg(
         short = 't',
         long = "thread-count",

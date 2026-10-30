@@ -1,0 +1,3 @@
+round,backend,threads,batch_size,processed,hits,seconds,names_per_second,generation_s,compute_s,output_s,gpu_kernel_s,refined_xp_max_error,refined_xd_max_error,setup_s,gpu_input,sbox,workgroup_size,model_execution
+0,gpu,6,524287,100000000,1,2.3947577,41757878.05171271,0.0000081,2.3940818999999998,0.0000667,2.347427616,0,0,0.5664966,generated,packed,32,compact
+0,cpu,6,524287,100000000,1,81.577156,1225833.3693319731,5.5938643,71.7513375,0.0000825,0,0,0,0.5664966,cpu,packed,32,compact

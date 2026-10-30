@@ -1,6 +1,8 @@
 # GPU E2E 测号 CLI
 
-现已支持完整链路：**CPU 并行生成 → GPU RC4 → 属性/技能 → shadow → f32 XP/XD → 候选压缩 → 阈值附近 f64 精算 → CSV**。不再只是 RC4 演示。
+现已支持完整链路：**GPU按ID生成名字 → RC4 → 属性/技能 → shadow → f32 XP/XD → 候选压缩 → 阈值附近f64精算 → 仅为命中恢复CPU名字并写CSV**。固定宽编码默认GPU生成，Number回退CPU上传。
+
+**最新极限实测：原参数连续三轮各十亿，稳态中位约4246万名/秒，含启动/退出墙钟约4127万名/秒。** 最快配置、25万样本精度、一亿CPU对照和持续数据见 [GPU极限优化报告](docs/gpu-extreme.md)。以下首轮性能表为进一步优化之前的历史对照。
 
 ## 直接使用
 
@@ -26,7 +28,7 @@ cargo build -p wgpu-mine --release --locked -j 2
 | --- | --- |
 | --start / --end | 严格半开区间 [start,end)，支持空范围和接近 u64::MAX 的末尾 |
 | --count | 从 start 开始的有限数量，与 end 互斥；溢出明确拒绝 |
-| -t / --thread-count | GPU 模式的名字生成 worker 数；CPU 模式同时用于完整计算，默认 6 |
+| -t / --thread-count | CPU对照/验证/上传路径worker数，默认6；GPU直接生成时不参与逐名计算 |
 | -p / -x / -d | 八围严格 >p，XP/XD 按 Rust as u32 饱和截断后 >=x/d，条件为 AND |
 | -m / --name-template | 替换全部 []，最终名字最多 256 个 UTF-8 字节 |
 | -n / --name-gen | base16384（默认）、base64-std、base64-url、number；二进制编码使用 u64 大端字节 |
@@ -34,6 +36,10 @@ cargo build -p wgpu-mine --release --locked -j 2
 | -r / --report-interval | 进度报告秒数，默认 10，不是网络上报 |
 | --output / -o | 新 CSV 文件；禁止覆盖；- 表示 CSV 写 stdout，日志仍在 stderr |
 | --output-dir | 未指定文件时创建带时间戳的新结果文件，默认 namerena |
+| --gpu-input auto/uploaded/generated | 固定宽编码auto默认GPU直接生成；Number回退上传 |
+| --sbox packed/wide | 默认字节packed，保留wide对照 |
+| --workgroup-size | 32（默认）、64、128；wide仅32 |
+| --dense-model | 使用旧稠密遍历作对照；默认压缩非零特征，同一模型和权重 |
 | --exact-scores | 对全部回传候选重算 f64；默认只在非零评分阈值 10 分附近重算 |
 | --verify | 对命中做完整 CPU 属性/技能/模型复核，并对回传候选精算，适合验收而非测速 |
 | --validate N | 捕获全部 N 个候选做完整对拍并统计推理误差，不执行常规筛选输出 |
@@ -64,7 +70,7 @@ CSV 固定 15 列：id,name,team,hp,attack,defense,speed,agility,magic,resistanc
 ./target/release/wgpu-mine.exe --team shenjack -t 6 -m "我也不知道我要测多少 []" --validate 100000 --metrics target/validation-new.csv
 ```
 
-## 本机 E2E 实测
+## 首轮 E2E 实测（极限优化前）
 
 2026-10-30，Ryzen 7 5800X（6 worker）+ NVIDIA GeForce RTX 5060 Ti / Vulkan，Release，批 65536。先跑 1 轮完整预热，再跑 3 轮正式测量取中位数；GPU/CPU 顺序交替，测速期间没有并行构建或其他本项目性能测试。
 
@@ -102,7 +108,7 @@ CSV 固定 15 列：id,name,team,hp,attack,defense,speed,agility,magic,resistanc
 
 主要实现：[CPU 完整金标准](src/core.rs)、[GPU 内核](mining.wgsl)、[GPU Host 与压缩回读](src/mining_gpu.rs)、[并行工作池](src/pool.rs)、[输入与区间](src/input.rs)、[输出](src/output.rs)、[真实 CLI 测试](tests/cli.rs)。
 
-当前 GPU 包默认测试 **40 项通过、3 项硬件测试默认忽略**；这 3 项已另外串行启用，均通过。严格 Clippy（-D warnings）和 Release 构建通过。CPU miner 的独立测试、历史模型断言与优化结果单独报告。
+当前 GPU 包默认测试 **43 项通过、5 项硬件测试默认忽略**；这5项已另外串行启用，均通过。严格 Clippy（-D warnings）和 Release 构建通过。CPU miner 的独立测试、历史模型断言与优化结果单独报告。
 
 已覆盖：原始固定数组金标准、完整稳定过滤、技能所有分支与连续 PRGA、1034 项多项式索引、空/中文/emoji/NUL/@、256 字节名字和 263 字节内部 shadow、属性分数/评分阈值、31/32/33/63/64/65/257/513 等尾批、u64 边界、线程数改变不漏不重、工作池错误恢复、零命中表头、CSV 全字段往返及 writer 写入/flush 错误、拒绝覆盖、标准输出无日志污染、取消后的完成游标与表头刷新、总轮数溢出拒绝。
 
@@ -118,6 +124,8 @@ cargo clippy -p wgpu-mine --all-targets --locked -j 2 -- -D warnings
 纯 RC4 的旧基准仍通过 --bench 使用，历史数据与口径见 [RC4 实验记录](docs/rc4-experiment.md)。
 
 ## 本地提交
+
+后续极限优化提交1881569、2444285、79283d4及其完整验收见 [极限报告](docs/gpu-extreme.md)。
 
 - 6aff41b：依赖升级与已验证 RC4 基线。
 - d786074：完整 CPU/GPU 属性、技能、shadow 与容差模型链。
