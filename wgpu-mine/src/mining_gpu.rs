@@ -5,6 +5,47 @@ use wgpu::util::DeviceExt;
 const RECORD_WORDS: usize = 44;
 const RECORD_BYTES: usize = RECORD_WORDS * 4;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum SboxLayout {
+    Wide,
+    Packed,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GpuOptions {
+    pub sbox: SboxLayout,
+    pub workgroup_size: u32,
+}
+impl Default for GpuOptions {
+    fn default() -> Self {
+        Self {
+            sbox: SboxLayout::Packed,
+            workgroup_size: 32,
+        }
+    }
+}
+impl GpuOptions {
+    pub fn shared_bytes(self) -> Result<u32, String> {
+        if ![32, 64, 128].contains(&self.workgroup_size) || (self.sbox == SboxLayout::Wide && self.workgroup_size != 32) {
+            return Err("工作组须为32/64/128；wide S-box仅支持32，packed支持全部三种".to_owned());
+        }
+        Ok(self.workgroup_size * if self.sbox == SboxLayout::Packed { 256 } else { 1024 })
+    }
+    fn shader_source(self) -> Result<String, String> {
+        let bytes = self.shared_bytes()?;
+        Ok(include_str!("../mining.wgsl")
+            .replace(
+                "const LANES: u32 = 32u;",
+                &format!("const LANES: u32 = {}u;", self.workgroup_size),
+            )
+            .replace("const WORDS: u32 = 8192u;", &format!("const WORDS: u32 = {}u;", bytes / 4))
+            .replace(
+                "const PACKED: bool = false;",
+                &format!("const PACKED: bool = {};", self.sbox == SboxLayout::Packed),
+            ))
+    }
+}
+
 pub struct GpuRecord {
     pub index: usize,
     pub value: Evaluation,
@@ -37,6 +78,7 @@ pub struct GpuMiner {
     query: Option<wgpu::QuerySet>,
     resolve: Option<wgpu::Buffer>,
     capacity: usize,
+    workgroup_size: u32,
     metadata: Vec<[u32; 2]>,
     bytes: Vec<u8>,
     pub adapter_description: String,
@@ -46,6 +88,11 @@ pub struct GpuMiner {
 
 impl GpuMiner {
     pub async fn new(team: &str, capacity: usize) -> Result<Self, String> {
+        Self::with_options(team, capacity, GpuOptions::default()).await
+    }
+
+    pub async fn with_options(team: &str, capacity: usize, options: GpuOptions) -> Result<Self, String> {
+        let shared_bytes = options.shared_bytes()?;
         if team.len() > 256 || capacity == 0 {
             return Err("队伍最多 256 个 UTF-8 字节，批大小必须大于零".to_owned());
         }
@@ -65,13 +112,14 @@ impl GpuMiner {
         let info = adapter.get_info();
         let adapter_description = format!("{} / {:?} / {:?}", info.name, info.backend, info.device_type);
         let mut limits = wgpu::Limits::downlevel_defaults();
-        limits.max_compute_workgroup_storage_size = 32768;
+        limits.max_compute_workgroup_storage_size = shared_bytes;
         if !limits.check_limits(&adapter.limits())
             || input_bytes > limits.max_storage_buffer_binding_size
             || output_bytes > limits.max_storage_buffer_binding_size
-            || (capacity as u64).div_ceil(32) > u64::from(limits.max_compute_workgroups_per_dimension)
+            || (capacity as u64).div_ceil(u64::from(options.workgroup_size))
+                > u64::from(limits.max_compute_workgroups_per_dimension)
         {
-            return Err("设备需支持 32KiB 工作组共享内存，且批大小不能超过缓冲/工作组限制".to_owned());
+            return Err("设备共享内存或批大小超过缓冲/工作组限制".to_owned());
         }
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) = adapter
@@ -90,7 +138,7 @@ impl GpuMiner {
         let errors = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("完整测号内核"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../mining.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(options.shader_source()?.into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("RC4 属性 技能 shadow XP/XD"),
@@ -120,7 +168,7 @@ impl GpuMiner {
         });
         let metadata_buffer = create(
             "候选偏移与长度",
-            (capacity * 8) as u64,
+            (capacity * 8).max(16) as u64,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
         let bytes_buffer = create(
@@ -195,6 +243,7 @@ impl GpuMiner {
             query,
             resolve,
             capacity,
+            workgroup_size: options.workgroup_size,
             metadata: Vec::with_capacity(capacity),
             bytes: Vec::new(),
             adapter_description,
@@ -261,7 +310,7 @@ impl GpuMiner {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.group, &[]);
-            pass.dispatch_workgroups((names.len() as u32).div_ceil(32), 1, 1);
+            pass.dispatch_workgroups((names.len() as u32).div_ceil(self.workgroup_size), 1, 1);
         }
         encoder.copy_buffer_to_buffer(&self.output, 0, &self.header_staging, 0, 16);
         if let (Some(query), Some(resolve)) = (&self.query, &self.resolve) {
@@ -472,6 +521,54 @@ mod tests {
                 assert_eq!(
                     gpu.run(&["x".to_owned()], Thresholds::default(), true).unwrap().records.len(),
                     1
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "需要GPU：验证不同共享状态布局和工作组"]
+    fn gpu_packed_layouts_match_complete_reference() {
+        pollster::block_on(async {
+            let names = samples(257);
+            let expected: Vec<_> = names.iter().map(|name| core::evaluate("边界队伍4", name)).collect();
+            for options in [
+                GpuOptions::default(),
+                GpuOptions {
+                    sbox: SboxLayout::Packed,
+                    workgroup_size: 32,
+                },
+                GpuOptions {
+                    sbox: SboxLayout::Packed,
+                    workgroup_size: 64,
+                },
+                GpuOptions {
+                    sbox: SboxLayout::Packed,
+                    workgroup_size: 128,
+                },
+            ] {
+                let mut gpu = GpuMiner::with_options("边界队伍4", 257, options).await.unwrap();
+                let actual = gpu.run(&names, Thresholds::default(), true).unwrap();
+                assert_eq!(actual.records.len(), names.len());
+                for record in actual.records {
+                    equal(&record.value, &expected[record.index]);
+                }
+                let thresholds = Thresholds {
+                    prop: 550,
+                    xp: 1500,
+                    xd: 3000,
+                };
+                let actual = gpu.run(&names, thresholds, false).unwrap();
+                let wanted: Vec<_> = expected
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, value)| value.matches(thresholds))
+                    .map(|(index, _)| index)
+                    .collect();
+                assert_eq!(
+                    actual.records.iter().map(|record| record.index).collect::<Vec<_>>(),
+                    wanted,
+                    "{options:?}"
                 );
             }
         });

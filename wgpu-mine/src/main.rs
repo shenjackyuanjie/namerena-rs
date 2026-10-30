@@ -15,7 +15,7 @@ use std::{
 use wgpu_mine::{
     core::{self, Thresholds},
     input::{batch_ranges, Encoding, Generator},
-    mining_gpu::GpuMiner,
+    mining_gpu::{GpuMiner, GpuOptions, SboxLayout},
     output::CsvOutput,
     pool::CpuPool,
 };
@@ -77,6 +77,11 @@ struct Args {
     xd: u32,
     #[arg(short = 'b', long = "batch-size", default_value_t = 65536)]
     batch_size: usize,
+    /// S-box共享状态布局；packed每个候选256B，wide为1024B。
+    #[arg(long, value_enum, default_value = "packed")]
+    sbox: SboxLayout,
+    #[arg(long, default_value_t = 32)]
+    workgroup_size: u32,
     /// 进度报告秒数；不改变范围或筛选语义。
     #[arg(short = 'r', long = "report-interval", default_value_t = 10)]
     report: u64,
@@ -167,6 +172,11 @@ fn check_options(args: &Args) -> Result<(), String> {
     if args.validate == Some(0) {
         return Err("验证样本数必须大于零".to_owned());
     }
+    GpuOptions {
+        sbox: args.sbox,
+        workgroup_size: args.workgroup_size,
+    }
+    .shared_bytes()?;
     let end = range_end(args)?;
     if args.start > end {
         return Err("start 不能大于 end".to_owned());
@@ -411,7 +421,17 @@ async fn run(args: Args, cancel: Arc<AtomicBool>) -> Result<(), String> {
     let mut pool = CpuPool::new(generator, &args.team, args.threads)?;
     let needs_gpu = args.e2e_bench || args.validate.is_some() || matches!(args.backend, Backend::Gpu);
     let mut gpu = if needs_gpu {
-        Some(GpuMiner::new(&args.team, args.batch_size).await?)
+        Some(
+            GpuMiner::with_options(
+                &args.team,
+                args.batch_size,
+                GpuOptions {
+                    sbox: args.sbox,
+                    workgroup_size: args.workgroup_size,
+                },
+            )
+            .await?,
+        )
     } else {
         None
     };

@@ -47,11 +47,41 @@ struct Params {
 // 一共 1035 个 vec2<f32>，storage stride=8，共 8280B。
 @group(0) @binding(5) var<storage, read> weights: array<vec2<f32>>;
 
-var<workgroup> values: array<u32, 8192>;
+// Host 只替换这些编译期常量，计算路径不含运行时布局分支。
+const LANES: u32 = 32u;
+const WORDS: u32 = 8192u;
+const PACKED: bool = false;
+const GENERATED: bool = false;
+var<workgroup> values: array<u32, WORDS>;
+
+fn read_sbox(lane: u32, slot: u32) -> u32 {
+    if (PACKED) {
+        return (values[(slot / 4u) * LANES + lane] >> ((slot % 4u) * 8u)) & 255u;
+    }
+    return values[slot * LANES + lane];
+}
+
+fn write_sbox(lane: u32, slot: u32, value: u32) {
+    if (PACKED) {
+        let word = (slot / 4u) * LANES + lane;
+        let shift = (slot % 4u) * 8u;
+        // 每 lane 独占一列。同一 word 的两个槽交换时，第二次必须读更新后的 word。
+        values[word] = (values[word] & ~(255u << shift)) | (value << shift);
+    } else {
+        values[slot * LANES + lane] = value;
+    }
+}
 
 fn restore_team(lane: u32) {
-    for (var i = 0u; i < 256u; i += 1u) {
-        values[i * 32u + lane] = team_state[i / 4u][i % 4u];
+    if (PACKED) {
+        for (var i = 0u; i < 64u; i += 1u) {
+            let v = team_state[i];
+            values[i * LANES + lane] = v.x | (v.y << 8u) | (v.z << 16u) | (v.w << 24u);
+        }
+    } else {
+        for (var i = 0u; i < 256u; i += 1u) {
+            values[i * LANES + lane] = team_state[i / 4u][i % 4u];
+        }
     }
 }
 
@@ -68,6 +98,9 @@ fn shadow_byte(index: u32) -> u32 {
     }
 }
 
+// KEY_BEGIN
+fn prepare_generated(index: u32) {}
+
 // k=0 是编码前导零；k>0 对应 name 或 name+?shadow 的第 k-1 个字节。
 fn key_byte(info: NameInfo, k: u32) -> u32 {
     if (k == 0u) { return 0u; }
@@ -79,19 +112,22 @@ fn key_byte(info: NameInfo, k: u32) -> u32 {
     return shadow_byte(byte_index - info.length);
 }
 
+// KEY_END
+
 // raw name 最长 256B，shadow 拼接后内部允许 263B；两轮均重置 s/k。
 fn name_ksa(lane: u32, info: NameInfo, with_shadow: bool) {
     let key_length = info.length + select(0u, 7u, with_shadow);
     for (var round = 0u; round < 2u; round += 1u) {
         var s = 0u;
         var k = 0u;
-        for (var i = 0u; i < 256u; i += 1u) {
-            let address_i = i * 32u + lane;
-            let current = values[address_i];
+        var first = 0u;
+        if (GENERATED && round == 0u) { first = info.offset; k = first; s = names[1u].offset; }
+        for (var i = first; i < 256u; i += 1u) {
+            let current = read_sbox(lane, i);
             s = (s + key_byte(info, k) + current) & 255u;
-            let address_s = s * 32u + lane;
-            values[address_i] = values[address_s];
-            values[address_s] = current;
+            let other = read_sbox(lane, s);
+            write_sbox(lane, i, other);
+            write_sbox(lane, s, current);
             if (k == key_length) { k = 0u; } else { k += 1u; }
         }
     }
@@ -102,7 +138,7 @@ fn name_ksa(lane: u32, info: NameInfo, with_shadow: bool) {
 fn collect_base(lane: u32, base: ptr<function, array<u32, 128>>) {
     var count = 0u;
     for (var i = 0u; i < 256u; i += 1u) {
-        let mapped = (values[i * 32u + lane] * 181u + 160u) & 255u;
+        let mapped = (read_sbox(lane, i) * 181u + 160u) & 255u;
         if (mapped >= 89u && mapped < 217u) {
             (*base)[count] = mapped & 63u;
             count += 1u;
@@ -142,14 +178,13 @@ fn properties(base: ptr<function, array<u32, 128>>) -> array<u32, 8> {
 
 fn prga_byte(lane: u32, a: ptr<function, u32>, b: ptr<function, u32>) -> u32 {
     *a = (*a + 1u) & 255u;
-    let address_a = *a * 32u + lane;
-    let current = values[address_a];
+    let current = read_sbox(lane, *a);
     *b = (*b + current) & 255u;
-    let address_b = *b * 32u + lane;
-    values[address_a] = values[address_b];
-    values[address_b] = current;
-    let slot = (values[address_a] + values[address_b]) & 255u;
-    return values[slot * 32u + lane];
+    let other = read_sbox(lane, *b);
+    write_sbox(lane, *a, other);
+    write_sbox(lane, *b, current);
+    // 交换前后两数之和不变，避免再次读取两个随机共享槽。
+    return read_sbox(lane, (current + other) & 255u);
 }
 
 fn finite_score(value: f32) -> bool {
@@ -157,12 +192,13 @@ fn finite_score(value: f32) -> bool {
     return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
 }
 
-@compute @workgroup_size(32)
+@compute @workgroup_size(LANES)
 fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         @builtin(local_invocation_index) lane: u32) {
     let index = position.x;
     if (index >= params.count) { return; }
-    let info = names[index];
+    let info = names[select(index, 0u, GENERATED)];
+    if (GENERATED) { prepare_generated(index); }
 
     restore_team(lane);
     name_ksa(lane, info, false);
