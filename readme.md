@@ -5,7 +5,7 @@
 ## 当前工程状态
 
 - 依赖升级、API 适配、验证结果与后续优化/移植边界见 [依赖升级与 GPU MVP 迁移说明](docs/dependency-upgrade.md)。
-- `miner` 提供现有 CPU 矿工；`wgpu-mine` 提供 [批量 RC4 GPU 移植与六线程测速实验](wgpu-mine/README.md)，本机大批量端到端约 2.3～2.4× 六线程 CPU，目前不是完整 GPU 测号程序。
+- `miner` 提供 CPU 矿工；`wgpu-mine` 已提供 [完整 GPU E2E 测号 CLI、误差验证与六线程对照](wgpu-mine/README.md)，支持原基本参数，涵盖属性、技能、shadow、XP/XD 与 CSV。纯 RC4 基准保留在 `--bench` 模式。
 - [maker-py](maker-py/README.md) 已弃用，不再维护。
 
 ## 用法

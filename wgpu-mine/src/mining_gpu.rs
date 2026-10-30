@@ -395,7 +395,7 @@ mod tests {
                 1 => format!("中文😀名字{i}"),
                 2 => format!("name-{i}"),
                 3 => "a".repeat(256),
-                4 => format!("{}a", "中".repeat(85)),
+                4 => format!("{}x", "中".repeat(85)),
                 5 => format!("raw@name-{i}"),
                 6 => format!("一一七啺埀㴁-{i}"),
                 _ => format!("完整金标准-{i}"),
@@ -416,7 +416,7 @@ mod tests {
     #[ignore = "需要可用 GPU：完整属性、技能、shadow、评分和筛选对拍"]
     fn gpu_full_pipeline_matches_reference() {
         pollster::block_on(async {
-            for team in ["", "shenjack", "中文队伍"] {
+            for team in ["", "shenjack", "中文队伍", "边界队伍4"] {
                 let mut gpu = GpuMiner::new(team, 513).await.unwrap();
                 for count in [0, 1, 31, 32, 33, 255, 256, 257, 513, 1] {
                     let names = samples(count);

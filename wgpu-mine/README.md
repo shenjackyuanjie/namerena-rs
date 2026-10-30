@@ -1,90 +1,119 @@
-# RC4 GPU 移植实验
+# GPU E2E 测号 CLI
 
-## 当前结论
+现已支持完整链路：**CPU 并行生成 → GPU RC4 → 属性/技能 → shadow → f32 XP/XD → 候选压缩 → 阈值附近 f64 精算 → CSV**。不再只是 RC4 演示。
 
-**已在本机 RTX 5060 Ti / Vulkan 上，将 RC4 两轮名字 KSA 的批量端到端吞吐提升到 5800X 六线程对照的约 2.3～2.4 倍。** 这比较的是相同输入、相同 RC4 运算及完整状态输出，不是完整矿工速度，也不是对最优化 PBB 多路交错 CPU 的上限结论。
+## 直接使用
 
-本实验不计算属性、PRGA、技能、shadow 或虚评，不增加专用单线程模式。队伍 KSA 在 CPU 预计算一次；每个名字的两轮 KSA 在 GPU 内完整执行。CPU 对照同样缓存队伍状态。
-
-## 直接复现
-
-在 workspace 根目录运行：
-
-
+在 workspace 根目录运行，以下命令与原 CPU 矿工的基本参数一致，GPU 二进制保留独立名称：
 
 ```powershell
 cargo build -p wgpu-mine --release --locked -j 2
-./target/release/wgpu-mine.exe --bench --kernel shared -t 6 --batch-sizes 16384,65536,262144 --warmup 5 --rounds 15 --team shenjack -m "我也不知道我要测多少 []" --csv target/rc4-local.csv
+./target/release/wgpu-mine.exe -t 2 -p 550 -x 4000 -d 5000 --team shenjack -r 10 -m "我也不知道我要测多少 []"
 ```
 
-推荐批大小 65,536；4,096 已可超过本次六线程基线，256/1,024 的小批量仍由 CPU 更合适。默认内核是 shared，CPU 默认 6 个持久 worker。
+不指定终点时枚举至 u64::MAX（不包含），Ctrl+C 在当前完整批次写入、flush 后停止，并报告下一 ID；可用 --start 从该 ID 继续到新文件。
 
-- `--kernel shared|private`：选择共享状态或私有状态内核。
-- `--batch-sizes`：逗号分隔的批大小；`--warmup` / `--rounds`：预热次数和正式重复次数。
-- `-t/--cpu-threads`：CPU 对照线程数，不是 GPU 工作组数。
-- `--team`、`-m/--template`、`--start`、`--encoding base16384|number`：候选输入。
-- `--csv`：可选的结果文件，覆盖指定路径；不指定时只输出控制台结果。
-- 不带 `--bench` 时仅展示两个名字的 RC4 置换，并与独立 CPU 参考校验。
+```powershell
+# 先跑有限范围；输出路径必须尚不存在，避免覆盖结果。
+./target/release/wgpu-mine.exe -t 6 -p 550 -x 4000 -d 5000 --team shenjack -r 10 -m "我也不知道我要测多少 []" --start 0 --count 1000000 --output target/gpu-results.csv
+# 同一完整计算语义的 CPU 对照，不走旧有损预筛。
+./target/release/wgpu-mine.exe --backend cpu -t 6 -p 550 -x 4000 -d 5000 --team shenjack -m "我也不知道我要测多少 []" --count 1000000 --output target/cpu-results.csv
+```
 
-## 运算与计时边界
+### 常用参数
 
-1. 队伍：恒等 S-box → 一轮密钥为 `[0] + UTF-8(team)` 的 KSA，双方缓存该状态。
-2. 每个名字：复制队伍 S-box → 两轮密钥为前导零加 UTF-8 字节的 KSA；每轮重置局部 j 和密钥游标。
-3. 输出：完整的 256 字节置换状态，保持输入顺序。不是校验和，也不是仅返回命中计数。
-4. GPU 端到端时间包含 CPU 输入打包、queue 上传、命令提交、完整状态回读、映射及复制到返回 Vec。
-5. CPU 时间包含任务派发、6 个持久 worker 的计算、结果返回与归并；worker 缓冲复用，双方都预热。
-6. **名字生成、设备/管线初始化、CPU 线程创建不计入双方吞吐。** 名字在 CPU 预生成；每个批大小单独输出生成耗时。不能把本表当作包含名字生成、属性和虚评的完整测速。
-7. GPU 内核时间使用硬件 timestamp query，包含 pass 内初始化、KSA 和状态打包写出；不包含上传/回读。它用于定位瓶颈，不作为端到端加速比。
-8. 默认每种批大小先全量 CPU/GPU 对照，再预热，再测多轮取中位数；每个正式计时轮结束后再次全量逐字节比较，验证成本不计入吞吐。
+| 参数 | 含义 |
+| --- | --- |
+| --start / --end | 严格半开区间 [start,end)，支持空范围和接近 u64::MAX 的末尾 |
+| --count | 从 start 开始的有限数量，与 end 互斥；溢出明确拒绝 |
+| -t / --thread-count | GPU 模式的名字生成 worker 数；CPU 模式同时用于完整计算，默认 6 |
+| -p / -x / -d | 八围严格 >p，XP/XD 按 Rust as u32 饱和截断后 >=x/d，条件为 AND |
+| -m / --name-template | 替换全部 []，最终名字最多 256 个 UTF-8 字节 |
+| -n / --name-gen | base16384（默认）、base64-std、base64-url、number；二进制编码使用 u64 大端字节 |
+| -b / --batch-size | GPU/CPU 批大小，默认 65536，不会为整除线程数修改终点 |
+| -r / --report-interval | 进度报告秒数，默认 10，不是网络上报 |
+| --output / -o | 新 CSV 文件；禁止覆盖；- 表示 CSV 写 stdout，日志仍在 stderr |
+| --output-dir | 未指定文件时创建带时间戳的新结果文件，默认 namerena |
+| --exact-scores | 对全部回传候选重算 f64；默认只在非零评分阈值 10 分附近重算 |
+| --verify | 对命中做完整 CPU 属性/技能/模型复核，并对回传候选精算，适合验收而非测速 |
+| --validate N | 捕获全部 N 个候选做完整对拍并统计推理误差，不执行常规筛选输出 |
+| --e2e-bench | 同范围、同阈值交替运行 GPU/CPU，并校验 CSV（整数/名字精确，评分误差<10） |
+| --metrics | validate/e2e-bench 的新指标 CSV 文件；禁止覆盖 |
 
-首轮正式实验每种批大小预热 3 次、测量 9 次；独立新进程复测预热 5 次、测量 15 次。两个内核串行执行，正式测速期间没有并行运行本项目其他 GPU 测试或构建。更早的并行诊断数据不用于下表。
+CSV 固定 15 列：id,name,team,hp,attack,defense,speed,agility,magic,resistance,wisdom,property,xp,xd,skills。技能为排序后的 id:freq 分号列表，包含在单列；逗号、引号、CRLF、NUL 和 Unicode 交给 csv 库正确处理。零命中仍有表头，写入/flush 失败返回非零退出码。
 
-初始化另行报告：本轮观察到约 3.8～14.5 秒，未计入稳态吞吐；短任务不一定能摊销冷启动成本。
+## 默认评分策略与误差预算
 
-## 本机实测（2026-10-30）
+- GPU 使用当前同源 2.0 模型权重，以 f32 同时计算 44 个特征的 1034 项 XP/XD。队伍、属性和技能仍是精确整数运算，没有模型简化、权重替换或经验门控。
+- GPU 粗筛保留阈值以下 10 分余量；距任意非零阈值不超过 10 的候选用整数属性/技能/shadow 分子在 CPU 上重算 f64 再筛选。远离阈值的命中直接输出 GPU 评分，避免每个命中都付出 CPU 推理成本。
+- --exact-scores 对全部回传候选重算；--verify 还核对完整 CPU 原始计算。但二者仍有 GPU 粗筛，不是对未知平台全域无漏号的形式证明；完全 CPU 金标准可使用 --backend cpu。
+- 阈值为零时遵循 Rust 负分转 u32 饱和为零的语义，不因负分误删候选。
+- 原矿工 replace_name 中固定 24/165/250/380 早退没有移植；低 -p 不会继承该有损预筛。名字/队伍按原始 UTF-8 处理，不将其中 @ 当作分隔符。
+- 评分余量可靠性依赖当前模型和实际浮点误差；下面是全量样本证据，不是所有名字/队伍/模型/硬件后端的全域误差证明。换模型或设备应重跑 validate。运行时 refined_*_max_error 指标只统计实际精算的回传候选，0 不代表所有候选误差为 0。
 
-- CPU：AMD Ryzen 7 5800X，8 核 / 16 逻辑处理器；本次固定 6 个 worker。
-- GPU：NVIDIA GeForce RTX 5060 Ti；Vulkan；驱动 32.0.16.1074。
-- 编译：Windows x86_64，workspace Release，rustc 1.101.0-nightly；无额外 target-cpu/native 参数。
-- 队伍：shenjack；模板：我也不知道我要测多少 []；u64 大端字节经 Base16384 编码。该样本每个完整名字为 49 个 UTF-8 字节。
+### 已执行的完整误差验证
 
-### 共享 S-box 独立复测
+| 数据集 | 样本 | shadow | XP 最大绝对误差 | XD 最大绝对误差 |
+| --- | ---: | ---: | ---: | ---: |
+| shenjack + 原中文模板 + Base16384 | 100000 | 18808 | 0.00514504 | 0.05530066 |
+| 中文@队伍 + 原始@名字 + 数字，非零 start | 50000 | 9495 | 0.00507856 | 0.04769579 |
 
-| 批大小 | CPU 六线程耗时 | GPU 端到端耗时 | CPU 百万名字/秒 | GPU 百万名字/秒 | 端到端加速比 |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 4,096 | 1.1701 ms | 0.6832 ms | 3.501 | 5.995 | 1.71× |
-| 16,384 | 4.0344 ms | 1.7532 ms | 4.061 | 9.345 | 2.30× |
-| 65,536 | 16.6606 ms | 7.1246 ms | 3.934 | 9.199 | 2.34× |
-| 262,144 | 66.6737 ms | 27.5063 ms | 3.932 | 9.530 | 2.42× |
+全部样本的 8 属性、16 技能 ID、16 技能频率及 shadow 整数分子逐项相同；推理误差严格 <10。捕获模式没有只测最终命中。原始指标：[主样本](benchmarks/e2e-validation-main.csv)、[Unicode/@ 样本](benchmarks/e2e-validation-unicode.csv)。
 
-原始数据：[shared 首轮](benchmarks/rc4-5800x-6t-shared.csv)、[shared 独立复测](benchmarks/rc4-5800x-6t-shared-repeat.csv)、[private 对照](benchmarks/rc4-5800x-6t-private.csv)。所有记录 verified=true，全部状态一致。
+```powershell
+./target/release/wgpu-mine.exe --team shenjack -t 6 -m "我也不知道我要测多少 []" --validate 100000 --metrics target/validation-new.csv
+```
 
-首轮 shared 的 256/1,024 批大小分别只有六线程 CPU 的 0.31× / 0.87×，因此不能声称 GPU 对任意任务都更快。
+## 本机 E2E 实测
 
-65,536 批的硬件内核时间约 0.9283 ms，即约 7,060 万名字/秒，但实际端到端只有约 920 万名字/秒：**上传、完整状态回读和 CPU 打包已成为主要剩余成本。** 本轮依然完整返回每个名字 256 字节，未用省略回读来制造速度。
+2026-10-30，Ryzen 7 5800X（6 worker）+ NVIDIA GeForce RTX 5060 Ti / Vulkan，Release，批 65536。先跑 1 轮完整预热，再跑 3 轮正式测量取中位数；GPU/CPU 顺序交替，测速期间没有并行构建或其他本项目性能测试。
 
-### 为什么共享状态有效
+| 负载 | 数量/命中 | GPU E2E | 内置 CPU 六线程 E2E | 加速比 |
+| --- | ---: | ---: | ---: | ---: |
+| 原参数 p550/x4000/d5000 | 5000000 / 0 | 414.2 万名/s（1.2071s） | 118.4 万名/s（4.2235s） | 3.50× |
+| 有实际输出 p550/x1500/d3000 | 1000000 / 173579 | 137.4 万名/s（0.7278s） | 76.9 万名/s（1.2999s） | 1.79× |
+| 大量输出 p550/x0/d0 | 100000 / 66707 | 47.8 万名/s（0.2091s） | 38.6 万名/s（0.2589s） | 1.24× |
 
-- [private 内核](main.wgsl) 每个 invocation 使用私有 u32 S-box，大批量时随机访问的局部状态容易受缓存/存储压力限制。本机 262,144 批仅约 0.98× CPU，65,536 批约 1.06×。
-- [shared 内核](rc4-shared.wgsl) 每工作组 32 个候选，使用 32KiB 转置共享状态：slot×32+lane。每列只属于一个 invocation，在当前设备的 bank 布局下减少独立候选间的冲突；候选内部仍严格串行执行 RC4 交换。
-- 每个名字仍是独立状态，未跨候选共享可变状态，也未改变 KSA 算法。没有需要跨 lane 同步的数据依赖，轮内不加 barrier；默认 wgpu 工作组初始化策略保留。
-- 多工作组一次派发，设备、管线、队伍状态、输入输出缓冲持续复用；不再一批 256 个就同步等待。
-- 输入 UTF-8 连续紧凑打包；输出按四个状态字节打成一个 u32，使回读从旧原型的 1,024 字节/名字降到 256 字节/名字，信息完整保留。
+原始数据：[原参数](benchmarks/e2e-fast-5800x-6t-original.csv)、[实际命中](benchmarks/e2e-fast-5800x-6t-matches.csv)、[大量输出](benchmarks/e2e-fast-5800x-6t-output.csv)。每一轮输出的全部 ID、名字、属性、技能均一致，两个评分逐记录误差 <10。该 CPU 对照是 GPU 包内的完整金标准池，不等同另行优化后的 tswn.exe 性能；CPU miner 队友的独立结果另记。
 
-shared 需要设备支持每工作组至少 32KiB 共享内存；不支持时会提示选择 private。CUDA warp/bank 解释只用于本机性能分析，不能外推所有 GPU 都有相同收益。
+### 计时解释
 
-## 正确性与验证
+- 表中为稳态 E2E：从创建本轮 CSV 开始，包含并行名字生成、CPU 输入打包、GPU 上传/计算/压缩/候选回读、必要边界精算、CSV 格式化/写入/flush。不是只报 GPU 内核。
+- GPU 设备/管线和 CPU worker 初始化、进程启动/析构另列，不混入每轮吞吐；本次进程初始化约 2.7～8.8 秒。短范围加上冷启动后不一定胜过 CPU，持续测号才能摊销。基准 setup_s 是同进程共享初始化，不是独立 CPU 进程的冷启动耗时。
+- 原参数五百万范围是零命中，结果并未隐藏；中、高命中率另外实测。不能拿零命中的 414 万名/s 承诺任意筛选条件。
+- 大量输出时主要瓶颈是 CSV 格式化/写入。此前对所有候选都做 f64 精算时，该场景仅约 0.96×；改为边界精算后提高到约 1.24×，仍受输出吞吐限制。
+- 文件 flush 计入，但没有每条结果 fsync；这衡量正常缓冲文件写入，不是断电持久化带宽。
 
-[CPU 金标准及六线程对照](src/cpu.rs) 包含独立朴素参考，CPU 热路径不逐候选分配密钥。默认测试覆盖空/中文/NUL/长名字、线程数与多批次顺序；GPU 硬件测试对 private/shared 两种内核、空/中文/ASCII 队伍、emoji、256 字节名字、31/32/33 与 63/64/65 等工作组边界、513 尾批、缩小再扩大批次、非法输入后恢复逐项对照。
+```powershell
+./target/release/wgpu-mine.exe --e2e-bench --team shenjack -t 6 -p 550 -x 4000 -d 5000 -m "我也不知道我要测多少 []" --count 5000000 --rounds 3 --warmup 1 --metrics target/e2e-new.csv --output-dir target/e2e-new-results
+```
+
+精算全部候选的首版对照指标也保留：[原参数](benchmarks/e2e-5800x-6t-original.csv)、[大量输出](benchmarks/e2e-5800x-6t-output.csv)。它们属于优化前的 CPU 精算版本，不要与默认边界精算的数据混算。
+
+## 测试与实现
+
+主要实现：[CPU 完整金标准](src/core.rs)、[GPU 内核](mining.wgsl)、[GPU Host 与压缩回读](src/mining_gpu.rs)、[并行工作池](src/pool.rs)、[输入与区间](src/input.rs)、[输出](src/output.rs)、[真实 CLI 测试](tests/cli.rs)。
+
+当前 GPU 包默认测试 **40 项通过、3 项硬件测试默认忽略**；这 3 项已另外串行启用，均通过。严格 Clippy（-D warnings）和 Release 构建通过。CPU miner 的独立测试、历史模型断言与优化结果单独报告。
+
+已覆盖：原始固定数组金标准、完整稳定过滤、技能所有分支与连续 PRGA、1034 项多项式索引、空/中文/emoji/NUL/@、256 字节名字和 263 字节内部 shadow、属性分数/评分阈值、31/32/33/63/64/65/257/513 等尾批、u64 边界、线程数改变不漏不重、工作池错误恢复、零命中表头、CSV 全字段往返及 writer 写入/flush 错误、拒绝覆盖、标准输出无日志污染、取消后的完成游标与表头刷新、总轮数溢出拒绝。
+
+Base16384 的最高合法码点 U+8DFF 暴露了第三方 UTF8 decode 的上界排除缺陷。测号只使用 encode，兼容原行为；测试改用独立 14bit 恢复作为边界金标准，没有修改全局依赖代码，也没有跳过高值编号。
 
 ```powershell
 cargo test -p wgpu-mine --locked -j 2
-cargo test -p wgpu-mine --locked -j 2 gpu_matches_independent_cpu_rc4 -- --ignored --nocapture --test-threads=1
+# 硬件测试串行执行，不与性能测量并行。
+cargo test -p wgpu-mine --locked -j 2 -- --ignored --nocapture --test-threads=1
 cargo clippy -p wgpu-mine --all-targets --locked -j 2 -- -D warnings
 ```
 
-GPU 主机实现见 [gpu.rs](src/gpu.rs)，实验 CLI 与计时统计见 [main.rs](src/main.rs)。最终验证：默认 8 项测试通过；1 项默认忽略的硬件测试已手动执行并通过（同时覆盖 private/shared）；`cargo clippy -p wgpu-mine --all-targets --locked -j 2 -- -D warnings` 无警告通过；Release 构建、workspace 全目标 check、本模块 rustfmt 与 `git diff --check` 均通过。另已完成只读语义/竞态/计时复核，无必要修正。原 CPU 矿工的历史虚评测试问题未在本轮改动。
+纯 RC4 的旧基准仍通过 --bench 使用，历史数据与口径见 [RC4 实验记录](docs/rc4-experiment.md)。
 
-## 下一步边界
+## 本地提交
 
-本轮已经证明：**RC4 可以实际移到 GPU，并在足够大批量下超过本机六线程 CPU。** 后续若接回矿工，先保留同样的分层对拍，再考虑让属性计算/筛选紧随 GPU RC4，减少回传完整 S-box；CPU 留下 f64 虚评复核。那属于下一阶段，不能把当前 RC4 吞吐直接当成最终测号吞吐。
+- 6aff41b：依赖升级与已验证 RC4 基线。
+- d786074：完整 CPU/GPU 属性、技能、shadow 与容差模型链。
+- 878e440：E2E CLI、安全工作池、名字范围、CSV 和集成测试。
+- 773beb7：仅边界精算、完整精算选项、取消/轮数边界验证。
+
+所有提交仅保存在本地；未推送。CPU miner 另由独占 miner/ 的 Agent Teams 队友分块处理，不与 GPU 核心混写。
