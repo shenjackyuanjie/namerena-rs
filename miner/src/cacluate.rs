@@ -1,10 +1,8 @@
 use crate::{
     Command, GenMethods,
-    evaluate::{
-        NamerEvaluater,
-        xuping::{XuPing2_0_1015, XuPing2_0_1015_QD},
-    },
-    name::{Namer, TeamNamer},
+    evaluate::xuping::Features20,
+    generate::NameGenerator,
+    name::{KsaPrefix, Namer, TeamNamer},
 };
 use crossbeam::channel::{Receiver, Sender, bounded};
 use std::{
@@ -35,6 +33,7 @@ pub struct RunSummary {
     pub computed: u64,
     pub hits: u64,
     pub elapsed: Duration,
+    pub interrupted: bool,
 }
 
 /// 只有调度线程拥有游标。先求剩余量，绝不执行可能溢出的 top + batch。
@@ -82,13 +81,31 @@ pub fn start_main(cli: Command, out_path: PathBuf) -> io::Result<RunSummary> {
     Ok(summary)
 }
 
+/// 测量仍执行完整生成、属性、必要技能/模型、命中 CSV 序列化，仅输出设备换为 sink。
+pub fn benchmark(cli: &Command) -> io::Result<RunSummary> {
+    cli.validate().map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+    let summary = schedule(cli, &mut io::sink())?;
+    info!(
+        "完整 CPU 基准: 实际计算 {}，命中 {}，耗时 {:.6}s，速度 {:.2}/s，中断 {}",
+        summary.computed,
+        summary.hits,
+        summary.elapsed.as_secs_f64(),
+        summary.computed as f64 / summary.elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+        summary.interrupted
+    );
+    Ok(summary)
+}
+
 /// 每个 worker 一个私有任务通道；状态和输出仅由主线程修改。
 /// 写入错误时取消后续计算，但继续接收事件并 join 所有 worker，避免有界通道死锁。
 fn schedule(cli: &Command, writer: &mut impl Write) -> io::Result<RunSummary> {
+    schedule_with_cancel(cli, writer, Arc::new(AtomicBool::new(false)))
+}
+
+fn schedule_with_cancel(cli: &Command, writer: &mut impl Write, cancelled: Arc<AtomicBool>) -> io::Result<RunSummary> {
     writeln!(writer, "{}", csv_header())?;
     writer.flush()?;
     let start = Instant::now();
-    let cancelled = Arc::new(AtomicBool::new(false));
     let (events_tx, events_rx) = bounded((cli.thread_count as usize).saturating_mul(2).max(1));
     let mut cursor = WorkCursor {
         next: cli.start,
@@ -109,8 +126,10 @@ fn schedule(cli: &Command, writer: &mut impl Write) -> io::Result<RunSummary> {
         }) {
             Ok(handle) => {
                 handles.push(handle);
-                if let Some(range) = cursor.take(cli.batch_size_for(0.0)) {
-                    tx.send(range).map_err(|_| io::Error::other("worker 启动失败"))?;
+                if let Some(range) = cursor.take(cli.balanced_batch_size(0.0, cursor.end - cursor.next)) {
+                    if tx.send(range).is_err() {
+                        failure = Some(io::Error::other("worker 启动失败"));
+                    }
                     work_senders.push(Some(tx));
                 } else {
                     work_senders.push(None);
@@ -154,8 +173,8 @@ fn schedule(cli: &Command, writer: &mut impl Write) -> io::Result<RunSummary> {
                         failure = Some(error);
                     }
                 }
-                if failure.is_none() {
-                    if let Some(range) = cursor.take(cli.batch_size_for(speed)) {
+                if failure.is_none() && !cancelled.load(Ordering::Relaxed) && !crate::interrupt::requested() {
+                    if let Some(range) = cursor.take(cli.balanced_batch_size(speed, cursor.end - cursor.next)) {
                         if work_senders[worker].as_ref().unwrap().send(range).is_err() {
                             failure = Some(io::Error::other("worker 意外退出"));
                         }
@@ -165,7 +184,7 @@ fn schedule(cli: &Command, writer: &mut impl Write) -> io::Result<RunSummary> {
                 }
             }
         }
-        if failure.is_some() {
+        if failure.is_some() || cancelled.load(Ordering::Relaxed) || crate::interrupt::requested() {
             cancelled.store(true, Ordering::Relaxed);
             work_senders.clear();
         }
@@ -181,7 +200,8 @@ fn schedule(cli: &Command, writer: &mut impl Write) -> io::Result<RunSummary> {
     }
     writer.flush()?;
     summary.elapsed = start.elapsed();
-    if summary.computed != cli.end - cli.start {
+    summary.interrupted = cancelled.load(Ordering::Relaxed) || crate::interrupt::requested();
+    if !summary.interrupted && summary.computed != cli.end - cli.start {
         return Err(io::Error::other("实际计算数量与请求范围不一致"));
     }
     Ok(summary)
@@ -197,33 +217,49 @@ fn worker_loop(
     if let Some(affinity) = config.core_affinity {
         crate::set_thread2core(affinity);
     }
-    let team = TeamNamer::new_unchecked(&config.team);
+    let team = TeamNamer::new(&config.team).expect("队伍长度已在启动前验证");
     let mut namer = Namer::new_from_team_namer_unchecked(&team, "");
+    let generator = NameGenerator::new(&config.algorithm, &config.template);
+    let prefix = KsaPrefix::new(&team, generator.prefix());
+    const LANES: usize = 4;
+    let mut names: [String; LANES] = std::array::from_fn(|_| String::with_capacity(256));
     for range in work {
         let start = Instant::now();
         let mut computed = 0;
-        for id in range {
-            if cancelled.load(Ordering::Relaxed) {
+        let mut id = range.start;
+        while id < range.end {
+            if cancelled.load(Ordering::Relaxed) || crate::interrupt::requested() {
                 break;
             }
-            let name = config.algorithm.gen_name(&config.template, id);
-            namer.replace_name(&team, &name);
-            computed += 1;
-            if !property_matches(&namer.name_prop, config.prop_expect) {
-                continue;
+            let count = (range.end - id).min(LANES as u64) as usize;
+            for (lane, name) in names.iter_mut().enumerate().take(count) {
+                generator.render(id + lane as u64, name);
             }
-            namer.update_skill();
-            let xd = XuPing2_0_1015_QD::evaluate(&namer);
-            if (xd as u32) < config.xd_expect {
-                continue;
+            if count == LANES {
+                let states = prefix.states::<LANES>(std::array::from_fn(|lane| names[lane].as_str()));
+                for (lane, state) in states.into_iter().enumerate() {
+                    computed += 1;
+                    if !evaluate_candidate(id + lane as u64, &names[lane], state, &mut namer, &config, &events) {
+                        return;
+                    }
+                }
+            } else {
+                // 尾部用真实单候选路径，不补齐、不重复、不越过 end。
+                for (lane, name) in names.iter().enumerate().take(count) {
+                    computed += 1;
+                    if !evaluate_candidate(
+                        id + lane as u64,
+                        name,
+                        prefix.states([name.as_str()])[0],
+                        &mut namer,
+                        &config,
+                        &events,
+                    ) {
+                        return;
+                    }
+                }
             }
-            let xp = XuPing2_0_1015::evaluate(&namer);
-            if (xp as u32) < config.xp_expect {
-                continue;
-            }
-            if events.send(Event::Hit(csv_row(id, &namer, xp, xd))).is_err() {
-                return;
-            }
+            id += count as u64;
         }
         if events
             .send(Event::Done {
@@ -236,6 +272,31 @@ fn worker_loop(
             return;
         }
     }
+}
+
+fn evaluate_candidate(
+    id: u64,
+    name: &str,
+    state: [u8; 256],
+    namer: &mut Namer,
+    config: &CacluateConfig,
+    events: &Sender<Event>,
+) -> bool {
+    namer.replace_state(name, state);
+    if !property_matches(&namer.name_prop, config.prop_expect) {
+        return true;
+    }
+    namer.update_skill();
+    let features = Features20::new(namer);
+    let xd = features.xd();
+    if (xd as u32) < config.xd_expect {
+        return true;
+    }
+    let xp = features.xp();
+    if (xp as u32) < config.xp_expect {
+        return true;
+    }
+    events.send(Event::Hit(csv_row(id, namer, xp, xd))).is_ok()
 }
 
 /// 属性阈值严格 >，整数三倍值避免 f32 舍入，也适用于 u32::MAX 阈值。
@@ -367,5 +428,69 @@ c\""
             fn flush(&mut self) -> io::Result<()> { Ok(()) }
         }
         assert!(schedule(&command(6, 0, 1000, false), &mut BrokenWriter { remaining: 650 }).is_err());
+    }
+
+    #[test]
+    fn cooperative_cancel_preserves_rows_and_joins_all_workers() {
+        struct CancelWriter {
+            bytes: Vec<u8>,
+            cancelled: Arc<AtomicBool>,
+        }
+        impl Write for CancelWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                if self.bytes.len() > csv_header().len() + 800 {
+                    self.cancelled.store(true, Ordering::Relaxed);
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut writer = CancelWriter {
+            bytes: Vec::new(),
+            cancelled: cancelled.clone(),
+        };
+        let summary = schedule_with_cancel(&command(6, 0, 1_000_000, true), &mut writer, cancelled).unwrap();
+        assert!(summary.interrupted);
+        assert!(summary.computed < 1_000_000);
+        let csv = String::from_utf8(writer.bytes).unwrap();
+        assert_eq!(csv.lines().count() as u64, summary.hits + 1);
+        assert!(csv.lines().all(|row| row.split(',').count() == 55));
+    }
+
+    #[test]
+    fn short_writes_zero_hits_and_empty_output_have_complete_header() {
+        struct ShortWriter(Vec<u8>);
+        impl Write for ShortWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let len = bytes.len().min(3);
+                self.0.extend_from_slice(&bytes[..len]);
+                Ok(len)
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut cli = command(2, 10, 19, false);
+        cli.prop_expect = u32::MAX;
+        let mut writer = ShortWriter(Vec::new());
+        assert_eq!(schedule(&cli, &mut writer).unwrap().hits, 0);
+        assert_eq!(String::from_utf8(writer.0).unwrap(), format!("{}\n", csv_header()));
+    }
+
+    #[test]
+    fn existing_output_is_never_overwritten() {
+        let path = std::env::temp_dir().join(format!(
+            "tswn-cpu-{}-{}.csv",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        start_main(command(1, 0, 0, false), path.clone()).unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        assert_eq!(
+            start_main(command(1, 0, 1, false), path.clone()).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        std::fs::remove_file(path).unwrap();
     }
 }

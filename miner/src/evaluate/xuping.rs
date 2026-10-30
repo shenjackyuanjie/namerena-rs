@@ -1,4 +1,5 @@
 mod eval;
+pub use eval::Features20;
 mod model13;
 #[allow(clippy::excessive_precision)]
 mod model20;

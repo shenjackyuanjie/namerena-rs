@@ -30,7 +30,65 @@ where
     }
 }
 
-// #[repr(C)]
+// /// 第一轮 KSA 的不可变模板前缀快照；前导零也计入预处理。
+/// 前缀只缓存第一轮，第二轮必须从 j=0 开始，不依赖前一个候选状态。
+pub struct KsaPrefix {
+    state: [u8; 256],
+    j: u8,
+    prefix: Vec<u8>,
+}
+impl KsaPrefix {
+    pub fn new(team: &TeamNamer, prefix: &str) -> Self {
+        let prefix = prefix.as_bytes()[..prefix.len().min(255)].to_vec();
+        let mut state = team.val;
+        let mut j = 0_u8;
+        for i in 0..=prefix.len() {
+            let byte = if i == 0 { 0 } else { prefix[i - 1] };
+            j = j.wrapping_add(byte).wrapping_add(state[i]);
+            state.swap(i, usize::from(j));
+        }
+        Self { state, j, prefix }
+    }
+
+    /// N 个独立候选交错 KSA，隐藏排列访问的串行依赖；不混合各候选状态。
+    #[inline]
+    pub fn states<const N: usize>(&self, names: [&str; N]) -> [[u8; 256]; N] {
+        // 这是安全 API 的运行时条件。即使 release 也检查，不能仅靠 debug_assert。
+        assert!(names.iter().all(|name| name.as_bytes().starts_with(&self.prefix)));
+        let mut states = [self.state; N];
+        let mut positions = [self.prefix.len() + 1; N];
+        let mut sums = [self.j; N];
+        for round in 0..2 {
+            let start = if round == 0 { self.prefix.len() + 1 } else { 0 };
+            if round == 1 {
+                positions.fill(0);
+                sums.fill(0);
+            }
+            for i in start..256 {
+                for lane in 0..N {
+                    let bytes = names[lane].as_bytes();
+                    let k = positions[lane];
+                    // 首轮已消耗整个名字时应回到前导零；空名字也只读取零。
+                    let k = if k > bytes.len() { 0 } else { k };
+                    // 安全不变量：i∈0..256，j 是 u8；k 为0或 1..=bytes.len()。
+                    // 每个 lane 独占一个排列，ptr::swap 允许 i==j，未构造别名 &mut。
+                    unsafe {
+                        let key = if k == 0 { 0 } else { *bytes.get_unchecked(k - 1) };
+                        let state = states.get_unchecked_mut(lane);
+                        let j = sums[lane].wrapping_add(key).wrapping_add(*state.get_unchecked(i));
+                        let ptr = state.as_mut_ptr();
+                        std::ptr::swap(ptr.add(i), ptr.add(usize::from(j)));
+                        sums[lane] = j;
+                    }
+                    positions[lane] = if k == bytes.len() { 0 } else { k + 1 };
+                }
+            }
+        }
+        states
+    }
+}
+
+#[repr(C)]
 #[derive(Debug, Clone)]
 pub struct TeamNamer {
     pub team: String,
@@ -51,7 +109,7 @@ impl TeamNamer {
     #[inline(always)]
     pub fn new_unchecked(team: &str) -> Self {
         let team_bytes = team.as_bytes();
-        let mut val: [u8; 256] = (0..=255).collect::<Vec<u8>>().try_into().unwrap();
+        let mut val: [u8; 256] = std::array::from_fn(|i| i as u8);
         let mut s = 0_u8;
         let t_len = team.len() + 1;
         for i in 0..256 {
@@ -67,6 +125,7 @@ impl TeamNamer {
         }
     }
     #[inline(always)]
+    #[cfg(test)]
     pub fn clone_vals(&self) -> [u8; 256] { self.val }
 }
 
@@ -144,181 +203,88 @@ impl Namer {
     /// 实际 new 实现
     #[inline(always)]
     pub fn new_from_team_namer_unchecked(team_namer: &TeamNamer, name: &str) -> Self {
-        let mut val: [u8; 256] = team_namer.clone_vals();
-        let mut name_base = [0_u8; 128];
-        let mut name_prop = [0_u32; 8];
-        let skl_id = [0_u8; 40];
-        let skl_freq = [0_u8; 40];
-
-        let name_bytes = name.as_bytes();
-        let name_len = name_bytes.len();
-        for _ in 0..2 {
-            unsafe {
-                let mut s = 0_u8;
-                let mut k = 0;
-                for i in 0..256 {
-                    s = s.wrapping_add(if k == 0 { 0 } else { *name_bytes.get_unchecked(k - 1) });
-                    s = s.wrapping_add(*val.get_unchecked(i));
-                    val.swap_unchecked(i, s as usize);
-                    k = if k == name_len { 0 } else { k + 1 };
-                }
-            }
-        }
-        // simd 优化
-        #[cfg(feature = "simd")]
-        {
-            let mut simd_val = val;
-            let mut simd_val_b = [0_u8; 256];
-            let simd_181 = u8x32::splat(181);
-            let simd_160 = u8x32::splat(160);
-            let simd_63 = u8x32::splat(63);
-
-            for i in (0..256).step_by(32) {
-                // 一次性加载64个数字
-                let mut x = u8x32::from_slice(unsafe { simd_val.get_unchecked(i..) });
-                x = x * simd_181 + simd_160;
-                // 写入到 simd_val
-                unsafe {
-                    x.copy_to_slice(simd_val.get_unchecked_mut(i..));
-                }
-
-                let y = x & simd_63;
-                unsafe {
-                    y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
-                }
-            }
-
-            let mut mod_count = 0;
-
-            for i in 0..96 {
-                unsafe {
-                    if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
-                        *name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
-                        mod_count += 1;
-                    }
-                }
-                if mod_count > 30 {
-                    break;
-                }
-            }
-            if mod_count < 31 {
-                for i in 96..256 {
-                    unsafe {
-                        if simd_val.get_unchecked(i) > &88 && simd_val.get_unchecked(i) < &217 {
-                            *name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
-                            mod_count += 1;
-                        }
-                    }
-                    if mod_count > 30 {
-                        break;
-                    }
-                }
-            }
-        }
-
-        #[cfg(not(feature = "simd"))]
-        {
-            let mut s = 0;
-            for i in 0..256 {
-                let m = ((val[i] as u32 * 181) + 160) % 256;
-                if m >= 89 && m < 217 {
-                    name_base[s as usize] = (m & 63) as u8;
-                    s += 1;
-                }
-            }
-        }
-
-        // 计算 name_prop
-        // let mut prop_name = name_base[0..32].to_vec();
-        // prop_name[0..10].sort_unstable();
-        // name_prop[0] = 154
-        //     + prop_name[3] as u32
-        //     + prop_name[4] as u32
-        //     + prop_name[5] as u32
-        //     + prop_name[6] as u32;
-        // name_prop[1] = median(prop_name[10], prop_name[11], prop_name[12]) as u32 + 36;
-        // name_prop[2] = median(prop_name[13], prop_name[14], prop_name[15]) as u32 + 36;
-        // name_prop[3] = median(prop_name[16], prop_name[17], prop_name[18]) as u32 + 36;
-        // name_prop[4] = median(prop_name[19], prop_name[20], prop_name[21]) as u32 + 36;
-        // name_prop[5] = median(prop_name[22], prop_name[23], prop_name[24]) as u32 + 36;
-        // name_prop[6] = median(prop_name[25], prop_name[26], prop_name[27]) as u32 + 36;
-        // name_prop[7] = median(prop_name[28], prop_name[29], prop_name[30]) as u32 + 36;
-        // 疯狂的 unsafe 优化（确信
-        unsafe {
-            let mut prop_name = [0_u8; 32];
-            prop_name.copy_from_slice(name_base.get_unchecked(0..32));
-            prop_name.get_unchecked_mut(0..10).sort_unstable();
-            *name_prop.get_unchecked_mut(0) = 154
-                + *prop_name.get_unchecked(3) as u32
-                + *prop_name.get_unchecked(4) as u32
-                + *prop_name.get_unchecked(5) as u32
-                + *prop_name.get_unchecked(6) as u32;
-
-            *name_prop.get_unchecked_mut(1) = median(
-                *prop_name.get_unchecked(10),
-                *prop_name.get_unchecked(11),
-                *prop_name.get_unchecked(12),
-            ) as u32
-                + 36;
-            *name_prop.get_unchecked_mut(2) = median(
-                *prop_name.get_unchecked(13),
-                *prop_name.get_unchecked(14),
-                *prop_name.get_unchecked(15),
-            ) as u32
-                + 36;
-            *name_prop.get_unchecked_mut(3) = median(
-                *prop_name.get_unchecked(16),
-                *prop_name.get_unchecked(17),
-                *prop_name.get_unchecked(18),
-            ) as u32
-                + 36;
-            *name_prop.get_unchecked_mut(4) = median(
-                *prop_name.get_unchecked(19),
-                *prop_name.get_unchecked(20),
-                *prop_name.get_unchecked(21),
-            ) as u32
-                + 36;
-            *name_prop.get_unchecked_mut(5) = median(
-                *prop_name.get_unchecked(22),
-                *prop_name.get_unchecked(23),
-                *prop_name.get_unchecked(24),
-            ) as u32
-                + 36;
-            *name_prop.get_unchecked_mut(6) = median(
-                *prop_name.get_unchecked(25),
-                *prop_name.get_unchecked(26),
-                *prop_name.get_unchecked(27),
-            ) as u32
-                + 36;
-            *name_prop.get_unchecked_mut(7) = median(
-                *prop_name.get_unchecked(28),
-                *prop_name.get_unchecked(29),
-                *prop_name.get_unchecked(30),
-            ) as u32
-                + 36;
-        }
-
-        Self {
-            name: name.to_string(),
+        let prefix = KsaPrefix::new(team_namer, "");
+        let state = prefix.states([name])[0];
+        let mut namer = Self {
+            name: String::with_capacity(name.len()),
             team: team_namer.team.clone(),
-            val,
-            name_base,
-            name_prop,
-            skl_id,
-            skl_freq,
-        }
+            val: state,
+            name_base: [0; 128],
+            name_prop: [0; 8],
+            skl_id: [0; 40],
+            skl_freq: [0; 40],
+        };
+        namer.replace_state(name, state);
+        namer
     }
 
-    /// 更新当前的名字
+    /// 完整、无损地更新名字；通用接口保留，worker 可复用预处理的前缀状态。
     #[inline(always)]
-    pub fn replace_name(&mut self, team_namer: &TeamNamer, name: &str) -> bool {
-        // 完整计算八围，不使用固定 24/165/250/380 门控丢弃用户阈值内的候选。
-        *self = Self::new_from_team_namer_unchecked(team_namer, name);
+    pub fn replace_name(&mut self, team: &TeamNamer, name: &str) -> bool {
+        self.team.clone_from(&team.team);
+        self.replace_state(name, KsaPrefix::new(team, "").states([name])[0]);
         true
     }
 
     #[inline(always)]
+    pub fn replace_state(&mut self, name: &str, state: [u8; 256]) {
+        self.name.clear();
+        self.name.push_str(name);
+        self.val = state;
+        self.name_base.fill(0);
+        self.skl_id.fill(0);
+        self.skl_freq.fill(0);
+        let mut count = 0;
+        // 只解出八围必需的前 31 项。技能阶段仍从完整排列重新解出全部 128 项。
+        #[cfg(feature = "simd")]
+        {
+            for chunk in self.val.chunks_exact(32) {
+                let transformed = (u8x32::from_slice(chunk) * u8x32::splat(181) + u8x32::splat(160)).to_array();
+                for value in transformed {
+                    if (89..217).contains(&value) {
+                        self.name_base[count] = value & 63;
+                        count += 1;
+                        if count == 31 {
+                            break;
+                        }
+                    }
+                }
+                if count == 31 {
+                    break;
+                }
+            }
+        }
+        #[cfg(not(feature = "simd"))]
+        for &value in &self.val {
+            let transformed = value.wrapping_mul(181).wrapping_add(160);
+            if (89..217).contains(&transformed) {
+                self.name_base[count] = transformed & 63;
+                count += 1;
+                if count == 31 {
+                    break;
+                }
+            }
+        }
+        let mut hp = [0; 10];
+        hp.copy_from_slice(&self.name_base[..10]);
+        hp.sort_unstable();
+        self.name_prop[0] = 154 + hp[3..7].iter().map(|&p| u32::from(p)).sum::<u32>();
+        for (i, prop) in self.name_prop.iter_mut().enumerate().skip(1) {
+            let start = 10 + (i - 1) * 3;
+            *prop = u32::from(median(
+                self.name_base[start],
+                self.name_base[start + 1],
+                self.name_base[start + 2],
+            )) + 36;
+        }
+    }
+
+    #[inline(always)]
     pub fn update_skill(&mut self) {
+        // 生产状态由 KSA 交换得到，保持0..255排列，仿射变换后恰有128项入选。
+        // 写 name_base 仍使用检查索引，手工损坏公开 val 时也不会越界 UB。
+        // 下面 PRGA 的 a 只到160，b是u8，技能ID从0..39初始化且只交换；
+        // 频率读取位置固定在60..128，last只取0..15，所有 unchecked 下标均在界内。
         self.skl_id = [
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
             32, 33, 34, 35, 36, 37, 38, 39,
@@ -346,7 +312,7 @@ impl Namer {
             for i in 0..256 {
                 unsafe {
                     if *simd_val.get_unchecked(i) > 88 && *simd_val.get_unchecked(i) < 217 {
-                        *self.name_base.get_unchecked_mut(mod_count as usize) = *simd_val_b.get_unchecked(i);
+                        self.name_base[mod_count as usize] = simd_val_b[i];
                         mod_count += 1;
                     }
                 }
@@ -509,51 +475,33 @@ impl Namer {
                 // 判断 14, 15 去
                 -1 => {
                     if self.skl_freq[14] != 0 {
-                        self.skl_freq[14] += min(
-                            min(self.name_base[60], self.name_base[61]),
-                            self.skl_freq[14],
-                        )
+                        self.skl_freq[14] += min(min(self.name_base[60], self.name_base[61]), self.skl_freq[14])
                     }
                     if self.skl_freq[15] != 0 {
-                        self.skl_freq[15] += min(
-                            min(self.name_base[62], self.name_base[63]),
-                            self.skl_freq[15],
-                        )
+                        self.skl_freq[15] += min(min(self.name_base[62], self.name_base[63]), self.skl_freq[15])
                     }
-                },
+                }
                 14 => {
                     self.skl_freq[14] <<= 1;
                     if self.skl_freq[15] != 0 {
-                        self.skl_freq[15] += min(
-                            min(self.name_base[62], self.name_base[63]),
-                            self.skl_freq[15],
-                        )
+                        self.skl_freq[15] += min(min(self.name_base[62], self.name_base[63]), self.skl_freq[15])
                     }
-                },
+                }
                 15 => {
                     self.skl_freq[15] <<= 1;
                     if self.skl_freq[14] != 0 {
-                        self.skl_freq[14] += min(
-                            min(self.name_base[60], self.name_base[61]),
-                            self.skl_freq[14],
-                        )
+                        self.skl_freq[14] += min(min(self.name_base[60], self.name_base[61]), self.skl_freq[14])
                     }
-                },
+                }
                 x => {
                     self.skl_freq[x as usize] <<= 1;
                     if self.skl_freq[14] != 0 {
-                        self.skl_freq[14] += min(
-                            min(self.name_base[60], self.name_base[61]),
-                            self.skl_freq[14],
-                        )
+                        self.skl_freq[14] += min(min(self.name_base[60], self.name_base[61]), self.skl_freq[14])
                     }
                     if self.skl_freq[15] != 0 {
-                        self.skl_freq[15] += min(
-                            min(self.name_base[62], self.name_base[63]),
-                            self.skl_freq[15],
-                        )
+                        self.skl_freq[15] += min(min(self.name_base[62], self.name_base[63]), self.skl_freq[15])
                     }
-                },
+                }
             }
         }
     }

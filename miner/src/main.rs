@@ -1,12 +1,15 @@
-#![feature(portable_simd)]
-#![allow(internal_features)]
-#![feature(core_intrinsics)]
-#![feature(slice_swap_unchecked)]
+#![cfg_attr(
+    feature = "simd",
+    feature(portable_simd, slice_swap_unchecked)
+)]
 
 mod cacluate;
 mod evaluate;
 mod generate;
+mod interrupt;
 mod name;
+#[cfg(test)]
+mod reference;
 
 use std::path::PathBuf;
 
@@ -50,6 +53,9 @@ pub struct Command {
     /// 是否为 debug 模式
     #[arg(long)]
     pub debug: bool,
+    /// 完整计算和 CSV 序列化基准，结果写入空 sink，不创建结果文件
+    #[arg(long)]
+    pub bench: bool,
     /// 名字生成算法, 默认为 base 16384
     #[arg(long, short = 'n', value_enum, default_value_t = GenMethods::Base16384)]
     pub name_gen: GenMethods,
@@ -140,6 +146,16 @@ impl Command {
             }
         } else {
             self.batch_size.unwrap_or(10_000).max(1)
+        }
+    }
+
+    /// 动态尾段按剩余量均分上限，防止首个预热完成的 worker 独占全部剩余范围。
+    pub fn balanced_batch_size(&self, speed: f64, remaining: u64) -> u64 {
+        let batch = self.batch_size_for(speed);
+        if self.batch_in_time() {
+            batch.min(remaining.div_ceil(u64::from(self.thread_count)).max(1))
+        } else {
+            batch
         }
     }
 
@@ -238,6 +254,24 @@ fn main() {
         warn!("两个 batch 选项都指定了，将使用时间为准");
     }
 
+    if let Err(error) = interrupt::install() {
+        eprintln!("安装安全退出处理器失败: {error}");
+        std::process::exit(1);
+    }
+    if cli_arg.bench {
+        match cacluate::benchmark(&cli_arg) {
+            Ok(summary) => {
+                if summary.interrupted {
+                    std::process::exit(130);
+                }
+            }
+            Err(error) => {
+                eprintln!("基准失败: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let now = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%f").to_string();
     // namerena-<team>-<time>.csv
     // <time>: %Y-%m-%d-%H-%M-%S
@@ -263,9 +297,16 @@ fn main() {
 
     info!("{}", cli_arg.display_info());
     set_process_priority_to_high();
-    if let Err(error) = cacluate::start_main(cli_arg, out_path) {
-        eprintln!("计算失败: {error}");
-        std::process::exit(1);
+    match cacluate::start_main(cli_arg, out_path) {
+        Ok(summary) => {
+            if summary.interrupted {
+                std::process::exit(130);
+            }
+        }
+        Err(error) => {
+            eprintln!("计算失败: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -312,5 +353,44 @@ mod cli_tests {
         let args = Command::try_parse_from(["tswn", "--team", "shenjack", "-d", "5000", "--debug"]).unwrap();
         assert_eq!(args.xd_expect, 5000);
         assert!(args.debug);
+    }
+
+    #[test]
+    fn validates_bad_ranges_batches_templates_and_affinity() {
+        let cli = Command::parse_from(["tswn", "--team", "x", "-b", "10"]);
+        assert!(cli.validate().is_ok());
+        let mut bad = cli.clone();
+        bad.thread_count = 0;
+        assert!(bad.validate().is_err());
+        let mut bad = cli.clone();
+        bad.start = 10;
+        bad.end = 9;
+        assert!(bad.validate().is_err());
+        let mut bad = cli.clone();
+        bad.batch_size = Some(0);
+        assert!(bad.validate().is_err());
+        let mut bad = cli.clone();
+        bad.report_interval = Some(0);
+        assert!(bad.validate().is_err());
+        let mut bad = cli.clone();
+        bad.team = "中".repeat(86);
+        assert!(bad.validate().is_err());
+        let mut bad = cli.clone();
+        bad.name_template = "a".repeat(250) + "[]";
+        assert!(bad.validate().is_err());
+        let mut bad = cli.clone();
+        bad.name_template = "没有占位符".into();
+        assert!(bad.validate().is_err());
+        let mut bad = cli.clone();
+        bad.pick_core = Some(usize::BITS as usize);
+        assert!(bad.validate().is_err());
+        let mut dynamic = cli.clone();
+        dynamic.report_interval = Some(u64::MAX);
+        assert_eq!(dynamic.batch_size_for(f64::MAX), u64::MAX);
+        assert_eq!(dynamic.batch_size_for(0.5), 1);
+        assert_eq!(dynamic.batch_size_for(0.0), 10_000);
+        dynamic.thread_count = 6;
+        assert_eq!(dynamic.balanced_batch_size(1_000_000.0, 600_000), 100_000);
+        assert_eq!(dynamic.balanced_batch_size(0.0, 60), 10);
     }
 }
