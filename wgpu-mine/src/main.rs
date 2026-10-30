@@ -1,5 +1,4 @@
-mod cpu;
-mod gpu;
+use wgpu_mine::{cpu, gpu};
 
 use clap::{Parser, ValueEnum};
 use std::{
