@@ -48,7 +48,7 @@ cargo build -p wgpu-mine --release --locked -j 2
 | --e2e-bench | 同范围、同阈值交替运行 GPU/CPU，并校验 CSV（整数/名字精确，评分误差<10） |
 | --metrics | validate/e2e-bench 的新指标 CSV 文件；禁止覆盖 |
 
-CSV 固定 15 列：id,name,team,hp,attack,defense,speed,agility,magic,resistance,wisdom,property,xp,xd,skills。技能为排序后的 id:freq 分号列表，包含在单列；逗号、引号、CRLF、NUL 和 Unicode 交给 csv 库正确处理。零命中仍有表头，写入/flush 失败返回非零退出码。
+CSV 固定 16 列：full_name,id,name,team,hp,attack,defense,speed,agility,magic,resistance,wisdom,property,xp,xd,skills。full_name 与 CPU miner 一致，为 `name@team`（team 为空时退化为 `name@name`）；技能为排序后的 id:freq 分号列表，包含在单列；逗号、引号、CRLF、NUL 和 Unicode 交给 csv 库正确处理。零命中仍有表头，写入/flush 失败返回非零退出码。
 
 ## 默认评分策略与误差预算
 

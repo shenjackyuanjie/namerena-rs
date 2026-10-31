@@ -414,7 +414,7 @@ fn same_csv(a: &Path, b: &Path) -> Result<(), String> {
                     return Err("CSV列数不一致".to_owned());
                 }
                 for i in 0..a.len() {
-                    if i == 12 || i == 13 {
+                    if i == 13 || i == 14 {
                         let x = a[i].parse::<f64>().map_err(|e| e.to_string())?;
                         let y = b[i].parse::<f64>().map_err(|e| e.to_string())?;
                         if !x.is_finite() || !y.is_finite() || (x - y).abs() >= 10.0 {
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(result.processed, 0);
         assert_eq!(result.next, 17);
         let mut csv = csv::Reader::from_path(&path).unwrap();
-        assert_eq!(csv.headers().unwrap().len(), 15);
+        assert_eq!(csv.headers().unwrap().len(), 16);
         assert_eq!(csv.records().count(), 0);
         drop(csv);
         std::fs::remove_file(&path).unwrap();

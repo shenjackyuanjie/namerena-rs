@@ -12,6 +12,7 @@ impl<W: Write> CsvOutput<W> {
         result
             .writer
             .write_record([
+                "full_name",
                 "id",
                 "name",
                 "team",
@@ -33,7 +34,8 @@ impl<W: Write> CsvOutput<W> {
         Ok(result)
     }
     pub fn write_record(&mut self, id: u64, name: &str, team: &str, value: &Evaluation) -> Result<(), String> {
-        let mut fields = vec![id.to_string(), name.to_owned(), team.to_owned()];
+        let full_name = if team.is_empty() { format!("{name}@{name}") } else { format!("{name}@{team}") };
+        let mut fields = vec![full_name, id.to_string(), name.to_owned(), team.to_owned()];
         fields.extend(value.props.iter().map(u32::to_string));
         fields.push((f64::from(property_numerator(&value.props)) / 3.0).to_string());
         fields.push(value.xp.to_string());
@@ -72,6 +74,7 @@ mod tests {
     #[test]
     fn every_csv_field_roundtrips_and_skills_stay_one_sorted_column() {
         let header = [
+            "full_name",
             "id",
             "name",
             "team",
@@ -104,23 +107,27 @@ mod tests {
         let rows = reader.records().collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(rows.len(), fields.len() + 1);
         for (id, row) in rows[..fields.len()].iter().enumerate() {
-            assert_eq!(row.len(), 15);
-            assert_eq!(row[0].parse::<u64>().unwrap(), id as u64);
-            assert_eq!(&row[1], fields[id]);
-            assert_eq!(&row[2], fields[fields.len() - id - 1]);
+            assert_eq!(row.len(), 16);
+            let team = fields[fields.len() - id - 1];
+            let name = fields[id];
+            let full_name = if team.is_empty() { format!("{name}@{name}") } else { format!("{name}@{team}") };
+            assert_eq!(&row[0], full_name);
+            assert_eq!(row[1].parse::<u64>().unwrap(), id as u64);
+            assert_eq!(&row[2], fields[id]);
+            assert_eq!(&row[3], team);
             for index in 0..8 {
-                assert_eq!(row[index + 3].parse::<u32>().unwrap(), value.props[index]);
+                assert_eq!(row[index + 4].parse::<u32>().unwrap(), value.props[index]);
             }
             assert_eq!(
-                row[11].parse::<f64>().unwrap(),
+                row[12].parse::<f64>().unwrap(),
                 f64::from(property_numerator(&value.props)) / 3.0
             );
-            assert_eq!(row[12].parse::<f64>().unwrap(), value.xp);
-            assert_eq!(row[13].parse::<f64>().unwrap(), value.xd);
-            assert_eq!(&row[14], "0:7;3:4;12:1;24:2");
+            assert_eq!(row[13].parse::<f64>().unwrap(), value.xp);
+            assert_eq!(row[14].parse::<f64>().unwrap(), value.xd);
+            assert_eq!(&row[15], "0:7;3:4;12:1;24:2");
         }
-        assert_eq!(rows.last().unwrap()[0].parse::<u64>().unwrap(), u64::MAX);
-        assert_eq!(&rows.last().unwrap()[14], "");
+        assert_eq!(rows.last().unwrap()[1].parse::<u64>().unwrap(), u64::MAX);
+        assert_eq!(&rows.last().unwrap()[15], "");
         let empty = CsvOutput::new(Vec::new()).unwrap().into_inner().unwrap();
         let mut reader = csv::Reader::from_reader(empty.as_slice());
         assert!(reader.headers().unwrap().iter().eq(header));
@@ -182,11 +189,12 @@ mod tests {
         output.write_record(9, &name, "队,伍", &value).unwrap();
         let bytes = output.into_inner().unwrap();
         let mut reader = csv::Reader::from_reader(bytes.as_slice());
-        assert_eq!(reader.headers().unwrap().len(), 15);
+        assert_eq!(reader.headers().unwrap().len(), 16);
         let rows: Vec<_> = reader.records().collect::<Result<_, _>>().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(&rows[0][1], name);
-        assert_eq!(&rows[0][2], "队,伍");
+        assert_eq!(&rows[0][0], format!("{name}@队,伍"));
+        assert_eq!(&rows[0][2], name);
+        assert_eq!(&rows[0][3], "队,伍");
         let empty = CsvOutput::new(Vec::new()).unwrap().into_inner().unwrap();
         assert_eq!(csv::Reader::from_reader(empty.as_slice()).records().count(), 0);
     }

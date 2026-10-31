@@ -85,16 +85,17 @@ fn cpu_cli_covers_ids_and_csv_special_characters() {
     for (index, row) in values.iter().enumerate() {
         let id = 7 + index as u64;
         let name = template.replace("[]", &id.to_string());
-        assert_eq!(row.len(), 15);
-        assert_eq!(&row[0], id.to_string());
-        assert_eq!(&row[1], name);
-        assert_eq!(&row[2], team);
+        assert_eq!(row.len(), 16);
+        assert_eq!(&row[0], format!("{name}@{team}"));
+        assert_eq!(&row[1], id.to_string());
+        assert_eq!(&row[2], name);
+        assert_eq!(&row[3], team);
         let expected = core::evaluate(&team, &name);
         for (column, prop) in expected.props.iter().enumerate() {
-            assert_eq!(row[3 + column].parse::<u32>().unwrap(), *prop);
+            assert_eq!(row[4 + column].parse::<u32>().unwrap(), *prop);
         }
-        assert!((row[12].parse::<f64>().unwrap() - expected.xp).abs() < 1e-5);
-        assert!((row[13].parse::<f64>().unwrap() - expected.xd).abs() < 1e-5);
+        assert!((row[13].parse::<f64>().unwrap() - expected.xp).abs() < 1e-5);
+        assert!((row[14].parse::<f64>().unwrap() - expected.xd).abs() < 1e-5);
     }
 }
 
@@ -111,7 +112,7 @@ fn empty_range_and_no_hits_still_have_header() {
         success(&run(&args));
         assert!(rows(&path).is_empty());
         let mut reader = csv::Reader::from_path(&path).unwrap();
-        assert_eq!(reader.headers().unwrap().len(), 15);
+        assert_eq!(reader.headers().unwrap().len(), 16);
     }
 }
 
@@ -141,7 +142,7 @@ fn maximum_exclusive_range_and_thread_counts_are_consistent() {
     assert_eq!(outputs[0].len(), 5);
     assert_eq!(outputs[0], outputs[1]);
     assert_eq!(outputs[1], outputs[2]);
-    assert_eq!(outputs[0][4][0].parse::<u64>().unwrap(), u64::MAX - 1);
+    assert_eq!(outputs[0][4][1].parse::<u64>().unwrap(), u64::MAX - 1);
 }
 
 #[test]
@@ -186,7 +187,7 @@ fn stdout_csv_has_no_log_pollution() {
     let result = run(&args);
     success(&result);
     let mut csv = csv::Reader::from_reader(result.stdout.as_slice());
-    assert_eq!(csv.headers().unwrap().len(), 15);
+    assert_eq!(csv.headers().unwrap().len(), 16);
     assert_eq!(csv.records().count(), 33);
     assert!(!result.stderr.is_empty());
 }
