@@ -1,83 +1,83 @@
-// 一候选一lane，转置Sbox每候选packed256B或wide1024B；LANES32/64/128编译期选择。
+// 一个 invocation（GPU 并行调用）处理一个候选，lane 是组内编号；S-box 是 256 字节的排列状态。
 // 本文件不含跨 lane barrier，因此尾批与属性筛选均可直接 return。
 // host 每批清零 Output 的 16B header，records 至少分配 count 个 176B 槽。
 // team_state为raw队伍KSA状态；GENERATED模式则为名字公共前缀KSA快照（各字节占u32）。
 @group(0) @binding(0) var<uniform> team_state: array<vec4<u32>, 64>;
 
-struct NameInfo {
+struct NameInfo { // 上传模式记录名字在字节流中的偏移和 UTF-8 字节长度；生成模式复用这些字段。
     offset: u32,
     length: u32,
 }
-@group(0) @binding(1) var<storage, read> names: array<NameInfo>;
+@group(0) @binding(1) var<storage, read> names: array<NameInfo>; // 绑定 1：只读候选元数据；由宿主按绑定号提供缓冲区。
 // 上传模式为紧凑UTF8；GENERATED模式为逐u32模板映射，offset复用为prefix_steps。
 @group(0) @binding(2) var<storage, read> name_bytes: array<u32>;
 
 // 严格 44 个 32bit 字，align=4、size/stride=176；不增加 vec3 对齐填充。
 struct Record {
-    index: u32,                       // 字节偏移 0
-    props: array<u32, 8>,              // 字节偏移 4
-    skill_ids: array<u32, 16>,         // 字节偏移 36
-    skill_freqs: array<u32, 16>,       // 字节偏移 100
-    shadow_numerator: i32,            // 字节偏移 164
-    xp: f32,                          // 字节偏移 168
-    xd: f32,                          // 字节偏移 172
+    index: u32,                       // 字节偏移 0；本批候选下标，宿主据此还原名字。
+    props: array<u32, 8>,              // 字节偏移 4；八个属性值。
+    skill_ids: array<u32, 16>,         // 字节偏移 36；前 16 个技能编号。
+    skill_freqs: array<u32, 16>,       // 字节偏移 100；对应技能频率。
+    shadow_numerator: i32,            // 字节偏移 164；影子特征的整数分子。
+    xp: f32,                          // 字节偏移 168；GPU 计算的 XP 近似分数。
+    xd: f32,                          // 字节偏移 172；GPU 计算的 XD 近似分数。
 }
-struct Output {
-    count: atomic<u32>,
-    prop_pass: atomic<u32>,
-    scored: atomic<u32>,
-    shadow_count: atomic<u32>,
+struct Output { // 输出头的计数器供多个 invocation 并发更新，后面接变长记录数组。
+    count: atomic<u32>, // 已领取的记录槽数。
+    prop_pass: atomic<u32>, // 进入技能阶段的候选数。
+    scored: atomic<u32>, // 完成评分的候选数。
+    shadow_count: atomic<u32>, // 计算影子的候选数。
     records: array<Record>,           // 字节偏移 16
 }
-@group(0) @binding(3) var<storage, read_write> output: Output;
+@group(0) @binding(3) var<storage, read_write> output: Output; // 绑定 3：可读写输出；每个命中候选占一个记录槽。
 
 // 八个 u32，uniform 共 32B；host 将 prop_threshold 限制到 3*p 不溢出。
 struct Params {
-    count: u32,
-    prop_threshold: u32,
-    xp_threshold: u32,
-    xd_threshold: u32,
-    capture_all: u32,
+    count: u32, // 批内真实候选数，派发补齐的 invocation 不能越界。
+    prop_threshold: u32, // 属性粗筛阈值。
+    xp_threshold: u32, // XP 粗筛阈值。
+    xd_threshold: u32, // XD 粗筛阈值。
+    capture_all: u32, // 非零时保留所有候选，跳过两次淘汰。
     pad0: u32, // GENERATED: 起始ID低32bit
     pad1: u32, // GENERATED: 起始ID高32bit
-    pad2: u32,
+    pad2: u32, // 填充，保持宿主和着色器布局一致。
 }
-@group(0) @binding(4) var<uniform> params: Params;
+@group(0) @binding(4) var<uniform> params: Params; // 绑定 4：宿主上传的小型只读参数块。
 // weights[0] = vec2(BASE, BASE_QD)；weights[k+1] 对应第 k 项 XP/XD 系数。
 // 一共 1035 个 vec2<f32>，storage stride=8，共 8280B。
 @group(0) @binding(5) var<storage, read> weights: array<vec2<f32>>;
 
-// Host 只替换这些编译期常量，计算路径不含运行时布局分支。
-const LANES: u32 = 32u;
-const WORDS: u32 = 8192u;
-const PACKED: bool = false;
-const GENERATED: bool = false;
-const COMPACT_MODEL: bool = false;
-var<workgroup> values: array<u32, WORDS>;
+// 宿主替换编译期常量：LANES 为 32/64/128；packed 每候选 256B、wide 为 1024B，布局分支由常量决定。
+const LANES: u32 = 32u; // 每个工作组的 invocation 数；此处是模板值，宿主按配置替换。
+const WORDS: u32 = 8192u; // 工作组共享数组长度，以 u32 为单位。
+const PACKED: bool = false; // true 时每个 u32 打包四个 S-box 字节；false 时每槽一个 u32。
+const GENERATED: bool = false; // true 时从 ID 生成名字；false 时读取上传的名字。
+const COMPACT_MODEL: bool = false; // true 时仅遍历非零特征；false 时遍历全部特征。
+var<workgroup> values: array<u32, WORDS>; // 同组共享存储按槽转置，各 lane 独占一列，不依赖跨线程同步。
 
-fn read_sbox(lane: u32, slot: u32) -> u32 {
+fn read_sbox(lane: u32, slot: u32) -> u32 { // 读取当前 lane 的 S-box 槽；lane 是组内编号，slot 是 0 至 255 的状态下标。
     if (PACKED) {
-        return (values[(slot / 4u) * LANES + lane] >> ((slot % 4u) * 8u)) & 255u;
+        return (values[(slot / 4u) * LANES + lane] >> ((slot % 4u) * 8u)) & 255u; // 先选打包字，再右移取出槽内字节；& 255 保留低八位。
     }
-    return values[slot * LANES + lane];
+    return values[slot * LANES + lane]; // 宽字布局：相同槽的不同 lane 在内存中相邻。
 }
 
-fn write_sbox(lane: u32, slot: u32, value: u32) {
+fn write_sbox(lane: u32, slot: u32, value: u32) { // 写入一个状态字节，保留同一打包字中的其他槽。
     if (PACKED) {
         let word = (slot / 4u) * LANES + lane;
         let shift = (slot % 4u) * 8u;
         // 每 lane 独占一列。同一 word 的两个槽交换时，第二次必须读更新后的 word。
-        values[word] = (values[word] & ~(255u << shift)) | (value << shift);
+        values[word] = (values[word] & ~(255u << shift)) | (value << shift); // 先用掩码清空目标字节，再按位或写入新值。
     } else {
         values[slot * LANES + lane] = value;
     }
 }
 
-fn restore_team(lane: u32) {
+fn restore_team(lane: u32) { // 把宿主准备的队伍状态或前缀快照复制到本 lane。
     if (PACKED) {
         for (var i = 0u; i < 64u; i += 1u) {
             let v = team_state[i];
-            values[i * LANES + lane] = v.x | (v.y << 8u) | (v.z << 16u) | (v.w << 24u);
+            values[i * LANES + lane] = v.x | (v.y << 8u) | (v.z << 16u) | (v.w << 24u); // 四个 u32 里的状态字节按低字节在前打包。
         }
     } else {
         for (var i = 0u; i < 256u; i += 1u) {
@@ -100,36 +100,36 @@ fn shadow_byte(index: u32) -> u32 {
 }
 
 // KEY_BEGIN
-fn prepare_generated(index: u32) {}
+fn prepare_generated(index: u32) {} // 上传模式无需生成名字；生成模式下宿主替换整个标记区间。
 
 // k=0 是编码前导零；k>0 对应 name 或 name+?shadow 的第 k-1 个字节。
 fn key_byte(info: NameInfo, k: u32) -> u32 {
     if (k == 0u) { return 0u; }
     let byte_index = k - 1u;
     if (byte_index < info.length) {
-        let address = info.offset + byte_index;
-        return (name_bytes[address / 4u] >> ((address % 4u) * 8u)) & 255u;
+        let address = info.offset + byte_index; // 上传模式：偏移和下标都以字节为单位。
+        return (name_bytes[address / 4u] >> ((address % 4u) * 8u)) & 255u; // 每个输入字含四字节，除以 4 选字、余数选字节。
     }
     return shadow_byte(byte_index - info.length);
 }
 
 // KEY_END
 
-// raw name 最长 256B，shadow 拼接后内部允许 263B；两轮均重置 s/k。
+// KSA（密钥调度）依据名字反复交换 S-box；名字最长 256B，追加 shadow 后允许 263B。
 fn name_ksa(lane: u32, info: NameInfo, with_shadow: bool) {
-    let key_length = info.length + select(0u, 7u, with_shadow);
-    for (var round = 0u; round < 2u; round += 1u) {
+    let key_length = info.length + select(0u, 7u, with_shadow); // 名字字节长度；影子路径追加七字节 ?shadow。密钥还另有前导零。
+    for (var round = 0u; round < 2u; round += 1u) { // 连续执行两轮 KSA，状态保留，游标每轮重置。
         var s = 0u;
         var k = 0u;
         var first = 0u;
-        if (GENERATED && round == 0u) { first = info.offset; k = first; s = names[1u].offset; }
+        if (GENERATED && round == 0u) { first = info.offset; k = first; s = names[1u].offset; } // 生成模式第一轮从宿主预计算的公共前缀快照继续；第二轮从零开始。
         for (var i = first; i < 256u; i += 1u) {
             let current = read_sbox(lane, i);
-            s = (s + key_byte(info, k) + current) & 255u;
+            s = (s + key_byte(info, k) + current) & 255u; // 累加密钥和当前槽，& 255 等价于对 256 取余。
             let other = read_sbox(lane, s);
-            write_sbox(lane, i, other);
+            write_sbox(lane, i, other); // 交换 i 与 s 两槽；两次写入各自重新读取打包字。
             write_sbox(lane, s, current);
-            if (k == key_length) { k = 0u; } else { k += 1u; }
+            if (k == key_length) { k = 0u; } else { k += 1u; } // k 在前导零和全部名字字节间循环。
         }
     }
 }
@@ -139,15 +139,15 @@ fn name_ksa(lane: u32, info: NameInfo, with_shadow: bool) {
 fn collect_base(lane: u32, base: ptr<function, array<u32, 128>>) {
     var count = 0u;
     for (var i = 0u; i < 256u; i += 1u) {
-        let mapped = (read_sbox(lane, i) * 181u + 160u) & 255u;
+        let mapped = (read_sbox(lane, i) * 181u + 160u) & 255u; // 对排列做模 256 仿射映射，供后续提取属性与技能数据。
         if (mapped >= 89u && mapped < 217u) {
-            (*base)[count] = mapped & 63u;
+            (*base)[count] = mapped & 63u; // 保留映射值低六位，按原槽顺序放入 base。
             count += 1u;
         }
     }
 }
 
-fn median3(x: u32, y: u32, z: u32) -> u32 {
+fn median3(x: u32, y: u32, z: u32) -> u32 { // 三个值的中位数，不需要对整个数组排序。
     return max(min(x, y), min(max(x, y), z));
 }
 
@@ -157,7 +157,7 @@ fn properties(base: ptr<function, array<u32, 128>>) -> array<u32, 8> {
     for (var i = 0u; i < 10u; i += 1u) {
         hp[i] = (*base)[i];
     }
-    for (var i = 1u; i < 10u; i += 1u) {
+    for (var i = 1u; i < 10u; i += 1u) { // 插入排序前十个值；只对 hp 副本操作。
         let value = hp[i];
         var j = i;
         loop {
@@ -169,16 +169,16 @@ fn properties(base: ptr<function, array<u32, 128>>) -> array<u32, 8> {
         hp[j] = value;
     }
     var props: array<u32, 8>;
-    props[0] = 154u + hp[3] + hp[4] + hp[5] + hp[6];
+    props[0] = 154u + hp[3] + hp[4] + hp[5] + hp[6]; // 取排序后中间四项之和，加固定基数得到 HP。
     for (var i = 1u; i < 8u; i += 1u) {
-        let start = 10u + (i - 1u) * 3u;
+        let start = 10u + (i - 1u) * 3u; // 其余七项每项使用连续三个 base 值的中位数。
         props[i] = median3((*base)[start], (*base)[start + 1u], (*base)[start + 2u]) + 36u;
     }
     return props;
 }
 
-fn prga_byte(lane: u32, a: ptr<function, u32>, b: ptr<function, u32>) -> u32 {
-    *a = (*a + 1u) & 255u;
+fn prga_byte(lane: u32, a: ptr<function, u32>, b: ptr<function, u32>) -> u32 { // PRGA 每次更新同一 lane 的状态并返回一个伪随机字节；a、b 通过指针延续。
+    *a = (*a + 1u) & 255u; // & 255 让状态游标在 0 至 255 间循环。
     let current = read_sbox(lane, *a);
     *b = (*b + current) & 255u;
     let other = read_sbox(lane, *b);
@@ -193,13 +193,13 @@ fn finite_score(value: f32) -> bool {
     return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
 }
 
-@compute @workgroup_size(LANES)
+@compute @workgroup_size(LANES) // 计算入口：每组 LANES 个 invocation，由宿主按候选数向上取整派发。
 fn mine(@builtin(global_invocation_id) position: vec3<u32>,
-        @builtin(local_invocation_index) lane: u32) {
+        @builtin(local_invocation_index) lane: u32) { // 全局 x 区分候选，lane 是当前工作组内的编号。
     let index = position.x;
-    if (index >= params.count) { return; }
-    let info = names[select(index, 0u, GENERATED)];
-    if (GENERATED) { prepare_generated(index); }
+    if (index >= params.count) { return; } // 尾组中多派发的 invocation 直接退出。
+    let info = names[select(index, 0u, GENERATED)]; // 上传模式取当前候选；生成模式所有候选共用 names[0] 模板信息。
+    if (GENERATED) { prepare_generated(index); } // 仅生成模式按批内下标生成当前名字的编码缓存。
 
     restore_team(lane);
     name_ksa(lane, info, false);
@@ -207,17 +207,17 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
     collect_base(lane, &base);
     var props = properties(&base);
 
-    var prop_numerator = props[0];
+    var prop_numerator = props[0]; // 用整数分子表示 HP/3 加其余属性之和，避免提前做浮点除法。
     for (var i = 1u; i < 8u; i += 1u) {
         prop_numerator += 3u * props[i];
     }
-    if (params.capture_all == 0u && prop_numerator <= 3u * params.prop_threshold) {
+    if (params.capture_all == 0u && prop_numerator <= 3u * params.prop_threshold) { // 非 capture_all 时仅保留属性分子严格大于三倍阈值的候选。
         return;
     }
     // capture_all 模式统计所有进入技能阶段者，即本批实际候选数。
-    atomicAdd(&output.prop_pass, 1u);
+    atomicAdd(&output.prop_pass, 1u); // 原子加法让并发候选安全统计，不保证执行顺序。
 
-    var skill_ids: array<u32, 40>;
+    var skill_ids: array<u32, 40>; // 初始化 40 个技能编号；洗牌后只计算前 16 个的频率。
     var skill_freqs: array<u32, 16>;
     for (var i = 0u; i < 40u; i += 1u) {
         skill_ids[i] = i;
@@ -230,27 +230,27 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         for (var i = 0u; i < 40u; i += 1u) {
             let high = prga_byte(lane, &a, &b);
             let low = prga_byte(lane, &a, &b);
-            let rnd = ((high << 8u) | low) % 40u;
+            let rnd = ((high << 8u) | low) % 40u; // 两个随机字节组成大端 16 位数，再映射到 40 个槽。
             // 保留 Rust 的 u8 截断再 %40，不可改成直接 %40。
-            s = ((s + rnd + skill_ids[i]) & 255u) % 40u;
+            s = ((s + rnd + skill_ids[i]) & 255u) % 40u; // 先截断到 u8 的范围，再对 40 取余，与 CPU 算法一致。
             let current = skill_ids[i];
             skill_ids[i] = skill_ids[s];
             skill_ids[s] = current;
         }
     }
 
-    var last = -1i;
+    var last = -1i; // last 追踪最后一个满足附加条件的有效技能位置。
     for (var i = 0u; i < 16u; i += 1u) {
         let start = 64u + i * 4u;
-        let p = min(min(base[start], base[start + 1u]), min(base[start + 2u], base[start + 3u]));
-        if (p > 10u && skill_ids[i] < 35u) {
+        let p = min(min(base[start], base[start + 1u]), min(base[start + 2u], base[start + 3u])); // 四个 base 值取最小值，决定该技能的基础频率。
+        if (p > 10u && skill_ids[i] < 35u) { // p 须大于 10 且技能编号小于 35 才有效。
             skill_freqs[i] = p - 10u;
-            if (p < 35u) { last = i32(i); }
+            if (p < 35u) { last = i32(i); } // 记录最后一个 p 小于 35 的有效位置，供后续翻倍。
         } else {
             skill_freqs[i] = 0u;
         }
     }
-    if (last >= 0i) {
+    if (last >= 0i) { // 没有符合条件的技能时不做翻倍。
         skill_freqs[u32(last)] *= 2u;
     }
     // last=14/15 时该槽已翻倍，不再叠加自身的尾槽加成；另一槽照常。
@@ -261,18 +261,18 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         skill_freqs[15] += min(min(base[62], base[63]), skill_freqs[15]);
     }
 
-    var features: array<f32, 44>;
+    var features: array<f32, 44>; // 44 个特征：前 8 项属性、后续技能频率和影子特征；未赋值项为零。
     for (var i = 0u; i < 8u; i += 1u) {
         features[i] = f32(props[i]);
     }
     for (var i = 0u; i < 16u; i += 1u) {
         if (skill_freqs[i] != 0u) {
-            features[skill_ids[i] + 8u] = f32(skill_freqs[i]);
+            features[skill_ids[i] + 8u] = f32(skill_freqs[i]); // 技能编号决定特征下标，而非洗牌后的位置。
         }
     }
 
     var shadow_numerator = 0i;
-    if (features[32] > 0.0) {
+    if (features[32] > 0.0) { // 特征 32 对应技能编号 24，只有它有效时才计算影子。
         atomicAdd(&output.shadow_count, 1u);
         // 技能已结束，直接复用该 lane 的 Sbox/base，原 props/ids/freq 保留。
         restore_team(lane);
@@ -283,17 +283,17 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         for (var i = 1u; i < 8u; i += 1u) {
             raw_sum += shadow_props[i] - 36u;
         }
-        shadow_numerator = i32(shadow_props[0] + 3u * raw_sum)
+        shadow_numerator = i32(shadow_props[0] + 3u * raw_sum) // 以整数分子保存影子属性组合，宿主可据此重建精确值。
             - 9i * i32(shadow_props[7] - 36u) - 630i;
-        features[43] = f32(shadow_numerator) / 3.0 * features[32] / 100.0;
+        features[43] = f32(shadow_numerator) / 3.0 * features[32] / 100.0; // 除以 3 并按技能频率缩放，得到影子特征。
     }
-    if (features[42] > 0.0) {
+    if (features[42] > 0.0) { // 技能编号 34 有效时另加 20。
         features[42] += 20.0;
     }
 
     // 与 poly 完全相同的 44 个线性项及 i=0..43,j=i..43 二次项次序。
     // 不构造 1034 项多项式数组；零特征跳过乘加但仍推进权重索引。
-    var score = weights[0];
+    var score = weights[0]; // vec2 同时累加 XP 和 XD，从模型常数项开始。
     if (COMPACT_MODEL) {
         // 最多8属性+16非零技能+1影子=25项；保持原特征索引顺序，32槽留余量。
         var active_indices: array<u32, 32>;
@@ -301,24 +301,24 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         for (var original = 0u; original < 44u; original += 1u) {
             let value = features[original];
             if (value != 0.0) {
-                active_indices[active_count] = original;
-                features[active_count] = value;
+                active_indices[active_count] = original; // 保存原始下标，压缩后仍可索引原模型权重。
+                features[active_count] = value; // 原地压缩非零值；写入位置不超过当前读取位置。
                 active_count += 1u;
             }
         }
         for (var i = 0u; i < active_count; i += 1u) {
-            score += weights[1u + active_indices[i]] * features[i];
+            score += weights[1u + active_indices[i]] * features[i]; // 按原特征下标读取线性项权重。
         }
         for (var a = 0u; a < active_count; a += 1u) {
             let i = active_indices[a];
-            let row = 45u + i * (89u - i) / 2u;
+            let row = 45u + i * (89u - i) / 2u; // 跳过常数和 44 个线性项，再定位二次项上三角矩阵第 i 行。
             for (var b = a; b < active_count; b += 1u) {
                 let j = active_indices[b];
                 let term = features[a] * features[b];
-                score += weights[row + j - i] * term;
+                score += weights[row + j - i] * term; // 行内 j-i 偏移对应特征 i 与 j 的乘积系数。
             }
         }
-    } else {
+    } else { // 稠密路径保持原索引顺序，跳过零项乘法但不跳过权重位置。
     var weight_index = 1u;
     for (var i = 0u; i < 44u; i += 1u) {
         if (features[i] != 0.0) {
@@ -328,7 +328,7 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
     }
     for (var i = 0u; i < 44u; i += 1u) {
         if (features[i] == 0.0) {
-            weight_index += 44u - i;
+            weight_index += 44u - i; // 第 i 行含 44-i 个二次项，整行权重仍须跳过。
             continue;
         }
         for (var j = i; j < 44u; j += 1u) {
@@ -344,15 +344,15 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
 
     // 10分余量做候选粗筛；阈值附近由host基于整数记录重建f64精筛。
     // 非有限结果强制记录，交由 host validation 明确报告，不静默通过/丢弃。
-    let invalid_score = !finite_score(score.x) || !finite_score(score.y);
+    let invalid_score = !finite_score(score.x) || !finite_score(score.y); // 只要任一分数非有限，就交给宿主校验。
     // Rust as u32 将负分饱和为 0：阈值为 0 时不能丢弃负分候选。
     let possible_hit = (params.xp_threshold == 0u || score.x + 10.0 >= f32(params.xp_threshold))
         && (params.xd_threshold == 0u || score.y + 10.0 >= f32(params.xd_threshold));
-    if (params.capture_all == 0u && !invalid_score && !possible_hit) { return; }
+    if (params.capture_all == 0u && !invalid_score && !possible_hit) { return; } // 非 capture_all 且分数有限、按 10 分余量粗筛判为不可能命中时才淘汰。
 
     // 每 invocation 最多写一次，故 count <= params.count；无需限容竞争或回退。
-    let slot = atomicAdd(&output.count, 1u);
-    output.records[slot].index = index;
+    let slot = atomicAdd(&output.count, 1u); // 原子领取唯一槽位；写入顺序不等于候选顺序。
+    output.records[slot].index = index; // 记录原下标，方便宿主排序和还原候选。
     output.records[slot].props = props;
     for (var i = 0u; i < 16u; i += 1u) {
         output.records[slot].skill_ids[i] = skill_ids[i];
