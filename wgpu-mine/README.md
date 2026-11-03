@@ -6,6 +6,10 @@
 
 补测本机原生编译：此前结果均为默认Release。单独开启target-cpu=native后，CPU双线程约+2.62%、六线程约+5.10%，GPU未确认稳定增幅，见 [native单变量对照](docs/native.md)。
 
+## 想学习 GPU 实现？
+
+从 [GPU 测号学习路线](docs/gpu-learning-00-start.md) 开始：包含零基础技术入门、正式 WGSL 逐行导读，以及名字生成与 RC4 实验内核导读。
+
 ## 直接使用
 
 在 workspace 根目录运行，以下命令与原 CPU 矿工的基本参数一致，GPU 二进制保留独立名称：
