@@ -1,87 +1,336 @@
 # GPU 入门 03：名字生成片段与两个 RC4 实验着色器
 
-本文根据当前工作树逐项阅读 [generated-key.wgsl](../generated-key.wgsl)、[main.wgsl](../main.wgsl) 和 [rc4-shared.wgsl](../rc4-shared.wgsl)。下面的行号按当前文件从 1 开始；文件版本、行号和行为都可能变化，阅读时以相对链接打开的实际代码为准。空行、独立注释和单独的花括号不逐行列出；花括号只表示结束相应的分支、循环或函数。其余有效代码均按行或相邻同义行解释。这里的“生产”指当前完整测号路径，不等于已经证明所有设备和输入都正确。
+本文按原顺序直接展示三份源码，保留原注释，并在代码附近补充中文说明。`u32` 是 32 位无符号整数，`&`、`|` 是按位与、或，`>>`、`<<` 是移位，`& 255` 留下低 8 位；`select(a, b, 条件)` 为假选 a、为真选 b。UTF-8 字节数不一定等于字符数。
 
-## 先认识环境
+每份文件按源码顺序拆成几个代码块；同一文件的代码块顺序拼接后是完整源码，文档额外增加了注释。单个代码块不一定能独立编译。这里是当前源码快照，日后修改着色器时也需要同步文档。
 
-CPU 是运行 Rust 宿主程序的处理器；GPU 上运行的 WGSL 程序称为着色器。一次 compute 派发包含若干工作组（workgroup），每组包含多个 invocation，类似多名各自处理一个候选的工人。`global_invocation_id.x` 是这次一维派发内的全局编号；`local_invocation_index` 是组内编号 lane。一个组大小为 32 时，前两组的全局编号分别为 0～31、32～63，lane 都是 0～31。末组通常补齐，所以必须检查真实候选数。
+一次 GPU compute 派发含多个工作组，每组有多个 invocation；一维派发的 `position.x` 是批内全局编号，`lane` 是组内编号。KSA 是 RC4 密钥调度：反复根据密钥和当前状态更新游标、交换 256 槽状态盒。本篇的两份实验只返回 KSA 状态，并不完成属性、技能或模型等完整测号。完整路径见 [正式内核的内嵌代码](gpu-learning-02-mining-wgsl.md)，实验选择和工作组大小见 [gpu.rs:12–24](../src/gpu.rs#L12-L24)。
 
-`u32` 是 32 位无符号整数；Rust 的 `u64` 是 64 位无符号整数，本着色器没有直接使用 `u64`，而用两个 `u32` 表示 ID 的高低位。`u` 后缀表示无符号常量。一个字节是 8 位，取值 0～255。`array<T, N>` 是 N 项数组，下标从 0 开始；`vec4<u32>` 是含四个 u32 的向量，可用下标取分量。`struct` 把多个字段组成记录，`let` 定义不可重新赋值的局部量，`var` 定义可写变量。`fn` 定义函数，`return` 返回，`if/else` 分支，`for` 逐次循环，`switch/case/default` 选分支，`+=` 与 `|=` 分别是加后赋值和按位或后赋值。
+## 一、generated-key.wgsl：生成名字的替换片段
 
-`>>` 右移、`<<` 左移；`&` 是按位与、`|` 是按位或。`& 255` 保留最低 8 位，等价于对非负数取模 256；`& 63`、`& 0x3fff` 分别保留 6、14 位。`/` 对这里的无符号整数取整除，`%` 取余。比如 `13 / 4 = 3`、`13 % 4 = 1`。`0x` 是十六进制；`0x100 = 256`。码点是 Unicode 分配给字符的数值，如“一”是 U+4E00；大端表示高位字节先于低位字节。32 位无符号加法按 2³² 回绕。`select(a, b, condition)` 条件为假取 a，真取 b。
+[generated-key.wgsl](../generated-key.wgsl) 不是独立计算入口：生成模式下，Rust 把它插入 [mining.wgsl](../mining.wgsl#L102-L116) 的 `KEY_BEGIN` 与 `KEY_END` 标记区间，替换原有函数，并设置 `GENERATED`；它借用正式内核已有的类型、绑定和 `shadow_byte`，并非 WGSL 的 import（[mining_gpu.rs:37–59](../src/mining_gpu.rs#L37-L59)）。上传模式保留原区间。
 
-字节打包例子：四字节依次为 `11 22 33 44`（十六进制），按低字节先放得到 `0x44332211`。取第 2 个字节（从 0 数）用 `(word >> (2 * 8)) & 255`，结果是 `0x33`。低字节先放描述的是一个数值内部的排列，与后面 ID 输入使用的大端顺序是两件事。UTF-8 是将文本表示为字节的编码，中文通常占三个字节；这里计算的是字节数而不是字符数。
+宿主为模板每个最终名字字节上传一个 u32 token：固定 UTF-8 字节为 0～255，`0x100 | n` 指向候选编码的第 n 字节。多个 `[]` 引用同一编码；Base16384 为 18 字节，两种 Base64 为 12 字节，名字最多 256 字节（[gpu_input.rs:14–38](../src/gpu_input.rs#L14-L38)）。例如 Base64 模板 `A[]!` 的 token 是 65、256～267、33。生成模式中 `names[0]` 的 `offset` 是首轮公共前缀步数而非字节地址，`length` 是名字字节数；`names[1]` 的两个字段存前缀 j 和编码编号。CPU 预跑公共前缀，第一轮从快照续算，第二轮从零开始（[gpu_input.rs:39–55](../src/gpu_input.rs#L39-L55)、[mining.wgsl:118–135](../mining.wgsl#L118-L135)）。
 
-RC4 的状态盒 S-box 在这里是 256 个 0～255 的排列。KSA 是密钥调度：每步根据当前状态和密钥更新游标，再交换状态的两个槽；交换不丢失任何值。举例，初始盒为 0,1,2,…，密钥第一个字节为 0，初始 j=0：i=0 时 j=(0+0+0)%256=0，交换第 0 与第 0 槽；第二步若密钥字节为 65，i=1，则 j=(0+1+65)%256=66，交换槽 1 与槽 66。实际项目先计算队伍状态，再从该状态对名字执行两轮 KSA；这不是通用加密教程。
+批起点拆为高低两个 u32，低位加批内编号产生进位；输入位序按 64 位大端理解，而编码结果在每个 u32 **低字节先存**，两种顺序是不同概念。举例，字节 `11 22 33 44` 打包成数值 `0x44332211`，第 2 个字节（从 0 数）是 `(word >> 16) & 255 = 0x33`。宿主会检查 ID 范围溢出（[mining_gpu.rs:323–340](../src/mining_gpu.rs#L323-L340)）。
 
-## 三者与 Rust 的实际关系
+```wgsl
+// 每个 invocation 独占缓存：Base16384为6个三字节UTF-8字，Base64为3个四字节字。
+// 此片段替代原key_byte，不新增绑定；names[1].length存编码编号，params.pad0/1存起始ID。宿主会整体替换 KEY_BEGIN 与 KEY_END 间的函数定义；它不是独立计算入口。
+// 六个槽属于当前 invocation；不同候选互不覆盖。每个槽是 32 位无符号整数。
+var<private> generated_chunks: array<u32, 6>; // private 表示每个 invocation 拥有自己的缓存。
 
-- [main.wgsl:2–42](../main.wgsl#L2-L42) 和 [rc4-shared.wgsl:3–45](../rc4-shared.wgsl#L3-L45) 是两个完整、互斥选择的 RC4 实验内核，入口都是 `rc4_name`；只返回两轮名字 KSA 后的完整状态，不做完整测号。`Kernel::Private/Shared` 分别通过 `include_str!` 选择它们，工作组大小 64/32，见 [gpu.rs:6–24](../src/gpu.rs#L6-L24)；Rust 创建对应模块和入口见 [gpu.rs:105–117](../src/gpu.rs#L105-L117)。CLI 遇到 `--bench` 才转入实验入口（[main.rs:613–617](../src/main.rs#L613-L617)），实验参数选择 `--kernel private|shared`，默认 shared（[rc4_bench.rs:20–28](../src/rc4_bench.rs#L20-L28)、[rc4_bench.rs:125–141](../src/rc4_bench.rs#L125-L141)）。普通完整测号不是从这两个文件拼装而成。
-- 完整测号使用 [mining.wgsl](../mining.wgsl)，包含后续属性、技能、shadow、模型与筛选，入口为 `mine`（[mining_gpu.rs:165–176](../src/mining_gpu.rs#L165-L176)）。其默认配置和可选布局见 [mining_gpu.rs:21–35](../src/mining_gpu.rs#L21-L35)。两个实验内核与它有相似的 KSA 和转置思路，但不是同一着色器，也不要把实验吞吐当成完整测号吞吐。
-- [generated-key.wgsl](../generated-key.wgsl) **不是独立内核**：没有绑定或入口，引用正式内核定义的类型、缓冲和函数。Rust 先加载 mining.wgsl、替换工作组、S-box、模型常量；生成模式将 `GENERATED` 改为 true，以 `KEY_BEGIN` 和 `KEY_END` 分割，整个替换区间插入该片段（[mining_gpu.rs:37–59](../src/mining_gpu.rs#L37-L59)，原区间 [mining.wgsl:102–116](../mining.wgsl#L102-L116)）。这不是 WGSL 自带 import；缺少标记时宿主返回错误。上传模式保留原空 `prepare_generated` 和读取打包名字的 `key_byte`。生成模式的 `mine` 选择 `names[0]` 并先准备编码，随后 KSA 使用替换后的函数（[mining.wgsl:196–205](../mining.wgsl#L196-L205)）。
-- CLI 的 `auto` 在固定宽 Base16384、标准 Base64、URL Base64 上使用生成模式；`uploaded` 强制上传；`generated` 遇到 Number 则报错，`auto` 遇到 Number 回退上传（[main.rs:93–95](../src/main.rs#L93-L95)、[main.rs:440–458](../src/main.rs#L440-L458)、[gpu_input.rs:17–26](../src/gpu_input.rs#L17-L26)）。CPU 参考生成器将 ID 转为 8 字节大端编码，替换模板中的全部 `[]`（[input.rs:34–46](../src/input.rs#L34-L46)）。
+// 入口由正式内核调用，index 是本批中的候选编号，不是全局持久 ID。
+fn prepare_generated(index: u32) { // 根据批次起始 ID 和当前候选编号生成固定宽度编码。
+    // 把批起点的低 32 位加上批内编号；u32 加法按 2³² 回绕。
+    let low = params.pad0 + index;
+    // 若结果比原低位小，则低位溢出，select 返回 1 并向高位进位；否则返回 0。例：ffffffff + 1 得 0，high 增 1。
+    let high = params.pad1 + select(0u, 1u, low < params.pad0); // 低 32 位回绕时向高 32 位进一，拼成 64 位 ID。
+    // 宿主约定 0 为 Base16384、1 为标准 Base64、2 为 URL 安全 Base64。
+    let encoding = names[1].length; // 0 为 Base16384，1 为标准 Base64，2 为 URL 安全 Base64。
+    // 先处理固定宽 18 字节的 Base16384；其他受支持编码进入下方 Base64。
+    if (encoding == 0u) { // Base16384 把高位在前的 ID 位段映射为六个 Unicode 码点。
+        // 64位大端输入：前56bit拆四组14bit，最后8bit左移6，末尾是固定㴁。
+        // 依次构造六个 Unicode 码点，每个码点最终占三个 UTF-8 字节。
+        for (var group = 0u; group < 6u; group += 1u) {
+            // point 暂存当前组的码点，随后由 switch 按组号赋值。
+            var point = 0u;
+            // 64 位 ID 按大端顺序理解：先处理 high 的高位，再处理 low。
+            switch group {
+                // 取 high 第 31～18 位的 14 位，映射到从 U+4E00 开始的范围。
+                case 0u: { point = 0x4e00u + ((high >> 18u) & 0x3fffu); }
+                // 取 high 第 17～4 位；0x3fff 保留低 14 位。
+                case 1u: { point = 0x4e00u + ((high >> 4u) & 0x3fffu); }
+                // 跨边界组：high 低 4 位接 low 高 10 位，再保留 14 位。
+                case 2u: { point = 0x4e00u + (((high << 10u) | (low >> 22u)) & 0x3fffu); } // 跨越高低字边界：高字低 4 位与低字高 10 位组成一组。
+                // 取 low 第 21～8 位的 14 位，仍加 U+4E00。
+                case 3u: { point = 0x4e00u + ((low >> 8u) & 0x3fffu); }
+                // low 最后 8 位左移 6 位补零，形成第五个 14 位组。
+                case 4u: { point = 0x4e00u + ((low & 255u) << 6u); } // 最后 8 位左移 6 位补零，形成第 5 组。
+                // 第六组不是 ID 位段，而是固定结尾 U+3D01，即“㴁”。
+                default: { point = 0x3d01u; } // 第 6 个码点是固定结尾。
+            }
+            // U+4E00..U+8DFF和U+3D01均是三个字节的合法UTF-8，最高U+8DFF不排除。
+            // UTF-8 首字节取码点高位并带前缀 1110；放入 u32 最低字节。
+            generated_chunks[group] = (0xe0u | (point >> 12u)) // 按 UTF-8 三字节格式编码，每字节依次放入 u32 的低到高位。
+                // 第二字节取中间 6 位并带前缀 10，左移 8 位放到第二字节。
+                | ((0x80u | ((point >> 6u) & 63u)) << 8u)
+                // 第三字节取最低 6 位，左移 16 位放到第三字节；最高字节未使用。
+                | ((0x80u | (point & 63u)) << 16u);
+        }
+        // 六组已全部生成，直接结束函数，不再执行下方 Base64 分支。
+        return;
+    }
+    // Base64的前十字符消费60bit，第11字符保存剩余4bit<<2，第12字符固定'='。
+    // Base64 共 12 字符；外层三组，每组打包四个 ASCII 字节。
+    for (var group = 0u; group < 3u; group += 1u) { // Base64 共 12 个字符，每个 u32 打包四个 ASCII 字节。
+        // 清空当前组的打包字，避免混入上一组内容。
+        var packed = 0u;
+        // 组内 offset 从 0 到 3，表示当前字符放在哪个字节位置。
+        for (var offset = 0u; offset < 4u; offset += 1u) {
+            // 把组号与组内偏移合成 0～11 的完整字符序号。
+            let character = group * 4u + offset;
+            // ASCII 61 是 =；先设为填充符，最后一个字符会保留这个值。
+            var ascii = 61u; // 默认填充字符 =；只有前 11 个字符需要编码。
+            // 前 11 个字符才包含 ID 的编码位；第 12 个字符仍为 =。
+            if (character < 11u) {
+                // value 保存当前字符对应的六位整数，范围是 0～63。
+                var value = 0u;
+                // 前五个字符全部取自 high，依次从最高位开始。
+                if (character < 5u) {
+                    // 按字符位置右移，& 63 截取连续 6 位。
+                    value = (high >> (26u - character * 6u)) & 63u;
+                // 第六字符跨越 high 与 low 的边界。
+                } else if (character == 5u) {
+                    // 拼接 high 末 2 位和 low 前 4 位，& 63 去掉多余位。
+                    value = ((high << 4u) | (low >> 28u)) & 63u; // 第 6 个字符跨越高低字边界，取高字末 2 位和低字前 4 位。
+                // 第七至第十字符完全取自 low，继续依次截取 6 位。
+                } else if (character < 10u) {
+                    // 58 - character*6 计算此字符对应的右移位数。
+                    value = (low >> (58u - character * 6u)) & 63u;
+                // 第十一字符使用 low 剩余的最低 4 位。
+                } else {
+                    // 左移两位补零并保留低六位，以满足 Base64 的末组格式。
+                    value = (low << 2u) & 63u; // 最后剩余 4 位左移 2 位补零。
+                }
+                // 查 Base64 字母表：先判断大写字母 A～Z。
+                if (value < 26u) { // 六位值映射到 Base64 字母表：大写、小写、数字及两个符号。
+                    // ASCII A 为 65，将 0～25 映射为 A～Z。
+                    ascii = 65u + value;
+                // 值 26～51 对应小写字母。
+                } else if (value < 52u) {
+                    // ASCII a 为 97，减去 26 把值换成从零开始的下标。
+                    ascii = 97u + value - 26u;
+                // 值 52～61 对应数字字符。
+                } else if (value < 62u) {
+                    // ASCII 0 为 48，减去 52 得到数字下标。
+                    ascii = 48u + value - 52u;
+                // 值 62 对应两种字母表中的第一个特殊字符。
+                } else if (value == 62u) {
+                    // 标准 Base64 用 +（43），URL 安全版本用 -（45）。
+                    ascii = select(43u, 45u, encoding == 2u); // 标准表用 +，URL 安全表用 -。
+                // 剩余的值 63 对应第二个特殊字符。
+                } else {
+                    // 标准 Base64 用 /（47），URL 安全版本用 _（95）。
+                    ascii = select(47u, 95u, encoding == 2u); // 标准表用 /，URL 安全表用 _。
+                }
+            }
+            // 字符放到 offset 对应的字节位置，按位或到打包字；字符顺序为低字节先。
+            packed |= ascii << (offset * 8u); // 按字符在组内的位置放入对应字节，低字节先输出。
+        }
+        // 四个 ASCII 字节组成的 u32 保存到当前组缓存。
+        generated_chunks[group] = packed;
+    }
+}
 
-## 生成片段的输入约定
+```
 
-Rust 为模板中每个最终名字字节制作一个 u32 token：固定 UTF-8 字节取 0～255；每个占位符的第 n 个生成字节记作 `0x100 | n`。例如模板 `A[]!` 的 Base64 映射是 `[65, 256, 257, …, 267, 33]`；多个 `[]` 都引用同一候选的编码。总名字最多 256 字节，Base16384 占 18 字节、两种 Base64 均占 12 字节（[gpu_input.rs:14–38](../src/gpu_input.rs#L14-L38)）。
+接下来是密钥字节读取函数：它把固定模板、生成字节和可选 shadow 后缀连接成 KSA 的逻辑密钥。
 
-Rust 在 CPU 上从队伍 S-box 接着预跑第一轮的公共名字前缀（含开头零），保存执行步数、j 和状态（[gpu_input.rs:39–55](../src/gpu_input.rs#L39-L55)）。生成模式将状态放入 `team_state`，将 `[prefix_steps, name_len]` 放入 `names[0]`，将 `[prefix_j, encoding]` 放入 `names[1]`，将每个 token 各占一个 u32 上传到 `name_bytes`（[mining_gpu.rs:190–196](../src/mining_gpu.rs#L190-L196)、[mining_gpu.rs:265–271](../src/mining_gpu.rs#L265-L271)）。因此此模式的 `info.offset` **不是字节地址**。第一轮从快照步数、j 和 k 继续，第二轮重新从零开始；shadow 也复用同一个公共前缀（[mining.wgsl:118–135](../mining.wgsl#L118-L135)、[mining.wgsl:274–280](../mining.wgsl#L274-L280)）。
+```wgsl
+// info.offset是prefix_steps而非字节地址；template_map逐u32上传，不再是packed原名字。names[0].length 是名字字节长度；names[1] 保存前缀游标和编码编号。
+// 返回 KSA 密钥在位置 k 的一个字节；info 和 shadow_byte 来自正式内核。
+fn key_byte(info: NameInfo, k: u32) -> u32 {
+    // 约定密钥以一个零字节开头，k 为零时无需读取名字。
+    if (k == 0u) { return 0u; } // KSA 的密钥有一个隐式前导零。
+    // 其余 k 从 1 开始，减一变成从零开始的名字字节下标。
+    let byte_index = k - 1u;
+    // 名字范围内查模板映射；范围之外交给 shadow 后缀。
+    if (byte_index < info.length) {
+        // 生成模式每个 token 单独占一个 u32，这里不是上传模式的四字节打包数组。
+        let token = name_bytes[byte_index]; // 每个 token 占一个 u32：常量字节或生成字节的引用。
+        // 0～255 表示模板中的固定 UTF-8 字节，原样返回。
+        if (token < 256u) { return token; } // 小于 256 的 token 直接是固定字节。
+        // 0x100 | n 表示取生成结果第 n 字节；低八位得到偏移 n。
+        let offset = token & 255u; // 其他 token 的低八位是编码结果中的字节偏移。
+        // 编码 0 的每个缓存槽存一个三字节 UTF-8 码点。
+        if (names[1].length == 0u) {
+            // 除以 3 选码点槽，余数选槽内字节；右移后 & 255 截出该字节。
+            return (generated_chunks[offset / 3u] >> ((offset % 3u) * 8u)) & 255u; // Base16384 每槽三字节；除法选槽，余数选槽内字节。
+        }
+        // Base64 每槽四字节：除以 4 选槽，余数选对应 ASCII 字节。
+        return (generated_chunks[offset / 4u] >> ((offset % 4u) * 8u)) & 255u; // Base64 每槽四字节，同样右移并掩码提取。
+    }
+    // 名字之后仅 shadow 路径会访问此处；依次取 ?shadow 的七个字节。
+    return shadow_byte(byte_index - info.length); // 只有影子密钥越过名字长度后才读取 ?shadow。
+}
+```
 
-每批起始 ID 分别写入 `pad0` 低 32 位与 `pad1` 高 32 位（[mining_gpu.rs:363–377](../src/mining_gpu.rs#L363-L377)）；`run_range` 检查末 ID 溢出（[mining_gpu.rs:323–340](../src/mining_gpu.rs#L323-L340)）。派发按工作组大小向上取整（[mining_gpu.rs:390–393](../src/mining_gpu.rs#L390-L393)）。
+## 二、main.wgsl：每个候选使用私有状态的 RC4 实验
 
-### generated-key.wgsl 逐段说明
+[main.wgsl](../main.wgsl) 是独立实验 compute 内核，入口 `rc4_name`，每组 64 个 invocation。CPU 先算队伍状态；每个候选复制这份状态，再对 `[0] + UTF-8(name)` 做两轮 KSA，只输出完整状态盒，不进行完整测号。宿主拼接名字字节并记录偏移、长度，按四字节打包上传（[gpu.rs:211–256](../src/gpu.rs#L211-L256)）。例如名字 `A` 的密钥依次循环 0、65；空名字只有前导零。
 
-以下行号均链接到该文件；每个编号范围包含该段实际语句和必要的语法边界。
+```wgsl
+// 每个候选在独立 invocation 内执行两轮名字 KSA；队伍 KSA 在 CPU 预计算一次。这是 RC4 对照实验，只回传状态，不计算完整属性、技能或模型。
+// 绑定 0 是只读 uniform：64 个四分量向量，共 256 个预计算队伍状态值。
+@group(0) @binding(0) var<uniform> team_state: array<vec4<u32>, 64>; // 绑定 0：宿主预计算的 256 个队伍状态值，四个一组放入 uniform。
+// 元数据 offset 是连续名字字节流中的起始偏移，length 是 UTF-8 字节数。
+struct NameInfo { offset: u32, length: u32, } // offset 和 length 均以 UTF-8 字节为单位。
+// 绑定 1 是只读 storage 数组，每个候选对应一条元数据。
+@group(0) @binding(1) var<storage, read> names: array<NameInfo>; // 绑定 1：只读候选元数据数组。
+// UTF-8 字节连续打包，每个 u32 的低字节在前，避免将每个输入字节扩张成 u32。
+// 绑定 2 存连续名字字节；每 4 个字节按低字节在前装入一个 u32。
+@group(0) @binding(2) var<storage, read> name_bytes: array<u32>; // 绑定 2：按低字节在前打包的只读名字字节。
+// 绑定 3 保存输出，每个候选需要 64 个 u32，即完整 256 字节状态。
+@group(0) @binding(3) var<storage, read_write> output_states: array<u32>; // 绑定 3：可写结果，每个候选 64 个 u32。
+// count 是本批真实候选数；三个填充字使参数块达到 16 字节。
+struct Params { count: u32, padding0: u32, padding1: u32, padding2: u32, } // count 是真实候选数，其他字段用于填充到 16 字节。
+// 绑定 4 是宿主上传的只读批次参数。
+@group(0) @binding(4) var<uniform> params: Params; // 绑定 4：宿主上传的只读批次参数。
 
-| 行 | 做什么、为什么 |
-| --- | --- |
-| [3](../generated-key.wgsl#L3) | `var<private> generated_chunks: array<u32, 6>`：每个 invocation 私有的六个 32 位槽；不在不同候选间共享。Base16384 每槽存三个 UTF-8 字节，Base64 只用前三槽、每槽四字节。 |
-| [5–8](../generated-key.wgsl#L5-L8) | `prepare_generated(index)` 计算本候选 ID：低字加批内 index；若结果小于原低字说明发生回绕，`select` 给高字加 1，否则加 0；编码编号从 `names[1].length` 取。例：低字 `0xffffffff` 加 1 得 0，高字进 1。 |
-| [9–13](../generated-key.wgsl#L9-L13) | 编码 0 进入 Base16384，循环六组，先将码点 `point` 置 0，再按组号分支。 |
-| [14–19](../generated-key.wgsl#L14-L19) | 把 64 位大端输入（高位先于低位，位号从最低位 0 起）按高位在前分组：组 0 是 high 的第 31～18 位；组 1 是 high 的 17～4 位；组 2 拼 high 的低 4 位与 low 的高 10 位；组 3 是 low 的 21～8 位。每组取 14 位并加 `0x4e00`。组 4 将 low 最低 8 位左移 6 位，再加 `0x4e00`；组 5 用固定码点 `0x3d01`（㴁）；普通 14 位组的最大码点是 U+8DFF。`0x3fff` 是 14 个 1，掩掉其他位。 |
-| [22–26](../generated-key.wgsl#L22-L26) | 把码点编码为三字节 UTF-8：分别是 `0xe0 \| point>>12`、`0x80 \| ((point>>6)&63)`、`0x80 \| (point&63)`；按低字节在前放进一个 u32，例如 U+4E00 的三个字节是 `e4 b8 80`，打包结果为 `0x0080b8e4`。循环结束后返回，不再执行 Base64。例：ID 0 的结果为 `一一一一一㴁`，每字三字节（另见 [input.rs:82–87](../src/input.rs#L82-L87)）。 |
-| [29–34](../generated-key.wgsl#L29-L34) | 非零编码走 Base64：外层三组，每组四字符，`packed` 清零；`character=group*4+offset` 是全局字符序号；先令 ASCII 为 61，即 `=`，仅前 11 个字符另算。 |
-| [35–44](../generated-key.wgsl#L35-L44) | 每个编码值占 6 位：字符 0～4 从 high 各取 6 位；字符 5 拼 high 最低 2 位与 low 最高 4 位；字符 6～9 从 low 取 6 位；字符 10 使用 low 最低 4 位左移 2 位补零。具体右移位数分别为 `26-character*6`、`58-character*6`；跨界分支用 `(high<<4) \| (low>>28)`。每次 `&63` 留低 6 位；序号 11 的字符保持 `=`。 |
-| [45–55](../generated-key.wgsl#L45-L55) | 0～25 映射 ASCII 65～90，即 A～Z；26～51 映射 97～122，即 a～z；52～61 映射 48～57，即 0～9。62 对应标准 `+` 或编码 2 的 `-`；63 对应标准 `/` 或编码 2 的 `_`。宿主只提供编号 0、1、2，不应把其他非零编号当作已支持的独立编码。 |
-| [57–61](../generated-key.wgsl#L57-L61) | 将 ASCII 左移 `offset*8` 后或入对应字节位置；内层结束保存一个四字节 u32；外层结束函数返回。例：ID 1 的标准/URL Base64 都是 `AAAAAAAAAAE=`（[input.rs:82–87](../src/input.rs#L82-L87)）。 |
-| [64–67](../generated-key.wgsl#L64-L67) | `key_byte(info,k)` 返回一字节数值：k=0 返回密钥的前导 0；否则 `byte_index=k-1`。当它小于名字长度时读取名字部分。 |
-| [68–74](../generated-key.wgsl#L68-L74) | 每个 token 一整个 u32：小于 256 就是固定字节；否则 `token & 255` 是生成字节偏移。Base16384 用 `offset/3` 选槽、`offset%3` 选槽内字节；Base64 用 4 代替 3。右移 `槽内序号*8` 再 `&255` 提取。例如 token 257 表示生成结果第 1 字节。 |
-| [76–77](../generated-key.wgsl#L76-L77) | 名字之后调用 `shadow_byte(byte_index-info.length)` 返回 `?shadow` 的对应字节；正常名字 KSA 的游标不会走到这里，shadow 路径才扩展长度 7（[mining.wgsl:89–100](../mining.wgsl#L89-L100)、[mining.wgsl:119–132](../mining.wgsl#L119-L132)）。 |
+```
 
-## 两个完整实验内核：绑定和入口
+以上为绑定和数据结构；下面是完整计算入口，接续前面的声明。
 
-实验的 `@group(0) @binding(n)` 是宿主提供缓冲的编号，`uniform` 用于只读参数，`storage, read` 只读较大数据，`storage, read_write` 可写输出。Rust 按相同顺序创建绑定并上传（[gpu.rs:121–169](../src/gpu.rs#L121-L169)、[gpu.rs:211–238](../src/gpu.rs#L211-L238)）。下面将两个文件中相邻、语义相同的行并列；不同行单独说明。
+```wgsl
+// compute 派发以 64 个 invocation 为一组，一个 invocation 负责一个候选。
+@compute @workgroup_size(64) // 每组 64 个 invocation；一个 invocation 处理一个候选。
+// global_invocation_id 是三维全局编号，这里只使用 x 分量。
+fn rc4_name(@builtin(global_invocation_id) position: vec3<u32>) {
+    // index 同时用于查候选元数据和定位对应输出。
+    let index = position.x; // 只使用三维全局编号的 x 分量作为候选下标。
+    // 宿主按工作组大小向上取整；尾组补出来的编号必须在访问缓冲前退出。
+    if (index >= params.count) { return; } // 派发按组数向上取整，超出真实数量的线程退出。
+    // 读取当前候选的字节偏移与长度。
+    let info = names[index];
+    // 函数局部状态数组只属于当前 invocation，其他候选不会访问。
+    var values: array<u32, 256>; // 函数内局部数组属于当前 invocation，其他候选不能访问。
+    // 遍历状态盒的 256 个槽，将 CPU 预计算的队伍状态复制过来。
+    for (var i = 0u; i < 256u; i += 1u) {
+        // i / 4 选向量，i % 4 选分量；状态值保存在 values 的同一槽。
+        values[i] = team_state[i / 4u][i % 4u]; // 从 64 个四分量向量中取出 256 项队伍状态。
+    }
+    // 密钥为 [0, UTF-8(name)...]；每一轮都重置局部 j 和密钥游标。
+    // 名字 KSA 做两轮；第二轮沿用第一轮交换后的状态，不重新复制队伍状态。
+    for (var round = 0u; round < 2u; round += 1u) { // 两轮保留 S-box 状态，但每轮重置 j 和密钥游标。
+        // j 是交换目标游标；每轮从 0 开始。
+        var j = 0u;
+        // k 是密钥游标；密钥逻辑上是前导零加名字的全部 UTF-8 字节。
+        var k = 0u;
+        // 每轮处理状态盒的 256 个槽，i 从 0 到 255。
+        for (var i = 0u; i < 256u; i += 1u) {
+            // k=0 表示前导零，不需要加值；k>0 时读取名字的第 k-1 字节。
+            if (k != 0u) { // k 为零表示隐式前导零，否则读取名字的第 k-1 个字节。
+                // 把名字内部下标加上本名字在连续字节流中的偏移。
+                let address = info.offset + k - 1u;
+                // 除以 4 选 u32，余数乘 8 选低到高的字节，右移并 &255 后加入 j。
+                j += (name_bytes[address / 4u] >> ((address % 4u) * 8u)) & 255u; // 除以 4 选打包字，余数乘 8 选字节，& 255 截取低八位。
+            }
+            // 加上当前状态值后取低 8 位，相当于模 256，得到 0～255 的目标槽。
+            j = (j + values[i]) & 255u; // 累加当前状态并对 256 取余，得到交换目标 j。
+            // 先保存 i 槽旧值，避免下面覆盖时丢失。
+            let temporary = values[i]; // 保存旧值，交换当前槽和目标槽；相同槽也安全。
+            // 将 j 槽值写入 i 槽。
+            values[i] = values[j];
+            // 将保存的旧 i 值写入 j 槽，完成交换；i=j 也安全。
+            values[j] = temporary;
+            // k 在 0～length 间循环；空名字时一直为 0，不会出现零长度取模。
+            if (k == info.length) { k = 0u; } else { k += 1u; } // 循环使用前导零和全部名字字节，空名字也能循环。
+        }
+    }
+    // 保留完整置换但只回读 256 字节/名字，而不是原型的 1024 字节。
+    // 每次输出四个槽，因此 256 个槽需要循环 64 次。
+    for (var i = 0u; i < 64u; i += 1u) {
+        // base 是这一组四个状态字节的起始槽下标。
+        let base = i * 4u;
+        // 按候选和组号定位输出；前两个状态值放在结果字最低和次低字节。
+        output_states[index * 64u + i] = values[base] | (values[base + 1u] << 8u) // 四个状态字节依次放入结果字的低至高位，结果按候选连续排列。
+            // 后两个值分别放在第 3、4 字节；或运算合并四个互不重叠的字节。
+            | (values[base + 2u] << 16u) | (values[base + 3u] << 24u);
+    }
+}
+```
 
-| private 行 | shared 行 | 解释 |
-| --- | --- | --- |
-| [2](../main.wgsl#L2) | [3](../rc4-shared.wgsl#L3) | `team_state` 是 64 个四分量向量，共 256 个 u32；CPU 算好的队伍 KSA 状态每字节扩成 u32。 |
-| [3–4](../main.wgsl#L3-L4) | [4–5](../rc4-shared.wgsl#L4-L5) | `NameInfo` 保存名字在连续输入中的字节偏移 `offset` 和字节长度 `length`；`names` 是候选元数据数组。与生成模式复用的字段含义不同。 |
-| [6–9](../main.wgsl#L6-L9) | [6–9](../rc4-shared.wgsl#L6-L9) | `name_bytes` 是四字节打包的 u32 数组；`output_states` 是可写结果；`Params` 有候选数和三个填充字，`params` 为 uniform。填充使宿主参数块为 16 字节；不是额外名字信息。 |
-| — | [10](../rc4-shared.wgsl#L10) | 工作组共享 `values[8192]`：256 槽 × 32 lane × 4 字节 = 32768 字节（32 KiB）。每个候选的 256 槽都在该候选独占的列里。 |
-| [11–12](../main.wgsl#L11-L12) | [12–13](../rc4-shared.wgsl#L12-L13) | 声明 compute 入口，分别每组 64 或 32 个 invocation。`position` 是三维全局 ID；shared 额外接收组内 lane。实验只用 x 维。 |
-| [13–15](../main.wgsl#L13-L15) | [14–16](../rc4-shared.wgsl#L14-L16) | 取全局 x 为候选编号，超出真实 `count` 的补齐 invocation 立即返回；否则读取该候选元数据。 |
-| [16–19](../main.wgsl#L16-L19) | [17–19](../rc4-shared.wgsl#L17-L19) | 遍历 0～255 槽，把队伍状态 `team_state[i/4][i%4]` 复制到本候选。private 在函数内建独立的 256 项 `values`；shared 写 `values[i*32+lane]`。比如 slot 5、lane 2 的地址是 162。 |
+## 三、rc4-shared.wgsl：按 lane 转置的工作组状态实验
 
-shared 的列属于不同 invocation，任何一次随机交换都只访问自己的 lane；其他候选不会读写该列。因此这里无需跨 lane 同步，也没有 `barrier`（[rc4-shared.wgsl:17–20](../rc4-shared.wgsl#L17-L20)）。转置布局意在使同槽不同 lane 分布到不同共享内存 bank；bank、warp 的实际组织及速度依赖硬件，不能保证所有设备都加速。宿主要求至少 32 KiB 工作组存储，否则提示使用 private（[gpu.rs:76–83](../src/gpu.rs#L76-L83)）。
+[rc4-shared.wgsl](../rc4-shared.wgsl) 与上一节是互斥选择的实验内核，同样只返回两轮 KSA 状态，并非完整测号；每组 32 个 invocation。工作组数组布局是 `values[槽号 * 32 + lane]`，同槽的不同 lane 相邻。每个 invocation 只初始化、交换、读取自己的列，因此不依赖其他 lane 的数据，不需要跨 lane 的 barrier；尾组的无效 invocation 可以提前退出。若将算法改为跨列通信，就必须重新设计同步及一致控制流，不能直接沿用此提前退出方式。转置旨在减少 bank 冲突，实际效果取决于硬件；该实现要求至少 32 KiB 工作组存储（[gpu.rs:76–83](../src/gpu.rs#L76-L83)）。
 
-### 两轮名字 KSA：每条语句
+```wgsl
+// 32 个候选共享一块 32KiB workgroup 状态，每列属于一个 invocation。
+// 转置布局让相同槽的 lane 相邻，意在减少共享内存 bank 冲突；实际效果取决于硬件。
+// 绑定 0 是只读 uniform，64 个四分量向量合计 256 个队伍状态值。
+@group(0) @binding(0) var<uniform> team_state: array<vec4<u32>, 64>; // 绑定 0：宿主预计算的队伍状态，64 个四分量共 256 项。
+// offset 和 length 描述候选在连续 UTF-8 字节流中的位置与字节数。
+struct NameInfo { offset: u32, length: u32, } // offset 和 length 是名字在连续 UTF-8 字节流中的偏移与长度。
+// 绑定 1 提供每个候选的只读元数据。
+@group(0) @binding(1) var<storage, read> names: array<NameInfo>; // 绑定 1：只读候选元数据。
+// 绑定 2 将连续名字字节按低字节在前，每四字节打包成一个 u32。
+@group(0) @binding(2) var<storage, read> name_bytes: array<u32>; // 绑定 2：每个 u32 低字节在前的名字数据。
+// 绑定 3 是可写输出，每个候选保留 64 个 u32 状态。
+@group(0) @binding(3) var<storage, read_write> output_states: array<u32>; // 绑定 3：可写状态结果，每个候选 64 个 u32。
+// count 是真实候选数，三个填充字段使参数块为 16 字节。
+struct Params { count: u32, padding0: u32, padding1: u32, padding2: u32, } // count 是真实候选数，三个字段填充参数块到 16 字节。
+// 绑定 4 提供当前批次参数。
+@group(0) @binding(4) var<uniform> params: Params; // 绑定 4：宿主上传的只读批次参数。
+// 工作组共享数组有 256×32 个 u32，占 32768 字节；每个 lane 独占一列。
+var<workgroup> values: array<u32, 8192>; // 256 个槽乘 32 列，每列独占一个候选，共 32 KiB。
 
-密钥的概念字节序列是 `[0] + UTF-8(name)`，循环使用，长度为 `info.length + 1`。代码没有实际创建这个数组：k=0 时跳过名字加法，相当于加 0；k>0 时读第 k-1 个名字字节。即使空名字，密钥也有一个零，不会出现长度为零的取模。
+```
 
-| private 行 | shared 行 | 解释 |
-| --- | --- | --- |
-| [21–24](../main.wgsl#L21-L24) | [21–24](../rc4-shared.wgsl#L21-L24) | 外层两轮；每轮 j（交换目标游标）和 k（密钥游标）都归零；内层 i 从 0 到 255，每轮 256 次。状态本身不在轮间重置。 |
-| [25–28](../main.wgsl#L25-L28) | [25–28](../rc4-shared.wgsl#L25-L28) | k 非零时，`address=info.offset+k-1` 是输入字节绝对位置；`address/4` 选择 u32，`address%4` 选择该字内位置，右移并掩码得到字节，加到 j。k 为零则隐式加零。 |
-| [29](../main.wgsl#L29) | [29–32](../rc4-shared.wgsl#L29-L32) | j 加当前槽值后 `&255`，得到 0～255 的交换槽。shared 先算 `address_i=i*32+lane` 并将当前值存到 `current`，再算 `address_j=j*32+lane`。 |
-| [30–32](../main.wgsl#L30-L32) | [33–34](../rc4-shared.wgsl#L33-L34) | 保存 i 位置旧值，先将 j 位置值放入 i，再将旧值放入 j，完成交换；i=j 时也安全。shared 的两个地址都使用同一 lane。 |
-| [33–35](../main.wgsl#L33-L35) | [35–37](../rc4-shared.wgsl#L35-L37) | k 等于名字长度时归零，否则加 1：因 k 从 0 到 length，恰好循环前导零和全部名字字节。结束内层、外层循环。 |
-| [37–42](../main.wgsl#L37-L42) | [38–45](../rc4-shared.wgsl#L38-L45) | 64 次循环，每次 base=i*4，读取连续四个状态槽，分别左移 0、8、16、24 位后按位或，写入 `output_states[index*64+i]`。shared 对每槽再乘 32 加 lane。每候选 64 个 u32，即 256 字节；保留完整排列并按候选顺序排列。 |
+以上为绑定与共享数组；下面是计算入口，接续前面的声明。
 
-举例：名字 `A` 的 UTF-8 为一个字节 65，密钥游标依次循环 k=0（字节 0）、k=1（字节 65）、k=0……；若名字为 `中`，它是三个 UTF-8 字节，游标依次为 0、1、2、3、0，不是只走一个汉字。
+```wgsl
+// 每组固定 32 个 invocation；只回传两轮名字 KSA 结果。
+@compute @workgroup_size(32) // 每组 32 个 invocation；这里只回传两轮 KSA 状态。
+// position.x 是批内全局候选编号，lane 是组内 0～31 的编号。
+fn rc4_name(@builtin(global_invocation_id) position: vec3<u32>, @builtin(local_invocation_index) lane: u32) { // position.x 是批内全局候选编号，lane 是组内编号。
+    // 用全局 x 编号选择候选和它的输出区域。
+    let index = position.x;
+    // 尾组向上补齐时，多余 invocation 在访问名字或状态前退出。
+    if (index >= params.count) { return; } // 尾组补齐的 invocation 不处理候选，也不访问数组。
+    // 读取当前候选的字节偏移和长度。
+    let info = names[index];
+    // 逐槽复制 CPU 预计算的队伍状态，准备当前候选的状态盒。
+    for (var i = 0u; i < 256u; i += 1u) {
+        // 转置地址为槽号×32+lane；例如槽 5、lane 2 位于 162，其他 lane 使用不同地址。
+        values[i * 32u + lane] = team_state[i / 4u][i % 4u]; // 将队伍状态复制到本 lane 的转置列：槽 i 的地址为 i*32+lane。
+    }
+    // 每列由同一个 invocation 初始化并读写，不跨列交换，无须轮内 barrier。
+    // 执行两轮名字 KSA；状态跨轮保留，j 与 k 每轮重新从零开始。
+    for (var round = 0u; round < 2u; round += 1u) { // 两轮连续更新状态；每轮重新从零设置 j 和密钥游标 k。
+        // j 跟踪当前轮的交换目标槽。
+        var j = 0u;
+        // k 跟踪密钥位置：0 表示前导零，其余位置对应名字字节。
+        var k = 0u;
+        // 每轮从 i=0 处理到 i=255，依次更新每个槽。
+        for (var i = 0u; i < 256u; i += 1u) {
+            // 前导零不改变 j，只有 k 非零时才读取名字字节。
+            if (k != 0u) { // k=0 对应隐式前导零，其余位置读取名字字节。
+                // 将名字内部位置 k-1 转成连续输入流中的绝对字节地址。
+                let address = info.offset + k - 1u;
+                // 除以 4 选打包字，余数乘 8 选字节，右移并掩码后累加到 j。
+                j += (name_bytes[address / 4u] >> ((address % 4u) * 8u)) & 255u; // 除以 4 选输入字，余数选字节，右移并掩码提取。
+            }
+            // 把当前槽 i 转成共享数组中的地址，并固定使用本 invocation 的 lane。
+            let address_i = i * 32u + lane;
+            // 保存当前槽旧值，既用于计算 j，也用于后面的交换。
+            let current = values[address_i];
+            // 加当前值后取低 8 位，相当于对 256 取余。
+            j = (j + current) & 255u; // 加当前槽值后对 256 取余，得到交换目标 j。
+            // 把目标槽 j 映射到同一 lane 的列，绝不读写其他候选的列。
+            let address_j = j * 32u + lane; // 目标地址仍在同一 lane 的列中。
+            // 先把目标槽的值写到当前槽；当前旧值已经保存在 current。
+            values[address_i] = values[address_j]; // 交换两个槽；即使 i 与 j 相同也安全。
+            // 再把旧当前值写到目标槽；两个槽相同也不会破坏数据。
+            values[address_j] = current;
+            // 密钥游标在 0～length 间循环，包含前导零；空名字也有效。
+            if (k == info.length) { k = 0u; } else { k += 1u; } // 密钥按前导零和全部名字字节循环。
+        }
+    }
+    // 256 个状态槽四个一组，循环 64 次打包输出。
+    for (var i = 0u; i < 64u; i += 1u) { // 每四个状态槽打包成一个 u32，每候选输出 64 个字。
+        // base 是这一组的首个状态槽编号。
+        let base = i * 4u;
+        // 当前候选的输出区从 index×64 开始；第一个状态值占最低字节。
+        output_states[index * 64u + i] = values[base * 32u + lane] // 依次将四个槽放到结果字的低至高字节，按候选连续排列。
+            // 读取同一 lane 的下一槽，左移 8 位放入第二字节。
+            | (values[(base + 1u) * 32u + lane] << 8u)
+            // 第三槽左移 16 位，放入第三字节。
+            | (values[(base + 2u) * 32u + lane] << 16u)
+            // 第四槽左移 24 位，四个字节按位或为一个输出 u32。
+            | (values[(base + 3u) * 32u + lane] << 24u);
+    }
+}
+```
 
-宿主把每个名字的原始 UTF-8 字节连续拼接，记录偏移与长度，补零到四字节对齐；派发后把输出复制到 staging 缓冲并映射回 CPU（[gpu.rs:211–256](../src/gpu.rs#L211-L256)、[gpu.rs:261–279](../src/gpu.rs#L261-L279)）。补零只是缓冲对齐，不是名字的一部分；尾部 invocation 的边界检查防止读到它们当候选。
-
-## 如何核实和继续学习
-
-- 对照 [gpu_input.rs:154–210](../src/gpu_input.rs#L154-L210) 的固定编码、跨 32 位进位和极值测试，以及 [gpu.rs:320–340](../src/gpu.rs#L320-L340) 中默认忽略、需要 GPU 的 private/shared 对照测试。测试代码存在不等于本文写作时实际运行通过。
-- 可以按 [RC4 实验记录:78–86](rc4-experiment.md#L78-L86) 自行选择运行测试；硬件测试需要可用 GPU。完整路径的浮点粗筛与 CPU 精算边界、平台误差风险见 [README:53–60](../README.md#L53-L60)。本文是静态代码核对，不是 GPU 实测、性能承诺或跨设备正确性证明。
+可继续参考 [固定编码与进位测试](../src/gpu_input.rs#L154-L210)、[实验内核对照测试](../src/gpu.rs#L320-L340) 和 [RC4 实验记录](rc4-experiment.md)。测试源码存在不代表本次文档修改实际运行过 GPU 测试。
