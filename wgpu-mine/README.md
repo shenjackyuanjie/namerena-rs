@@ -8,7 +8,7 @@
 
 ## 想学习 GPU 实现？
 
-从 [GPU 测号学习路线](docs/gpu-learning-00-start.md) 开始：包含零基础技术入门、正式 WGSL 逐行导读，以及名字生成与 RC4 实验内核导读。
+从 [GPU 测号学习路线](docs/gpu-learning-00-start.md) 开始：包含零基础技术入门；四份 WGSL 的完整代码直接写在文档中，并配有详细中文注释。
 
 ## 直接使用
 

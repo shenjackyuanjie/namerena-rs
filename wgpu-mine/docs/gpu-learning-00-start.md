@@ -5,8 +5,8 @@
 ## 怎么读
 
 1. [技术入门与整个测号流程](gpu-learning-01-basics.md)：先了解 GPU、wgpu、WGSL、内存和 CPU/GPU 分工，再看本项目如何计算、筛选与验证。
-2. [正式测号内核逐行导读](gpu-learning-02-mining-wgsl.md)：打开 [mining.wgsl](../mining.wgsl)，按源文件顺序对照字段、函数和每个分支。
-3. [GPU 名字生成及 RC4 实验内核导读](gpu-learning-03-other-wgsl.md)：再看 [generated-key.wgsl](../generated-key.wgsl)、[main.wgsl](../main.wgsl) 和 [rc4-shared.wgsl](../rc4-shared.wgsl)。前者是正式内核的一段替换代码，后两者服务于 RC4 实验，不是完整测号。
+2. [正式测号内核：完整代码与中文注释](gpu-learning-02-mining-wgsl.md)：文档直接贴出完整 `mining.wgsl`，代码旁就有中文解释，不必反复跳转源码。
+3. [GPU 名字生成及 RC4 实验内核：完整代码与中文注释](gpu-learning-03-other-wgsl.md)：同样内嵌 `generated-key.wgsl`、`main.wgsl` 和 `rc4-shared.wgsl` 的完整代码。前者是正式内核的一段替换代码，后两者服务于 RC4 实验，不是完整测号。
 4. 能读懂后再看 [使用说明与精度契约](../README.md)、[极限优化报告](gpu-extreme.md) 和 [native 对照](native.md)。性能数字是该报告记录的硬件和负载下的实测，不是所有机器、所有命中率都能达到的保证。
 
 ## 先抓住一张全景图

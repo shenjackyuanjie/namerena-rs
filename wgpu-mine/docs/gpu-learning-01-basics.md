@@ -124,7 +124,7 @@ cargo test -p wgpu-mine --locked -j 2 -- --ignored --nocapture --test-threads=1
 
 1. 看 [main.rs:45–127](../src/main.rs#L45-L127) 的参数和 [input.rs:17–46](../src/input.rs#L17-L46) 的名字编码；手算 ID 0 的 Base64 和 65 个候选的三组派发。
 2. 看 [main.rs:208–280](../src/main.rs#L208-L280)：找到输入路径、GPU 调用、批内下标恢复 ID 和写出的位置。
-3. 看 [mining_gpu.rs:131–177](../src/mining_gpu.rs#L131-L177) 如何创建设备及 pipeline，再对照 [mining.wgsl:5–56](../mining.wgsl#L5-L56) 的六个绑定。
-4. 按 [mining.wgsl:196–280](../mining.wgsl#L196-L280) 跟踪一个 invocation；不懂业务计算时对照 [core.rs:42–112](../src/core.rs#L42-L112) 的 CPU 实现。
-5. 看 [mining.wgsl:294–364](../mining.wgsl#L294-L364) 的模型与候选压缩，再看 [mining_gpu.rs:363–489](../src/mining_gpu.rs#L363-L489) 的两段回读和精筛。
+3. 看 [mining_gpu.rs:131–177](../src/mining_gpu.rs#L131-L177) 如何创建设备及 pipeline，再在 [正式内核的内嵌代码](gpu-learning-02-mining-wgsl.md) 中找到六个绑定及旁边的解释。
+4. 在同一份内嵌代码中找到 `main`，跟踪一个 invocation；不懂业务计算时对照 [core.rs:42–112](../src/core.rs#L42-L112) 的 CPU 实现。
+5. 继续读内嵌代码中的模型与候选压缩，再看 [mining_gpu.rs:363–489](../src/mining_gpu.rs#L363-L489) 的两段回读和精筛。
 6. 最后看 [output.rs:8–54](../src/output.rs#L8-L54)、[main.rs:320–432](../src/main.rs#L320-L432) 和 [gpu-extreme.md](gpu-extreme.md)，区分输出正确性、样本精度与性能数据的证据范围。
