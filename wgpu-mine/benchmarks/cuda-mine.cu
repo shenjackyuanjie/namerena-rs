@@ -6,6 +6,7 @@
 #include <new>
 
 using U = uint32_t;
+using Byte = uint8_t;
 struct Header { U count, prop_pass, scored, shadows; };
 struct Record {
     U index, props[8], ids[16], freqs[16];
@@ -16,7 +17,7 @@ struct Readback { Header header; float kernel_ms; const Record* records; };
 static_assert(sizeof(Header) == 16 && sizeof(Record) == 176);
 
 // key[0] 是前导零。宿主已附好 ?shadow；token 0x100..0x111 引用生成字节。
-struct Input { U prefix[64], key[264], len, first, j; };
+struct Input { U prefix[64], key[264], len, first, j, single_slot; };
 __constant__ Input input;
 
 __device__ __forceinline__ U utf8_3(U c) {
@@ -37,51 +38,106 @@ template<int Lanes> struct Sbox {
     __device__ __forceinline__ void restore() const {
         for (U i = 0; i < 64; ++i) column[i * Lanes] = input.prefix[i];
     }
-    __device__ __forceinline__ U get(U slot) const {
-        return (column[(slot >> 2) * Lanes] >> ((slot & 3) * 8)) & 255;
+    __device__ __forceinline__ static U byte(U word, U slot) {
+        return (word >> ((slot & 3) * 8)) & 255;
     }
-    __device__ __forceinline__ void set(U slot, U value) const {
-        U& word = column[(slot >> 2) * Lanes];
-        U shift = (slot & 3) * 8;
-        word = (word & ~(255u << shift)) | (value << shift);
+    __device__ __forceinline__ U& packed(U slot) const { return column[(slot >> 2) * Lanes]; }
+    __device__ __forceinline__ U get(U slot) const { return byte(packed(slot), slot); }
+    __device__ __forceinline__ U exchange(U a, U b, U word_a, U cur) const {
+        U word_b = packed(b);
+        U other = byte(word_b, b);
+        // XOR 仅改两个目标字节；同字时第二次写入要合并第一次的更新。
+        U delta = cur ^ other;
+        U update_a = word_a ^ (delta << ((a & 3) * 8));
+        packed(a) = update_a;
+        packed(b) = (((a ^ b) < 4) ? update_a : word_b) ^ (delta << ((b & 3) * 8));
+        return other;
+    }
+    __device__ __forceinline__ void ksa_step(U i, U& j, U key) const {
+        U word = packed(i);
+        U cur = byte(word, i);
+        j = (j + key + cur) & 255;
+        exchange(i, j, word, cur);
+    }
+    __device__ __forceinline__ void ksa_literal(U& i, U& j, U begin, U end) const {
+        const U stop = min(256u, i + end - begin);
+        for (U k = begin; i < stop; ++i, ++k) ksa_step(i, j, input.key[k]);
+    }
+    __device__ __forceinline__ void ksa_single_slot(const U (&chunks)[6], U extra) const {
+        const U first = input.first;
+        const U end = input.len + extra + 1;
+        #pragma unroll 1
+        for (U round = 0; round < 2; ++round) {
+            U i = round == 0 ? first : 0;
+            U j = round == 0 ? input.j : 0;
+            U prefix_begin = i; // 首轮从快照继续；次轮从含前导零的前缀开始。
+            while (i < 256) {
+                ksa_literal(i, j, prefix_begin, first);
+                if (i > 256 - 18) {
+                    for (U k = first; i < 256; ++i, ++k) ksa_step(i, j, key_byte(chunks, k));
+                    break;
+                }
+                #pragma unroll 6
+                for (int c = 0; c < 6; ++c) {
+                    const U word = chunks[c];
+                    ksa_step(i++, j, word & 255);
+                    ksa_step(i++, j, (word >> 8) & 255);
+                    ksa_step(i++, j, word >> 16);
+                }
+                ksa_literal(i, j, first + 18, end); // 名字后缀和影子字节都是常量。
+                prefix_begin = 0;
+            }
+        }
     }
     __device__ __forceinline__ void ksa(const U (&chunks)[6], U extra) const {
         restore();
+        if (input.single_slot) {
+            ksa_single_slot(chunks, extra);
+            return;
+        }
         for (U round = 0; round < 2; ++round) {
             U i = round == 0 ? input.first : 0;
             U k = i, j = round == 0 ? input.j : 0;
             for (; i < 256; ++i) {
-                U cur = get(i);
-                j = (j + key_byte(chunks, k) + cur) & 255;
-                U other = get(j);
-                set(i, other);
-                set(j, cur); // 两槽在同一 word 时，必须读刚更新过的值。
+                ksa_step(i, j, key_byte(chunks, k));
                 k = k == input.len + extra ? 0 : k + 1;
             }
         }
     }
     template<bool All>
-    __device__ __forceinline__ U collect(U* base, U& slot, U filled, U need) const {
-        for (; slot < 256 && (All || filled < need); ++slot) {
-            U value = (get(slot) * 181 + 160) & 255;
-            if (value >= 89 && value < 217) base[filled++] = value & 63;
+    __device__ __forceinline__ U collect(Byte* base, U& slot, U filled, U need) const {
+        if constexpr (All) {
+            // 完整扫描按同样的字节顺序收集，每个共享字只读取一次。
+            for (U i = 0; i < 64; ++i) {
+                const U word = column[i * Lanes];
+                #pragma unroll
+                for (U j = 0; j < 4; ++j) {
+                    const U value = ((word >> (8 * j)) * 181 + 160) & 255;
+                    if (value >= 89 && value < 217) base[filled++] = Byte(value & 63);
+                }
+            }
+            slot = 256;
+        } else {
+            for (; slot < 256 && filled < need; ++slot) {
+                const U value = (get(slot) * 181 + 160) & 255;
+                if (value >= 89 && value < 217) base[filled++] = Byte(value & 63);
+            }
         }
         return filled;
     }
     __device__ __forceinline__ U prga(U& a, U& b) const {
         a = (a + 1) & 255;
-        U cur = get(a);
+        U word = packed(a);
+        U cur = byte(word, a);
         b = (b + cur) & 255;
-        U other = get(b);
-        set(a, other);
-        set(b, cur);
+        U other = exchange(a, b, word, cur);
         return get((cur + other) & 255);
     }
 };
 
 // PBB 的可移植部分：对 HP 的 10 个元素用固定 compare-exchange 网络。
 template<bool Network>
-__device__ __forceinline__ U properties(const U* base, U* props) {
+__device__ __forceinline__ U properties(const Byte* base, U* props) {
     U hp[10];
     #pragma unroll
     for (int i = 0; i < 10; ++i) hp[i] = base[i];
@@ -131,14 +187,16 @@ __global__ void mine(Header* output, Record* records, const float2* __restrict__
     };
     const Sbox<Lanes> box{values + threadIdx.x};
     box.ksa(chunks, 0);
-    U base[128], props[8], slot = 0;
+    Byte base[128];
+    U props[8], slot = 0;
     U filled = box.template collect<(Mode != 0)>(base, slot, 0, Mode == 0 ? 31 : 128);
     U sum = properties<Mode == 2>(base, props);
     if (!capture && sum <= 3 * prop) return;
     if constexpr (Mode == 0) box.template collect<false>(base, slot, filled, 128);
     atomicAdd(&output->prop_pass, 1u);
 
-    U ids[40], freqs[16];
+    // 技能 ID <40；频率基础至多 53，倍增/附加后仍不超过 106。
+    Byte ids[40], freqs[16];
     #pragma unroll
     for (U i = 0; i < 40; ++i) ids[i] = i;
     U a = 0, b = 0, s = 0;
@@ -146,26 +204,26 @@ __global__ void mine(Header* output, Record* records, const float2* __restrict__
         #pragma unroll 1
         for (U i = 0; i < 40; ++i) {
             U high = box.prga(a, b), low = box.prga(a, b);
-            U rnd = ((high << 8) | low) % 40;
             U cur = ids[i];
-            s = ((s + rnd + cur) & 255) % 40;
+            // s、余数、cur 都小于 40；旧和小于 256，取模可以合并。
+            s = (((high << 8) | low) + s + cur) % 40u;
             ids[i] = ids[s];
-            ids[s] = cur;
+            ids[s] = Byte(cur);
         }
     }
     int last = -1;
     for (U i = 0; i < 16; ++i) {
         U k = 64 + i * 4;
-        U p = min(min(base[k], base[k+1]), min(base[k+2], base[k+3]));
+        U p = min(min(U(base[k]), U(base[k+1])), min(U(base[k+2]), U(base[k+3])));
         freqs[i] = 0;
         if (p > 10 && ids[i] < 35) {
-            freqs[i] = p - 10;
+            freqs[i] = Byte(p - 10);
             if (p < 35) last = int(i);
         }
     }
     if (last >= 0) freqs[last] *= 2;
-    if (last != 14 && freqs[14]) freqs[14] += min(min(base[60], base[61]), freqs[14]);
-    if (last != 15 && freqs[15]) freqs[15] += min(min(base[62], base[63]), freqs[15]);
+    if (last != 14 && freqs[14]) freqs[14] += min(min(U(base[60]), U(base[61])), U(freqs[14]));
+    if (last != 15 && freqs[15]) freqs[15] += min(min(U(base[62]), U(base[63])), U(freqs[15]));
 
     float features[44] = {};
     for (U i = 0; i < 8; ++i) features[i] = float(props[i]);
@@ -175,7 +233,8 @@ __global__ void mine(Header* output, Record* records, const float2* __restrict__
         atomicAdd(&output->shadows, 1u);
         box.ksa(chunks, 7);
         slot = 0;
-        box.template collect<(Mode != 0)>(base, slot, 0, Mode == 0 ? 31 : 128);
+        // 影子只使用前 31 个属性值，不需要计算技能。
+        box.template collect<false>(base, slot, 0, 31);
         U shadow_props[8];
         U shadow_sum = properties<Mode == 2>(base, shadow_props);
         shadow = int32_t(shadow_sum) - 3 * 7 * 36 - 9 * int32_t(shadow_props[7] - 36) - 630;
@@ -269,6 +328,15 @@ API int cuda_mine_open(const U* state, const U* map, U len, U first, U j,
     data.len = len;
     data.first = first;
     data.j = j;
+    // 只在快照恰位于唯一连续的 18 个生成字节之前且其余字节全固定时分段。
+    if (first != 0 && first + 18 <= len + 1) {
+        data.single_slot = 1;
+        for (U k = 1; k <= len; ++k) {
+            const bool valid = k >= first && k < first + 18
+                ? data.key[k] == 0x100u + k - first : data.key[k] < 256;
+            if (!valid) { data.single_slot = 0; break; }
+        }
+    }
     auto error = setup(*b, data, weights);
     if (error != cudaSuccess) { delete b; return error; }
     *handle = b;

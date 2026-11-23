@@ -5,6 +5,10 @@ use wgpu::util::DeviceExt;
 
 const RECORD_WORDS: usize = 44;
 const RECORD_BYTES: usize = RECORD_WORDS * 4;
+const HEADER_BYTES: u64 = 16;
+const INLINE_RECORDS: usize = 4;
+/// 32 线程工作组与 downlevel 单维 65,535 个工作组的上界。
+pub const MAX_GENERATED_BATCH: usize = 65_535 * 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum SboxLayout {
@@ -34,7 +38,7 @@ impl GpuOptions {
         }
         Ok(self.workgroup_size * if self.sbox == SboxLayout::Packed { 256 } else { 1024 })
     }
-    fn shader_source(self, generated: bool) -> Result<String, String> {
+    fn shader_source(self, generated: Option<&GpuInput>) -> Result<String, String> {
         let bytes = self.shared_bytes()?;
         let mut source = include_str!("../mining.wgsl")
             .replace(
@@ -50,14 +54,44 @@ impl GpuOptions {
             "const COMPACT_MODEL: bool = false;",
             &format!("const COMPACT_MODEL: bool = {};", self.compact_model),
         );
-        if generated {
+        if let Some(input) = generated {
             source = source.replace("const GENERATED: bool = false;", "const GENERATED: bool = true;");
             let (before, rest) = source.split_once("// KEY_BEGIN").ok_or("着色器缺少KEY_BEGIN")?;
             let (_, after) = rest.split_once("// KEY_END").ok_or("着色器缺少KEY_END")?;
             source = format!("{before}{}\n{after}", include_str!("../generated-key.wgsl"));
+            if let Some(cycle) = (self.sbox == SboxLayout::Packed).then(|| cycle_shader(input)).flatten() {
+                let (left, tail) = source.split_once("// GENERATED_CYCLE_BEGIN").ok_or("着色器缺少键环起始标记")?;
+                let (_, right) = tail.split_once("// GENERATED_CYCLE_END").ok_or("着色器缺少键环结束标记")?;
+                source = format!("{left}{cycle}\n{right}");
+            }
         }
         Ok(source)
     }
+}
+
+// 仅编译短单槽 Base16384 的字面字节；避免为长模板生成过大的 GPU 程序。
+// 不内置任何模板，也不对实际 ID 的高位或取值范围作假定。
+fn cycle_shader(input: &GpuInput) -> Option<String> {
+    if input.encoding != 0 || input.name_len > 64 || input.template_map.len() != input.name_len as usize {
+        return None;
+    }
+    let first = input.prefix_steps.checked_sub(1)? as usize;
+    let end = first.checked_add(18)?;
+    let map = &input.template_map;
+    if !map.get(first..end)?.iter().copied().eq(0x100..0x112)
+        || map[..first].iter().chain(&map[end..]).any(|&byte| byte >= 256)
+    {
+        return None;
+    }
+    let literal = |(k, byte)| format!("            cursor = segment_step(lane, i + {k}u, cursor, {byte}u);\n");
+    let prefix = std::iter::once(0).chain(map[..first].iter().copied()).enumerate()
+        .map(literal).collect::<String>();
+    let suffix = map[end..].iter().copied().enumerate()
+        .map(|(k, byte)| literal((end + 1 + k, byte))).collect::<String>();
+    Some(include_str!("../generated-cycle.wgsl")
+        .replace("/* KSA_FIRST */", &format!("{}u", first + 1))
+        .replace("/* KSA_LEN */", &format!("{}u", input.name_len + 1))
+        .replace("/* KSA_PREFIX */", &prefix).replace("/* KSA_SUFFIX */", &suffix))
 }
 
 pub struct GpuRecord {
@@ -140,9 +174,11 @@ impl GpuMiner {
         let adapter_description = format!("{} / {:?} / {:?}", info.name, info.backend, info.device_type);
         let mut limits = wgpu::Limits::downlevel_defaults();
         limits.max_compute_workgroup_storage_size = shared_bytes;
+        // 对显式的大批次只申请真正需要的绑定大小，不抬高默认批次的要求。
+        let binding_bytes = input_bytes.max(output_bytes).max((capacity * 8) as u64);
+        limits.max_storage_buffer_binding_size = limits.max_storage_buffer_binding_size.max(binding_bytes);
+        limits.max_buffer_size = limits.max_buffer_size.max(binding_bytes);
         if !limits.check_limits(&adapter.limits())
-            || input_bytes > limits.max_storage_buffer_binding_size
-            || output_bytes > limits.max_storage_buffer_binding_size
             || (capacity as u64).div_ceil(u64::from(options.workgroup_size))
                 > u64::from(limits.max_compute_workgroups_per_dimension)
         {
@@ -165,7 +201,7 @@ impl GpuMiner {
         let errors = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("完整测号内核"),
-            source: wgpu::ShaderSource::Wgsl(options.shader_source(generated.is_some())?.into()),
+            source: wgpu::ShaderSource::Wgsl(options.shader_source(generated.as_ref())?.into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("RC4 属性 技能 shadow XP/XD"),
@@ -190,6 +226,16 @@ impl GpuMiner {
         let state = generated
             .as_ref()
             .map_or_else(|| crate::cpu::team_state(team).map(u32::from), |input| input.prefix_state);
+        // 保持 uniform 的固定大小；packed 模式只读取开头 64 个打包字。
+        let state = if options.sbox == SboxLayout::Packed {
+            let mut compressed = [0; 256];
+            for (out, bytes) in compressed.iter_mut().zip(state.chunks_exact(4)) {
+                *out = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+            }
+            compressed
+        } else {
+            state
+        };
         let team_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("缓存队伍状态"),
             contents: bytemuck::cast_slice(&state),
@@ -236,8 +282,8 @@ impl GpuMiner {
             entries: &entries,
         });
         let header_staging = create(
-            "计数与时间戳回读",
-            32,
+            "计数、少量命中与时间戳回读",
+            HEADER_BYTES + (capacity.min(INLINE_RECORDS) * RECORD_BYTES) as u64 + 16,
             wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         );
         let record_staging = create(
@@ -360,7 +406,6 @@ impl GpuMiner {
                 refined: 0,
             });
         }
-        self.queue.write_buffer(&self.output, 0, bytemuck::cast_slice(&[0_u32; 4]));
         // 八围物理上界远低于 10000，钳制仅避免 shader 中 3*p 的 u32 溢出，不改变判定。
         self.queue.write_buffer(
             &self.params,
@@ -379,6 +424,7 @@ impl GpuMiner {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("完整批次测号"),
         });
+        encoder.clear_buffer(&self.output, 0, Some(HEADER_BYTES));
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("GPU 完整计算与压缩"),
@@ -392,34 +438,45 @@ impl GpuMiner {
             pass.set_bind_group(0, &self.group, &[]);
             pass.dispatch_workgroups((input_count as u32).div_ceil(self.workgroup_size), 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&self.output, 0, &self.header_staging, 0, 16);
+        // 低命中批把头与前几条记录一次回读；更多记录完整回退。
+        let inline_capacity = self.capacity.min(INLINE_RECORDS);
+        let inline_end = HEADER_BYTES + (inline_capacity * RECORD_BYTES) as u64;
+        encoder.copy_buffer_to_buffer(&self.output, 0, &self.header_staging, 0, inline_end);
         if let (Some(query), Some(resolve)) = (&self.query, &self.resolve) {
             encoder.resolve_query_set(query, 0..2, resolve, 0);
-            encoder.copy_buffer_to_buffer(resolve, 0, &self.header_staging, 16, 16);
+            encoder.copy_buffer_to_buffer(resolve, 0, &self.header_staging, inline_end, 16);
         }
         self.queue.submit(Some(encoder.finish()));
-        let header = map_read(&self.device, &self.header_staging, if self.query.is_some() { 32 } else { 16 })?;
+        let header_len = inline_end + if self.query.is_some() { 16 } else { 0 };
+        let header = map_read(&self.device, &self.header_staging, header_len)?;
         let word = |i: usize| u32::from_le_bytes(header[i * 4..i * 4 + 4].try_into().unwrap());
         let count = word(0) as usize;
-        if count > input_count || word(1) as usize > input_count || word(2) as usize > input_count {
+        if count > input_count || word(1) as usize > input_count || word(3) > word(1) {
             return Err("GPU 候选计数超出输入范围".to_owned());
         }
         let kernel_time = self.query.as_ref().map(|_| {
-            let begin = u64::from_le_bytes(header[16..24].try_into().unwrap());
-            let end = u64::from_le_bytes(header[24..32].try_into().unwrap());
+            let offset = inline_end as usize;
+            let begin = u64::from_le_bytes(header[offset..offset + 8].try_into().unwrap());
+            let end = u64::from_le_bytes(header[offset + 8..offset + 16].try_into().unwrap());
             Duration::from_secs_f64(end.wrapping_sub(begin) as f64 * f64::from(self.queue.get_timestamp_period()) / 1e9)
         });
         let mut records = Vec::with_capacity(count);
         let mut max_error = [0.0_f64; 2];
         let mut refined = 0;
         if count != 0 {
-            let bytes = (count * RECORD_BYTES) as u64;
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("紧凑候选回读"),
-            });
-            encoder.copy_buffer_to_buffer(&self.output, 16, &self.record_staging, 0, bytes);
-            self.queue.submit(Some(encoder.finish()));
-            let data = map_read(&self.device, &self.record_staging, bytes)?;
+            let bytes = count * RECORD_BYTES;
+            let overflow;
+            let data = if count <= inline_capacity {
+                &header[HEADER_BYTES as usize..HEADER_BYTES as usize + bytes]
+            } else {
+                let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("紧凑候选回读"),
+                });
+                encoder.copy_buffer_to_buffer(&self.output, HEADER_BYTES, &self.record_staging, 0, bytes as u64);
+                self.queue.submit(Some(encoder.finish()));
+                overflow = map_read(&self.device, &self.record_staging, bytes as u64)?;
+                &overflow
+            };
             for record in data.as_chunks::<RECORD_BYTES>().0 {
                 let mut words = [0_u32; RECORD_WORDS];
                 for (word, bytes) in words.iter_mut().zip(record.as_chunks::<4>().0) {
@@ -480,7 +537,8 @@ impl GpuMiner {
         Ok(GpuBatch {
             records,
             prop_pass: word(1),
-            scored: word(2),
+            // 属性通过后每个候选必算评分，筛选在其后；不再做同一个计数的第二次原子操作。
+            scored: word(1),
             shadows: word(3),
             kernel_time,
             wall_time: start.elapsed(),
@@ -516,6 +574,30 @@ fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer, bytes: u64) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cycle_generation_checks_encoding_layout_and_exact_token_span() {
+        use crate::input::Encoding;
+
+        let input = GpuInput::new("队@伍", "前[]后", Encoding::Base16384).unwrap().unwrap();
+        let src = GpuOptions::default().shader_source(Some(&input)).unwrap();
+        assert!(src.contains("const DIRECT_CYCLE: bool = true;"));
+        assert!(src.contains("const CYCLE_FIRST: u32 = 4u;"));
+        assert!(src.contains("const CYCLE_LEN: u32 = 25u;"));
+        assert!(src.contains("i + 22u, cursor, 229u")); // 后缀的第一个 UTF-8 字节。
+
+        let wide = GpuOptions { sbox: SboxLayout::Wide, ..GpuOptions::default() };
+        assert!(wide.shader_source(Some(&input)).unwrap().contains("const DIRECT_CYCLE: bool = false;"));
+        assert!(GpuOptions::default().shader_source(None).unwrap().contains("const DIRECT_CYCLE: bool = false;"));
+        for (template, encoding) in [
+            ("前[]后[]".to_owned(), Encoding::Base16384),
+            ("前[]后".to_owned(), Encoding::Base64Url),
+            (format!("{}[]", "x".repeat(47)), Encoding::Base16384),
+        ] {
+            let input = GpuInput::new("", &template, encoding).unwrap().unwrap();
+            assert!(cycle_shader(&input).is_none(), "{template:?} {encoding:?}");
+        }
+    }
 
     fn samples(count: usize) -> Vec<String> {
         (0..count)

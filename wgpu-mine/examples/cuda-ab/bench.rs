@@ -28,6 +28,12 @@ enum Mode {
     Sort10 = 2,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Backend {
+    Wgsl,
+    Cuda,
+}
+
 #[derive(Parser)]
 #[command(about = "同区间 WGSL/Vulkan 和 CUDA 全链路 A/B（Base16384, p550/x4000/d5000）")]
 struct Args {
@@ -51,7 +57,16 @@ struct Args {
     cuda_first: bool,
     #[arg(long, default_value_t = 32)]
     cuda_block: u32,
-    #[arg(long, value_enum, default_value = "split")]
+    /// WGSL 工作组大小；与 CUDA block 可分别扫描。
+    #[arg(long, default_value_t = 32)]
+    wgsl_block: u32,
+    /// 两后端的候选批次容量；大批次要求设备和内存支持。
+    #[arg(long, default_value_t = BATCH, value_parser = clap::value_parser!(u32).range(65_537..=2_097_120))]
+    batch_size: u32,
+    /// 只计时指定后端；仍用两边与 CPU 做正解验证。
+    #[arg(long, value_enum)]
+    only: Option<Backend>,
+    #[arg(long, value_enum, default_value = "full")]
     cuda_mode: Mode,
     #[arg(long, default_value = "shenjack")]
     team: String,
@@ -113,8 +128,11 @@ pub fn run() -> Result<(), String> {
     let init = Instant::now();
     let mut gpu = pollster::block_on(GpuMiner::with_generated(
         team,
-        BATCH as usize,
-        GpuOptions::default(),
+        args.batch_size as usize,
+        GpuOptions {
+            workgroup_size: args.wgsl_block,
+            ..GpuOptions::default()
+        },
         input.clone(),
     ))?;
     if !gpu.adapter_description.contains("Vulkan") || !gpu.adapter_description.contains("NVIDIA") {
@@ -127,7 +145,7 @@ pub fn run() -> Result<(), String> {
     );
     gpu.exact_scores = true;
     let init = Instant::now();
-    let mut cuda = cuda::Miner::new(&args.dll, &input, BATCH, args.cuda_block, args.cuda_mode as u32)?;
+    let mut cuda = cuda::Miner::new(&args.dll, &input, args.batch_size, args.cuda_block, args.cuda_mode as u32)?;
     println!(
         "CUDA mode={:?} block={} init_s={:.3}",
         args.cuda_mode,
@@ -232,6 +250,13 @@ pub fn run() -> Result<(), String> {
         }
         let mut expected: Option<(u64, Counts, Vec<u8>)> = None;
         for (label, f) in order {
+            if work
+                .args
+                .only
+                .is_some_and(|b| b != if label == "wgsl" { Backend::Wgsl } else { Backend::Cuda })
+            {
+                continue;
+            }
             let path = work.args.out.join(format!("{round}-{label}.csv"));
             if let Budget::Time(target) = budget {
                 work.measure(
@@ -309,7 +334,7 @@ impl Workload {
             Budget::Candidates(n) => self.args.start + n,
             Budget::Time(_) => u64::MAX,
         };
-        for range in batch_ranges(self.args.start, end, BATCH as usize)? {
+        for range in batch_ranges(self.args.start, end, self.args.batch_size as usize)? {
             if matches!(budget, Budget::Time(target) if started.elapsed() >= target) {
                 break;
             }

@@ -16,7 +16,7 @@ use wgpu_mine::{
     core::{self, Thresholds},
     gpu_input::GpuInput,
     input::{batch_ranges, Encoding, Generator},
-    mining_gpu::{GpuMiner, GpuOptions, SboxLayout},
+    mining_gpu::{GpuMiner, GpuOptions, SboxLayout, MAX_GENERATED_BATCH},
     output::CsvOutput,
     pool::CpuPool,
 };
@@ -174,8 +174,17 @@ fn thresholds(args: &Args) -> Thresholds {
     }
 }
 fn check_options(args: &Args) -> Result<(), String> {
-    if args.threads == 0 || args.threads > 256 || args.report == 0 || args.batch_size == 0 || args.batch_size > 524287 {
-        return Err("线程数须为1..=256，报告间隔须大于零，批大小须为1..=524287".to_owned());
+    let max_batch = if matches!(args.backend, Backend::Gpu)
+        && !args.e2e_bench
+        && !matches!(args.gpu_input, GpuInputMode::Uploaded)
+        && !matches!(args.encoding, Encoding::Number)
+    {
+        MAX_GENERATED_BATCH
+    } else {
+        524_287
+    };
+    if args.threads == 0 || args.threads > 256 || args.report == 0 || args.batch_size == 0 || args.batch_size > max_batch {
+        return Err(format!("线程数须为1..=256，报告间隔须大于零，当前模式批大小须为1..={max_batch}"));
     }
     if args.team.len() > 256 {
         return Err("队伍名超过256个UTF-8字节".to_owned());

@@ -1,7 +1,7 @@
 // 一个 invocation（GPU 并行调用）处理一个候选，lane 是组内编号；S-box 是 256 字节的排列状态。
 // 本文件不含跨 lane barrier，因此尾批与属性筛选均可直接 return。
 // host 每批清零 Output 的 16B header，records 至少分配 count 个 176B 槽。
-// team_state为raw队伍KSA状态；GENERATED模式则为名字公共前缀KSA快照（各字节占u32）。
+// 队伍 KSA 状态或生成模式的公共前缀快照；packed 时四字节一字，wide 时一字节一字。
 @group(0) @binding(0) var<uniform> team_state: array<vec4<u32>, 64>;
 
 struct NameInfo { // 上传模式记录名字在字节流中的偏移和 UTF-8 字节长度；生成模式复用这些字段。
@@ -25,7 +25,7 @@ struct Record {
 struct Output { // 输出头的计数器供多个 invocation 并发更新，后面接变长记录数组。
     count: atomic<u32>, // 已领取的记录槽数。
     prop_pass: atomic<u32>, // 进入技能阶段的候选数。
-    scored: atomic<u32>, // 完成评分的候选数。
+    reserved: u32, // 保留原输出头布局；评分数与 prop_pass 完全相同。
     shadow_count: atomic<u32>, // 计算影子的候选数。
     records: array<Record>,           // 字节偏移 16
 }
@@ -91,9 +91,14 @@ fn swap_packed(lane: u32, a: u32, b: u32, word_a: u32, current: u32) -> u32 {
 
 fn restore_team(lane: u32) { // 把宿主准备的队伍状态或前缀快照复制到本 lane。
     if (PACKED) {
-        for (var i = 0u; i < 64u; i += 1u) {
+        // 宿主已经打包前缀；一次读 4 个字，到对应的四个槽行。
+        for (var i = 0u; i < 16u; i += 1u) {
             let v = team_state[i];
-            values[i * LANES + lane] = v.x | (v.y << 8u) | (v.z << 16u) | (v.w << 24u); // 四个 u32 里的状态字节按低字节在前打包。
+            let row = i * 4u * LANES + lane;
+            values[row] = v.x;
+            values[row + LANES] = v.y;
+            values[row + 2u * LANES] = v.z;
+            values[row + 3u * LANES] = v.w;
         }
     } else {
         for (var i = 0u; i < 256u; i += 1u) {
@@ -132,7 +137,16 @@ fn key_byte(info: NameInfo, k: u32) -> u32 {
 // KEY_END
 
 // KSA（密钥调度）依据名字反复交换 S-box；名字最长 256B，追加 shadow 后允许 263B。
-fn name_ksa(lane: u32, info: NameInfo, with_shadow: bool) {
+// GENERATED_CYCLE_BEGIN
+const DIRECT_CYCLE: bool = false;
+fn generated_cycle_ksa(lane: u32, index: u32, with_shadow: bool) {}
+// GENERATED_CYCLE_END
+
+fn name_ksa(lane: u32, info: NameInfo, index: u32, with_shadow: bool) {
+    if (DIRECT_CYCLE) {
+        generated_cycle_ksa(lane, index, with_shadow);
+        return;
+    }
     let key_length = info.length + select(0u, 7u, with_shadow); // 名字字节长度；影子路径追加七字节 ?shadow。密钥还另有前导零。
     for (var round = 0u; round < 2u; round += 1u) { // 连续执行两轮 KSA，状态保留，游标每轮重置。
         var s = 0u;
@@ -253,10 +267,10 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
     let index = position.x;
     if (index >= params.count) { return; } // 尾组中多派发的 invocation 直接退出。
     let info = names[select(index, 0u, GENERATED)]; // 上传模式取当前候选；生成模式所有候选共用 names[0] 模板信息。
-    if (GENERATED) { prepare_generated(index); } // 仅生成模式按批内下标生成当前名字的编码缓存。
+    if (GENERATED && !DIRECT_CYCLE) { prepare_generated(index); } // 仅生成模式按批内下标生成当前名字的编码缓存。
 
     restore_team(lane);
-    name_ksa(lane, info, false);
+    name_ksa(lane, info, index, false);
     var base: array<u32, 128>;
     collect_base(lane, &base);
     var props = properties(&base);
@@ -284,9 +298,8 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         for (var i = 0u; i < 40u; i += 1u) {
             let high = prga_byte(lane, &a, &b);
             let low = prga_byte(lane, &a, &b);
-            let rnd = ((high << 8u) | low) % 40u; // 两个随机字节组成大端 16 位数，再映射到 40 个槽。
-            // 保留 Rust 的 u8 截断再 %40，不可改成直接 %40。
-            s = ((s + rnd + skill_ids[i]) & 255u) % 40u; // 先截断到 u8 的范围，再对 40 取余，与 CPU 算法一致。
+            // s、余数、编号均小于 40；原先的和不会触发 u8 截断。
+            s = (((high << 8u) | low) + s + skill_ids[i]) % 40u;
             let current = skill_ids[i];
             skill_ids[i] = skill_ids[s];
             skill_ids[s] = current;
@@ -330,7 +343,7 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         atomicAdd(&output.shadow_count, 1u);
         // 技能已结束，直接复用该 lane 的 Sbox/base，原 props/ids/freq 保留。
         restore_team(lane);
-        name_ksa(lane, info, true);
+        name_ksa(lane, info, index, true);
         collect_base(lane, &base);
         var shadow_props = properties(&base);
         var raw_sum = 0u;
@@ -394,7 +407,6 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         }
     }
     }
-    atomicAdd(&output.scored, 1u);
 
     // 10分余量做候选粗筛；阈值附近由host基于整数记录重建f64精筛。
     // 非有限结果强制记录，交由 host validation 明确报告，不静默通过/丢弃。
