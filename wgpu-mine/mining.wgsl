@@ -52,6 +52,7 @@ const LANES: u32 = 32u; // 每个工作组的 invocation 数；此处是模板�
 const WORDS: u32 = 8192u; // 工作组共享数组长度，以 u32 为单位。
 const PACKED: bool = false; // true 时每个 u32 打包四个 S-box 字节；false 时每槽一个 u32。
 const GENERATED: bool = false; // true 时从 ID 生成名字；false 时读取上传的名字。
+const TILED: bool = false; // 大批次跨两行，组内布局和每候选计算不变。
 const COMPACT_MODEL: bool = false; // true 时仅遍历非零特征；false 时遍历全部特征。
 var<workgroup> values: array<u32, WORDS>; // 同组共享存储按槽转置，各 lane 独占一列，不依赖跨线程同步。
 
@@ -184,6 +185,18 @@ fn collect_base(lane: u32, base: ptr<function, array<u32, 128>>) {
     }
 }
 
+// 影子只消费八围所需的最早 31 项，技能仍依赖主号的完整 128 项。
+fn collect_shadow(lane: u32, base: ptr<function, array<u32, 128>>) {
+    var count = 0u;
+    for (var i = 0u; i < 256u && count < 31u; i += 1u) {
+        let mapped = (read_sbox(lane, i) * 181u + 160u) & 255u;
+        if (mapped >= 89u && mapped < 217u) {
+            (*base)[count] = mapped & 63u;
+            count += 1u;
+        }
+    }
+}
+
 fn median3(x: u32, y: u32, z: u32) -> u32 { // 三个值的中位数，不需要对整个数组排序。
     return max(min(x, y), min(max(x, y), z));
 }
@@ -263,8 +276,9 @@ fn finite_score(value: f32) -> bool {
 
 @compute @workgroup_size(LANES) // 计算入口：每组 LANES 个 invocation，由宿主按候选数向上取整派发。
 fn mine(@builtin(global_invocation_id) position: vec3<u32>,
+        @builtin(num_workgroups) grid: vec3<u32>,
         @builtin(local_invocation_index) lane: u32) { // 全局 x 区分候选，lane 是当前工作组内的编号。
-    let index = position.x;
+    let index = select(position.x, position.x + position.y * grid.x * LANES, TILED);
     if (index >= params.count) { return; } // 尾组中多派发的 invocation 直接退出。
     let info = names[select(index, 0u, GENERATED)]; // 上传模式取当前候选；生成模式所有候选共用 names[0] 模板信息。
     if (GENERATED && !DIRECT_CYCLE) { prepare_generated(index); } // 仅生成模式按批内下标生成当前名字的编码缓存。
@@ -344,7 +358,7 @@ fn mine(@builtin(global_invocation_id) position: vec3<u32>,
         // 技能已结束，直接复用该 lane 的 Sbox/base，原 props/ids/freq 保留。
         restore_team(lane);
         name_ksa(lane, info, index, true);
-        collect_base(lane, &base);
+        collect_shadow(lane, &base);
         var shadow_props = properties(&base);
         var raw_sum = 0u;
         for (var i = 1u; i < 8u; i += 1u) {

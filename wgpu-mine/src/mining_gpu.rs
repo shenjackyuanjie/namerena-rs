@@ -7,8 +7,9 @@ const RECORD_WORDS: usize = 44;
 const RECORD_BYTES: usize = RECORD_WORDS * 4;
 const HEADER_BYTES: u64 = 16;
 const INLINE_RECORDS: usize = 4;
-/// 32 线程工作组与 downlevel 单维 65,535 个工作组的上界。
-pub const MAX_GENERATED_BATCH: usize = 65_535 * 32;
+const MAX_DISPATCH_X: u32 = 65_535;
+/// 显式大批次最多两行，限制分配量。
+pub const MAX_GENERATED_BATCH: usize = MAX_DISPATCH_X as usize * 32 * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum SboxLayout {
@@ -38,7 +39,7 @@ impl GpuOptions {
         }
         Ok(self.workgroup_size * if self.sbox == SboxLayout::Packed { 256 } else { 1024 })
     }
-    fn shader_source(self, generated: Option<&GpuInput>) -> Result<String, String> {
+    fn shader_source(self, generated: Option<&GpuInput>, tiled: bool) -> Result<String, String> {
         let bytes = self.shared_bytes()?;
         let mut source = include_str!("../mining.wgsl")
             .replace(
@@ -54,6 +55,7 @@ impl GpuOptions {
             "const COMPACT_MODEL: bool = false;",
             &format!("const COMPACT_MODEL: bool = {};", self.compact_model),
         );
+        if tiled { source = source.replace("const TILED: bool = false;", "const TILED: bool = true;"); }
         if let Some(input) = generated {
             source = source.replace("const GENERATED: bool = false;", "const GENERATED: bool = true;");
             let (before, rest) = source.split_once("// KEY_BEGIN").ok_or("着色器缺少KEY_BEGIN")?;
@@ -150,8 +152,8 @@ impl GpuMiner {
 
     async fn create(team: &str, capacity: usize, options: GpuOptions, generated: Option<GpuInput>) -> Result<Self, String> {
         let shared_bytes = options.shared_bytes()?;
-        if team.len() > 256 || capacity == 0 {
-            return Err("队伍最多 256 个 UTF-8 字节，批大小必须大于零".to_owned());
+        if team.len() > 256 || capacity == 0 || capacity > MAX_GENERATED_BATCH {
+            return Err(format!("队伍最多 256 个 UTF-8 字节，批大小须为 1..={MAX_GENERATED_BATCH}"));
         }
         let input_bytes = if let Some(input) = &generated {
             (input.template_map.len() * 4) as u64
@@ -178,10 +180,8 @@ impl GpuMiner {
         let binding_bytes = input_bytes.max(output_bytes).max((capacity * 8) as u64);
         limits.max_storage_buffer_binding_size = limits.max_storage_buffer_binding_size.max(binding_bytes);
         limits.max_buffer_size = limits.max_buffer_size.max(binding_bytes);
-        if !limits.check_limits(&adapter.limits())
-            || (capacity as u64).div_ceil(u64::from(options.workgroup_size))
-                > u64::from(limits.max_compute_workgroups_per_dimension)
-        {
+        let tiled = (capacity as u32).div_ceil(options.workgroup_size) > MAX_DISPATCH_X;
+        if !limits.check_limits(&adapter.limits()) {
             return Err("设备共享内存或批大小超过缓冲/工作组限制".to_owned());
         }
         let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
@@ -201,7 +201,7 @@ impl GpuMiner {
         let errors = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("完整测号内核"),
-            source: wgpu::ShaderSource::Wgsl(options.shader_source(generated.as_ref())?.into()),
+            source: wgpu::ShaderSource::Wgsl(options.shader_source(generated.as_ref(), tiled)?.into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("RC4 属性 技能 shadow XP/XD"),
@@ -436,7 +436,9 @@ impl GpuMiner {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.group, &[]);
-            pass.dispatch_workgroups((input_count as u32).div_ceil(self.workgroup_size), 1, 1);
+            let groups = (input_count as u32).div_ceil(self.workgroup_size);
+            let rows = groups.div_ceil(MAX_DISPATCH_X);
+            pass.dispatch_workgroups(groups.div_ceil(rows), rows, 1);
         }
         // 低命中批把头与前几条记录一次回读；更多记录完整回退。
         let inline_capacity = self.capacity.min(INLINE_RECORDS);
@@ -580,15 +582,15 @@ mod tests {
         use crate::input::Encoding;
 
         let input = GpuInput::new("队@伍", "前[]后", Encoding::Base16384).unwrap().unwrap();
-        let src = GpuOptions::default().shader_source(Some(&input)).unwrap();
+        let src = GpuOptions::default().shader_source(Some(&input), false).unwrap();
         assert!(src.contains("const DIRECT_CYCLE: bool = true;"));
         assert!(src.contains("const CYCLE_FIRST: u32 = 4u;"));
         assert!(src.contains("const CYCLE_LEN: u32 = 25u;"));
         assert!(src.contains("i + 22u, cursor, 229u")); // 后缀的第一个 UTF-8 字节。
 
         let wide = GpuOptions { sbox: SboxLayout::Wide, ..GpuOptions::default() };
-        assert!(wide.shader_source(Some(&input)).unwrap().contains("const DIRECT_CYCLE: bool = false;"));
-        assert!(GpuOptions::default().shader_source(None).unwrap().contains("const DIRECT_CYCLE: bool = false;"));
+        assert!(wide.shader_source(Some(&input), false).unwrap().contains("const DIRECT_CYCLE: bool = false;"));
+        assert!(GpuOptions::default().shader_source(None, false).unwrap().contains("const DIRECT_CYCLE: bool = false;"));
         for (template, encoding) in [
             ("前[]后[]".to_owned(), Encoding::Base16384),
             ("前[]后".to_owned(), Encoding::Base64Url),

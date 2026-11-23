@@ -61,7 +61,7 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     wgsl_block: u32,
     /// 两后端的候选批次容量；大批次要求设备和内存支持。
-    #[arg(long, default_value_t = BATCH, value_parser = clap::value_parser!(u32).range(65_537..=2_097_120))]
+    #[arg(long, default_value_t = BATCH, value_parser = clap::value_parser!(u32).range(65_537..=4_194_240))]
     batch_size: u32,
     /// 只计时指定后端；仍用两边与 CPU 做正解验证。
     #[arg(long, value_enum)]
@@ -128,7 +128,11 @@ pub fn run() -> Result<(), String> {
     let init = Instant::now();
     let mut gpu = pollster::block_on(GpuMiner::with_generated(
         team,
-        args.batch_size as usize,
+        if args.only == Some(Backend::Cuda) {
+            65_537
+        } else {
+            args.batch_size as usize
+        },
         GpuOptions {
             workgroup_size: args.wgsl_block,
             ..GpuOptions::default()
@@ -145,7 +149,17 @@ pub fn run() -> Result<(), String> {
     );
     gpu.exact_scores = true;
     let init = Instant::now();
-    let mut cuda = cuda::Miner::new(&args.dll, &input, args.batch_size, args.cuda_block, args.cuda_mode as u32)?;
+    let mut cuda = cuda::Miner::new(
+        &args.dll,
+        &input,
+        if args.only == Some(Backend::Wgsl) {
+            65_537
+        } else {
+            args.batch_size
+        },
+        args.cuda_block,
+        args.cuda_mode as u32,
+    )?;
     println!(
         "CUDA mode={:?} block={} init_s={:.3}",
         args.cuda_mode,
@@ -234,8 +248,16 @@ pub fn run() -> Result<(), String> {
             "kernel_names_s",
         ])
         .map_err(|e| e.to_string())?;
+    let measure_backend = |label| {
+        work.args
+            .only
+            .is_none_or(|b| b == if label == "wgsl" { Backend::Wgsl } else { Backend::Cuda })
+    };
     if let Budget::Candidates(count) = budget {
         for (label, f) in [("wgsl", &mut wgsl as &mut Batcher), ("cuda", &mut cuda as &mut Batcher)] {
+            if !measure_backend(label) {
+                continue;
+            }
             work.measure(
                 f,
                 Budget::Candidates(count.min(WARMUP)),
@@ -250,11 +272,7 @@ pub fn run() -> Result<(), String> {
         }
         let mut expected: Option<(u64, Counts, Vec<u8>)> = None;
         for (label, f) in order {
-            if work
-                .args
-                .only
-                .is_some_and(|b| b != if label == "wgsl" { Backend::Wgsl } else { Backend::Cuda })
-            {
+            if !measure_backend(label) {
                 continue;
             }
             let path = work.args.out.join(format!("{round}-{label}.csv"));
