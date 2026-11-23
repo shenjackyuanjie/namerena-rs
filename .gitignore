@@ -1,3 +1,7 @@
 /target
 /namerena
 .lh
+
+# 基准脚本可生成临时 CSV，仓库只保留摘要。
+/gpu-mine/benchmarks/**/*.csv
+/miner/benchmarks/**/*.csv

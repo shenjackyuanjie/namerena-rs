@@ -5,41 +5,15 @@
 ## 当前工程状态
 
 - 依赖升级、API 适配、验证结果与后续优化/移植边界见 [依赖升级与 GPU MVP 迁移说明](docs/dependency-upgrade.md)。
-- `miner` 提供 CPU 矿工；`wgpu-mine` 已提供 [完整 GPU E2E 测号 CLI、误差验证与六线程对照](wgpu-mine/README.md)，支持原基本参数，涵盖属性、技能、shadow、XP/XD 与 CSV。纯 RC4 基准保留在 `--bench` 模式。
+- `gpu-mine` 提供 XP/XD 的 WGSL、CUDA 和 CPU 入口。PBB 有对应的 CUDA 与 WGSL 测号命令。见 [GPU 测号用法](gpu-mine/README.md)。
 - CPU miner 已补完安全调度、范围、输出和中断，并做四路 KSA/前缀/生成与 f64 模型优化，见 [CPU 优化与验证报告](miner/docs/cpu-2026-10-30.md)。
 - [maker-py](maker-py/README.md) 已弃用，不再维护。
 
-## 用法
+## CPU 矿工
 
-```text
-Usage: tswn.exe [OPTIONS] --team <TEAM>
+~~~powershell
+cargo build -p tswn --release --locked
+./target/release/tswn.exe --team shenjack -t 6 -p 550 -x 4000 -d 5000
+~~~
 
-Options:
-      --start <START>                      开始的 id [default: 0]
-      --end <END>                          结束的 id [default: 18446744073709551615]
-  -t, --thread-count <THREAD_COUNT>        线程数 [default: 10]
-  -p, --prop-expected <PROP_EXPECT>        八围预期值 [default: 640]
-  -q, --qp-expected <QP_EXPECT>            qp 预期值 [default: 0]
-      --team <TEAM>                        队伍名称
-  -r, --report-interval <REPORT_INTERVAL>  预期状态输出时间间隔 (秒) [default: 10]
-  -h, --help                               Print help
-```
-
-```text
-2024-04-25T14:38:37.928073Z  INFO tswn: 输出文件: "./namerena/namerena-shenjacks-2024-04-25_22-38-37.txt"
-2024-04-25T14:38:37.928448Z  INFO tswn: 开始: 0 结尾: 100000000
-2024-04-25T14:38:37.928527Z  INFO tswn: 线程数: 1
-2024-04-25T14:38:37.928582Z  INFO tswn: 八围预期: 640
-2024-04-25T14:38:37.928633Z  INFO tswn: 队伍名: shenjacks
-2024-04-25T14:38:37.928689Z  INFO tswn: 输出文件名: "./namerena/namerena-shenjacks-2024-04-25_22-38-37.txt"
-2024-04-25T14:38:37.928773Z  INFO tswn: 开始计算
-2024-04-25T14:38:37.928857Z  INFO tswn: 线程 thread_0 开始计算
-2024-04-25T14:38:37.947371Z  INFO tswn::cacluate: | 1|Id:          10000|542408.18/s 468.641E/d  0.02⬆️|0  |预计:0:3:4|
-2024-04-25T14:38:48.111355Z  INFO tswn::cacluate: | 1|Id:        5434080|533663.84/s 461.086E/d 10.16⬇️|0  |预计:0:2:57|
-2024-04-25T14:38:58.566294Z  INFO tswn::cacluate: | 1|Id:       10770710|510448.33/s 441.027E/d 10.45⬇️|0  |预计:0:2:54|
-2024-04-25T14:39:08.419676Z  INFO tswn::cacluate: | 1|Id:       15875190|518062.38/s 447.606E/d  9.85⬆️|0  |预计:0:2:42|
-2024-04-25T14:39:18.371574Z  INFO tswn::cacluate: | 1|Id:       21055810|520575.43/s 449.777E/d  9.95⬆️|0  |预计:0:2:31|
-2024-04-25T14:39:28.277127Z  INFO tswn::cacluate: | 1|Id:       26261560|525550.00/s 454.075E/d  9.91⬆️|0  |预计:0:2:20|
-2024-04-25T14:39:38.073338Z  INFO tswn::cacluate: | 1|Id:       31517060|536495.12/s 463.532E/d  9.80⬆️|0  |预计:0:2:7|
-2024-04-25T14:39:48.224642Z  INFO tswn::cacluate: | 1|Id:       36882010|528507.78/s 456.631E/d 10.15⬇️|0  |预计:0:1:59|
-```
+通过 `--help` 查看当前参数。见 [历史效率摘要](bench/tswn.md)。

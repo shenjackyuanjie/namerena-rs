@@ -1,12 +1,12 @@
 # 依赖升级与 GPU MVP 迁移边界
 
-> 本文记录依赖升级阶段的实现与验证状态。后续已完成 [GPU E2E 测号 CLI、完整属性技能模型、误差验证与吞吐实测](../wgpu-mine/README.md)；当前使用方式以该说明为准。早期 [纯 RC4 实验](../wgpu-mine/docs/rc4-experiment.md) 单独保留。
+> 本文记录依赖升级阶段的实现与验证状态。后续已完成 [GPU E2E 测号 CLI、完整属性技能模型、误差验证与吞吐实测](../gpu-mine/README.md)；当前使用方式以该说明为准。早期 [纯 RC4 实验](../gpu-mine/docs/rc4-experiment.md) 单独保留。
 
 ## 本阶段范围
 
 2026-10-30 按 crates.io 返回的最新稳定版本更新现存 Rust workspace，适配破坏性 API，并进行构建、回归及 GPU 验证。本阶段不实现完整测号 MVP，不新增专用单线程模式，不进行 GPU 性能调参。
 
-- [workspace 清单](../Cargo.toml) 只保留 `miner` 和 `wgpu-mine`。`openbox` 已被用户删除，本次移除失效成员引用，没有恢复目录。
+- [workspace 清单](../Cargo.toml) 只保留 `miner` 和 `gpu-mine`。`openbox` 已被用户删除，本次移除失效成员引用，没有恢复目录。
 - 保留用户对 [cacluate.rs](../miner/src/cacluate.rs) 的修改，以及已删除的其他历史目录。
 - [maker-py](../maker-py/README.md) 按用户要求标记为 DEPRECATED，保留历史代码，不再升级或验证 Python 依赖。
 
@@ -30,14 +30,14 @@
 | pollster | 0.3.0 | 1.0.1 |
 | wgpu | 0.19.4 | 30.0.1 |
 
-依赖清单分别见 [miner](../miner/Cargo.toml) 和 [wgpu-mine](../wgpu-mine/Cargo.toml)。移除了没有任何源码调用的 `reqwest` 和 GPU 侧 `serde`、`serde_json` 直接依赖。`reqwest` 最初适配到 0.13.5 的 `rustls` feature 后，经代码扫描确认没有网络实现，因此按 YAGNI 移除，避免无用 HTTP/TLS、异步运行时及原生加密库构建成本。
+依赖清单分别见 [miner](../miner/Cargo.toml) 和 [gpu-mine](../gpu-mine/Cargo.toml)。移除了没有任何源码调用的 `reqwest` 和 GPU 侧 `serde`、`serde_json` 直接依赖。`reqwest` 最初适配到 0.13.5 的 `rustls` feature 后，经代码扫描确认没有网络实现，因此按 YAGNI 移除，避免无用 HTTP/TLS、异步运行时及原生加密库构建成本。
 
 ## API 与兼容性修复
 
 - [CPU CLI](../miner/src/main.rs) 原先将 `-d` 同时用于 XD 阈值和 debug，现保留 `-d/--xd-exp`，debug 改为仅 `--debug`；增加完整示例参数解析测试。
 - [名字生成](../miner/src/generate.rs) 增加 Base64 标准/URL 字母表、大端字节、padding 和中文模板多占位符测试，确保依赖更新不改变名字编码。
-- [GPU 宿主](../wgpu-mine/src/main.rs) 适配 `request_adapter` 的 Result、单参数 `request_device` 与描述符默认值、计算管线的可选入口/编译选项/cache、ErrorScopeGuard、PollType 及映射视图的 Result。错误返回非零退出码。
-- [GPU 着色器](../wgpu-mine/main.wgsl) 与宿主统一使用 u32 输入，补齐名字长度/字节绑定、独立 storage 输出与 staging 回读，修复名字 RC4 的字节来源和前导零周期。仍只返回两轮 RC4 置换状态，不包含完整属性、技能或筛选。
+- [GPU 宿主](../gpu-mine/src/main.rs) 适配 `request_adapter` 的 Result、单参数 `request_device` 与描述符默认值、计算管线的可选入口/编译选项/cache、ErrorScopeGuard、PollType 及映射视图的 Result。错误返回非零退出码。
+- [GPU 着色器](../gpu-mine/main.wgsl) 与宿主统一使用 u32 输入，补齐名字长度/字节绑定、独立 storage 输出与 staging 回读，修复名字 RC4 的字节来源和前导零周期。仍只返回两轮 RC4 置换状态，不包含完整属性、技能或筛选。
 - 内嵌 WGSL，运行不依赖当前目录；修复 `chunks_exact` 丢尾批，回读仅保留真实名字；增加 UTF-8 字节长度验证、5 项默认测试和 1 项手动 GPU/CPU 对照测试。保留 16×16 工作组形状，不做 GPU 调参。
 
 ## 验证方法
@@ -112,7 +112,7 @@ cargo build --workspace --release --locked -j 2
 2. 建立安全的多线程准备/复核和单输出器，再接 GPU 属性粗筛。不要另写专用单线程模式。
 3. 覆盖候选数 `0/1/255/256/257/513`、非零 start、中文及空名字、末尾短批和接近 `u64::MAX` 的范围，证明每个 ID 恰好一次。
 4. 覆盖阈值边界、shadow、CSV 逗号/双引号及零命中输出，再验收用户给出的长命令。
-5. 当前 `tswn.exe` 属于 CPU 包，`wgpu-mine.exe` 属于 GPU 原型。后续决定替换入口或独立发布，避免同一 target 下两个包输出同名二进制。
+5. 当前 `tswn.exe` 属于 CPU 包，`gpu-mine.exe` 属于 GPU 原型。后续决定替换入口或独立发布，避免同一 target 下两个包输出同名二进制。
 
 ## 对照 tswn-core 与 PBB 的优化候选
 

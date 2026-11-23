@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["miner", "wgpu-mine"]
+members = ["miner", "gpu-mine", "gpu-mine/pbb-wgsl"]
 
 [profile.miner]
 inherits = "release"

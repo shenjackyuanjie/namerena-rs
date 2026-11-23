@@ -1,0 +1,21 @@
+[package]
+name = "pbb-wgsl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+native-pbb = ["dep:cc", "dep:bytemuck", "dep:pollster", "dep:wgpu"]
+
+[[bin]]
+name = "pbb-wgsl"
+path = "src/main.rs"
+required-features = ["native-pbb"]
+
+[dependencies]
+bytemuck = { version = "1.25.2", optional = true }
+pollster = { version = "1.0.1", optional = true }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"], optional = true }
+
+[build-dependencies]
+cc = { version = "1", optional = true }

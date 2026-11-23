@@ -922,6 +922,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbb-wgsl"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cc",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1581,7 +1591,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wgpu-mine"
+name = "gpu-mine"
 version = "0.1.0"
 dependencies = [
  "base16384",
