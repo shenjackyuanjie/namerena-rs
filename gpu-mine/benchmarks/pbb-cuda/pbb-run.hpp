@@ -150,8 +150,13 @@ static void validate(const Options& opts, const Launch& input, Device& gpu) {
         const U n = std::min(remaining, opts.batch);
         if (stopped.load(std::memory_order_relaxed)) return;
         const auto actual = gpu.run(id, n, opts.block, true);
-        const auto expected = cpu(input, id, n, opts.threads, true, nullptr, !actual.gate_levels.empty());
-        if (actual.gate_levels != expected.gate_levels) {
+        const bool verify_gate_indices = !actual.gate_levels.empty();
+        const bool check_gate_count = opts.cuda_path == "split";
+        const auto expected = cpu(input, id, n, opts.threads, true, nullptr, check_gate_count);
+        if (check_gate_count && actual.counts.eligible != std::count_if(expected.gate_levels.begin(), expected.gate_levels.end(),
+                                                                       [](U level) { return level != 0; }))
+            throw std::runtime_error("Q gate count mismatch at " + std::to_string(id));
+        if (verify_gate_indices && actual.gate_levels != expected.gate_levels) {
             const auto mismatch = std::mismatch(actual.gate_levels.begin(), actual.gate_levels.end(), expected.gate_levels.begin());
             throw std::runtime_error(u8"Q \u95e8\u6863\u4f4d\u4e0d\u540c\uff0cID " + std::to_string(id + (mismatch.first - actual.gate_levels.begin())));
         }
@@ -169,7 +174,6 @@ static void validate(const Options& opts, const Launch& input, Device& gpu) {
         };
         if (!same_counts(actual.counts)) throw std::runtime_error("validation stage count mismatch at " + std::to_string(id));
         // 还要实际调度性能路径，验证非捕获时只写两个集合的并集。
-        const bool verify_gate_indices = !expected.gate_levels.empty();
         const auto emitted = gpu.run(id, n, opts.block, false, verify_gate_indices);
         if (!same_counts(emitted.counts) || emitted.counts.eligible != actual.counts.eligible)
             throw std::runtime_error("filtered stage count mismatch at " + std::to_string(id));

@@ -22,7 +22,19 @@ $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 
 ## 实测
 
-### 三核版：RTX 5060 Ti 突破 40 T/天
+### 前缀裁剪版：RTX 5060 Ti 16 GB
+
+依然用[完整足球计划](../benchmarks/pbb-cuda/fixtures/football-real.kv)，从 ID 0 开始，128 线程、每批 16,777,216 个候选，包含完整评分与 CSV。前缀裁剪的三轮 60 秒为 **49.37、49.50、49.48 T/天**，中位数 **572,687,036 候选/秒、49.48 T/天、346.36 T/周**。二进制同卡的前一版复测为 **479,413,687 候选/秒、41.42 T/天**，公共区间 **148 条命中逐行一致**。
+
+适用 31 字节字面前缀、无后缀的模板。首轮完整执行；第二轮仍计算所有游标，前 88 个槽保持与原版完整排列一致。处理第 88 个槽以后，交换读到的随机槽旧值只会进入刚处理完且不再观察的槽，因此可以略掉该读取和固定槽写回。前缀能收齐 31 项时，一级 Q 结果与完整排列一致；收不齐的候选保留到后核重建，绝不当作失败。过门候选也始终重建完整排列才执行 PRGA 和 G3。其它模板保留完整排列路径。
+
+新前核用 32 位共享内存地址发出显式读取，先发两个随机字节读再处理别名，并预打包稳定的前缀快照与字面密钥。裁剪后已退出观察范围的随机槽写入可保留，避免逐 lane 预测；写入保留前缀与未来槽的顺序仍与原版相同。
+
+较新的共享访存版本首个正式 60 秒为 **580,448,086 候选/秒、50.15 T/天、351.06 T/周**，处理 34,829,500,416 个候选并输出 179 条普通命中。与前一版公共区间的 148 条命中，以及与普通裁剪版公共区间的 175 条命中，均逐行一致。
+
+`--batch 16777216 --block 128` 为本机冲刺参数，默认批次不变。需约 5.4 GiB 设备缓冲，另外还要留出 CUDA 上下文和桌面显存。其它模板或设备应重新测量。RTX 4090 需要 `-Arch sm_89` 实机验证，不能据此宣称 180 T/天。
+
+### 三核版：RTX 5060 Ti 突破 40 T/天（历史）
 
 同一卡、从 ID 0 开始，使用[完整足球计划](../benchmarks/pbb-cuda/fixtures/football-real.kv)：十族 all、五族 PTT、蓝号收集。前核 128 线程，三核版每批 8,388,608 个候选。三轮各按 60 秒实跑，包含结果回读、排序、名字恢复和 CSV 写入。
 
@@ -109,14 +121,15 @@ $wgsl = './target/release/pbb-wgsl.exe'
 & ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $wgsl -OutputDir target/pbb-wgsl-validation -Path wgsl -Block 128
 $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 & $exe --out target/pbb-cuda/validation-extended --plan $plan --validate 4194305 --block 128 --batch 1048576
-& $exe --out target/pbb-cuda/football-60s --plan $plan --backend cuda --seconds 60 --block 128 --batch 8388608
+& $exe --out target/pbb-cuda/football-60s --plan $plan --backend cuda --seconds 60 --block 128 --batch 16777216
 & $wgsl --out target/pbb-wgsl-60s --plan $plan --backend wgsl --seconds 60 --block 128 --batch 524288 --threads 6
 ~~~
 
-可用 [football-real.kv](../benchmarks/pbb-cuda/fixtures/football-real.kv) 或其它计划覆盖评分阈值、潜力、任意/全量、收集条件和枚举输入；--plan 不传时使用足球评分参数。输入为带一个 [] 的 UTF-8 模板、单槽 Base16384；名字上限 252 字节以适配原 PBB 影子缓冲。--cuda-path direct 用完整单核作对照；split 依次派发 Q 门、G3 门和完整评分三个核。两条 CUDA 路径都使用同序稀疏点积，CPU 保留未修改的原版稠密评分。
+可用 [football-real.kv](../benchmarks/pbb-cuda/fixtures/football-real.kv) 或其它计划覆盖评分阈值、潜力、任意/全量、收集条件和枚举输入；--plan 不传时使用足球评分参数。输入为带一个 [] 的 UTF-8 模板、单槽 Base16384；名字上限 252 字节以适配原 PBB 影子缓冲。--cuda-path direct 用完整单核作对照；split 依次处理 Q 门、G3 门和完整评分；用前缀裁剪时会在 Q 和 G3 之间额外派发完整排列重建核。两条 CUDA 路径都使用同序稀疏点积，CPU 保留未修改的原版稠密评分。
 
 ### 验证覆盖
 
+- 前缀裁剪通过 17 组、558,105 个候选的原版 CPU 对拍，另在 16,777,216 的批容量下校验跨 u32 的 1,048,577 个候选。验证模式额外核对精确 Q 门通过计数；完整记录、评分、潜力和收集集合沿用原版口径。
 - 三核和单核各对拍 17 组、558,105 个候选；另用仅容纳 1 个快照的独立构建强制触发回退，并复验全矩阵。三核在 8,388,608 的批容量下另对拍 1,048,577 个跨 u32 进位的候选，同时验证有实际命中的 `--mine`。Ada `sm_89` 构建通过，RTX 4090 尚未实测。
 - 早期稀疏版真机对拍覆盖完整验证矩阵。单核和两阶段各 **16 组 / 549,910 个候选**，两阶段另在正式 block、batch 上额外对拍 **4,194,305 个候选**。每组既全捕获逐字段和计数，又按正式筛选验证主结果及特殊集合的并集。十族整数分、潜力、属性、技能、频次、门、集合均精确相等，双精度诊断量用明确误差界比较。覆盖 32 位进位、u64 末端、空前后缀、固定后缀和 252 字节名字上限。
 - 双步 KSA 前端在 96,287 项 CPU 对拍上逐值匹配完整 S-box、31 个属性字节、V 和原一级门档位（含 10 种附加模板和 u32/u64 边界）。

@@ -15,6 +15,13 @@ namespace pbb_device {
 namespace prefilter_detail {
 static_assert(N == 256 && encoded_width == 18 && name_limit <= 252);
 inline constexpr int words_per_thread = N / 4;
+#if defined(__CUDACC__)
+struct PreparedFront {
+    U words[words_per_thread];
+    unsigned short pairs[16];
+};
+static __constant__ PreparedFront prepared_front;
+#endif
 
 PBB_PREFILTER_HD U utf8_word(U c) {
     return (0xe0u | (c >> 12)) | ((0x80u | ((c >> 6) & 63u)) << 8)
@@ -49,8 +56,12 @@ struct Box {
 
     PBB_PREFILTER_HD void restore(const Launch& input) const {
         for (int i = 0; i < words_per_thread; ++i) {
+#if defined(__CUDA_ARCH__)
+            column[i * Block] = prepared_front.words[i];
+#else
             const unsigned char* p = input.prefix_box + 4 * i;
             column[i * Block] = U(p[0]) | (U(p[1]) << 8) | (U(p[2]) << 16) | (U(p[3]) << 24);
+#endif
         }
     }
 
@@ -83,21 +94,36 @@ struct Box {
     }
 
 #if defined(__CUDA_ARCH__)
+    __device__ __forceinline__ U shared_address(U slot) const {
+        return U(__cvta_generic_to_shared(column)) + (slot & 252u) * Block + (slot & 3u);
+    }
+
+    __device__ __forceinline__ void store_byte(U slot, U value) const {
+        const U addr = shared_address(slot);
+        asm volatile("st.shared.u8 [%0], %1;" :: "r"(addr), "r"(value) : "memory");
+    }
+
     // i 为偶数时两个连续槽可一并读写。先提交随机槽，再用转发后的值写回固定位置。
     __device__ __forceinline__ void step_aligned(U i, U& sum, U key0, U key1) const {
-        const U address = U(__cvta_generic_to_shared(&cell(i)));
+        const U address = shared_address(i);
         U pair;
         asm volatile("ld.shared.u16 %0, [%1];" : "=r"(pair) : "r"(address) : "memory");
         const U a = pair & 255u;
         const U j = (sum + key0 + a) & 255u;
-        const U c = j == i+1 ? a : pair >> 8;
-        sum = (j + key1 + c) & 255u;
-        auto& b = cell(j);
-        auto& d = cell(sum);
-        const U old_b = b;
-        const U cur_d = sum == j ? a : sum == i ? old_b : d;
-        b = u8_t(a);
-        d = u8_t(c);
+        const U high = pair >> 8;
+        const bool hit_next = j == i+1;
+        const U c = hit_next ? a : high;
+        // 普通第二游标与 j 并行计算；只有首换命中下个固定槽才转发 a。
+        const U predicted = sum + (key0 + key1) + (a + high);
+        sum = (hit_next ? j + key1 + a : predicted) & 255u;
+        // 无条件发出两个共享读取，避免先等别名判断才读取随机槽。
+        U old_b, old_d;
+        const U ba = shared_address(j), da = shared_address(sum);
+        asm volatile("{ .reg .u32 x, y; ld.shared.u8 x, [%2]; ld.shared.u8 y, [%3]; mov.u32 %0, x; mov.u32 %1, y; }"
+            : "=r"(old_b), "=r"(old_d) : "r"(ba), "r"(da) : "memory");
+        const U cur_d = sum == j ? a : sum == i ? old_b : old_d;
+        asm volatile("st.shared.u8 [%0], %1; st.shared.u8 [%2], %3;"
+                     :: "r"(ba), "r"(a), "r"(da), "r"(c) : "memory");
         const unsigned short final_pair = (sum == i ? c : old_b) | ((sum == i+1 ? c : cur_d) << 8);
         asm volatile("st.shared.u16 [%0], %1;" :: "r"(address), "h"(final_pair) : "memory");
     }
@@ -143,6 +169,99 @@ struct Box {
         }
     }
 
+#if defined(__CUDA_ARCH__)
+    // 第二轮第 i 步前，裁剪版与完整 KSA 的 j、[0,Limit) 以及 [i,256) 完全相同。
+    // 随机旧值只会写入本步结束后不再观察的固定槽，无需读取。
+    __device__ __forceinline__ void cropped_pair(U i, U& sum, U key0, U key1) const {
+        const U address = shared_address(i);
+        U word;
+        asm volatile("ld.shared.u16 %0, [%1];" : "=r"(word) : "r"(address) : "memory");
+
+        const U a = word & 255u, b = word >> 8;
+        const U j = (sum+key0+a)&255u;
+        const bool next = j == i+1;
+        const U c = next ? a : b;
+        const U predicted = sum + (key0+key1) + (a+b);
+        sum = (next ? j + key1 + a : predicted) & 255u;
+        // 同组固定槽的变化已转发；写入已退出观察范围的槽无影响，省掉逐 lane 谓词。
+        store_byte(j, a);
+        store_byte(sum, c);
+    }
+
+    __device__ __forceinline__ void cropped_word(U i, U& carry, U k0, U k1, U k2, U k3) const {
+        const U x = column[(i >> 2) * Block];
+        const U a0 = x & 255u, a1 = (x >> 8) & 255u, a2 = (x >> 16) & 255u, a3 = x >> 24;
+        const U j0 = (carry + k0 + a0) & 255u;
+        const U r1 = (j0 == i+1 ? a0 : a1);
+        const U j1 = ((j0 == i+1 ? j0 + k1 + a0 : carry + (k0+k1) + (a0+a1))) & 255u;
+        const U r2 = j1 == i+2 ? r1 : j0 == i+2 ? a0 : a2;
+        const U j2 = (j1 + k2 + r2) & 255u;
+        const U r3 = j2 == i+3 ? r2 : j1 == i+3 ? r1 : j0 == i+3 ? a0 : a3;
+        const U j3 = (j2 + k3 + r3) & 255u;
+        store_byte(j0, a0);
+        store_byte(j1, r1);
+        store_byte(j2, r2);
+        store_byte(j3, r3);
+        carry = j3;
+    }
+
+    __device__ __forceinline__ U fixed_key(const Generated& key, int k) const {
+        if (k >= 32) return key.byte_at(k-32);
+        const U x = prepared_front.pairs[k/2];
+        return (x >> ((k&1)*8)) & 255u;
+    }
+
+    template<int Nstep>
+    __device__ __forceinline__ void cropped_words(const Generated& key, U start, U& carry) const {
+        #pragma unroll
+        for (int k=0; k<Nstep; k+=4) {
+            cropped_word(start+k, carry, fixed_key(key,k%50),fixed_key(key,(k+1)%50),
+                                                fixed_key(key,(k+2)%50),fixed_key(key,(k+3)%50));
+        }
+    }
+
+    template<int Limit>
+    __device__ __forceinline__ void schedule_cropped(const Launch& input, Id id) const {
+        static_assert(Limit >= 50 && Limit <= 100 && Limit % 2 == 0);
+        restore(input);
+        const Generated key(id);
+        U j = input.s_pre;
+        #pragma unroll
+        for (int k=0; k<18; k+=2) step_aligned(32+k,j,key.byte_at(k),key.byte_at(k+1));
+        for (int i=50; i+50<=N; i+=50) {
+            #pragma unroll 4
+            for (int k=0; k<32; k+=2) {
+                const U p=prepared_front.pairs[k/2];
+                step_aligned(i+k,j,p&255u,p>>8);
+            }
+            #pragma unroll
+            for (int k=0; k<18; k+=2) step_aligned(i+32+k,j,key.byte_at(k),key.byte_at(k+1));
+        }
+        round(input,key,250,input.name_len,j);
+        j=0;
+        #pragma unroll 4
+        for (int k=0; k<32; k+=2) {
+            const U p=prepared_front.pairs[k/2];
+            step_aligned(k,j,p&255u,p>>8);
+        }
+        #pragma unroll
+        for (int k=0; k<18; k+=2) step_aligned(32+k,j,key.byte_at(k),key.byte_at(k+1));
+        #pragma unroll
+        for (int k=0; k<32; k+=2) {
+            const U p=prepared_front.pairs[k/2];
+            if (50+k < Limit) step_aligned(50+k,j,p&255u,p>>8);
+            else cropped_pair(50+k,j,p&255u,p>>8);
+        }
+        #pragma unroll
+        for (int k=0; k<18; k+=2) {
+            if (82+k < Limit) step_aligned(82+k,j,key.byte_at(k),key.byte_at(k+1));
+            else cropped_pair(82+k,j,key.byte_at(k),key.byte_at(k+1));
+        }
+        cropped_words<100>(key,100,j);
+        cropped_words<56>(key,200,j);
+    }
+#endif
+
     PBB_PREFILTER_HD void schedule(const Launch& input, Id id) const {
         restore(input);
         const Generated key(id);
@@ -158,9 +277,11 @@ struct Box {
                     i += 18;
                 }
                 for (; i + 50 <= N; i += 50) {
-                    step_aligned(i, j, 0, u8_t(input.prefix[0]));
                     #pragma unroll 4
-                    for (int k = 2; k < 32; k += 2) step_aligned(i+k, j, u8_t(input.prefix[k-1]), u8_t(input.prefix[k]));
+                    for (int k = 0; k < 32; k += 2) {
+                        const U pair = prepared_front.pairs[k/2];
+                        step_aligned(i+k, j, pair & 255u, pair >> 8);
+                    }
                     #pragma unroll
                     for (int k = 0; k < 18; k += 2) step_aligned(i+32+k, j, key.byte_at(k), key.byte_at(k+1));
                 }
@@ -174,9 +295,10 @@ struct Box {
         round(input, key, 0, input.name_len, 0);
     }
 
-    PBB_PREFILTER_HD void collect(u8_t (&base)[31]) const {
+    template<int Words = words_per_thread>
+    PBB_PREFILTER_HD int collect(u8_t (&base)[31]) const {
         int filled = 0;
-        for (int i = 0; i < words_per_thread && filled < 31; ++i) {
+        for (int i = 0; i < Words && filled < 31; ++i) {
             const U word = column[i * Block];
 #if defined(__CUDACC__) || defined(__CUDA__)
             #pragma unroll
@@ -187,6 +309,7 @@ struct Box {
                     base[filled++] = u8_t(value & 63u);
             }
         }
+        return filled;
     }
 };
 
@@ -213,7 +336,7 @@ PBB_PREFILTER_HD int prefilter_base(const Launch& input, Id id, U* column, u8_t 
 }
 
 #if defined(__CUDACC__) || defined(__CUDA__)
-// launch 由原 prepare 生成，无新增字段；通过的是一级门，完整评分仍由第二个设备核计算。
+// 完整排列的整数 Q 门，供隔离验证或前筛测速使用。
 template<int Block>
 __device__ __forceinline__ bool prefilter(const Launch& input, Id id, U* column) {
     u8_t base[31];

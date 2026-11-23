@@ -31,34 +31,66 @@ __global__ void evaluate(Id first, U n, bool capture, Counts* counts, Record* re
     if (i < n) score_one(first, i, capture, counts, records);
 }
 
-// 原版一级 Q 门；将少量幸存者的双轮 KSA 状态传给 G3。
-template<int Block>
-__global__ void select_ids(Id first, U n, bool capture, Counts* counts, Record* records, U* indices, U* snapshots, U snapshot_cap) {
-    __shared__ unsigned words[64 * Block];
+// 批内编号仅占低 24 位。高位标记未收满 31 个属性字节、须由完整排列复核的候选。
+constexpr U uncertain_q = 1u << 31;
+constexpr int q_prefix = 88;
+
+template<int Block, bool Cropped>
+__global__ void select_ids(Id first, U n, bool capture, Counts* counts, Record* records,
+                           U* indices, U* snapshots, U snapshot_cap) {
+    __shared__ U words[64 * Block];
     const U i = blockIdx.x * Block + threadIdx.x;
     if (i >= n) return;
-    if (pbb_device::prefilter<Block>(device_input, first + i, words + threadIdx.x)) {
+    const pbb_device::prefilter_detail::Box<Block> box{words + threadIdx.x};
+    pbb_device::u8_t base[31];
+    int props[7];
+    bool uncertain = false;
+    if constexpr (Cropped) {
+#if defined(__CUDA_ARCH__)
+        box.template schedule_cropped<q_prefix>(device_input, first + i);
+#endif
+        uncertain = box.template collect<q_prefix / 4>(base) < 31;
+    } else {
+        box.schedule(device_input, first + i);
+        box.collect(base);
+    }
+    if (uncertain || pbb_device::gate_level_of(base, props)) {
         const U slot = atomicAdd(&counts->eligible, 1u);
-        indices[slot] = i;
-        if (slot < snapshot_cap) {
-            #pragma unroll 8
-            for (int j = 0; j < 64; ++j) snapshots[slot * 64 + j] = words[j * Block + threadIdx.x];
+        indices[slot] = i | (uncertain ? uncertain_q : 0);
+        if constexpr (!Cropped) {
+            if (slot < snapshot_cap) {
+                #pragma unroll 8
+                for (int j = 0; j < 64; ++j) snapshots[slot * 64 + j] = words[j * Block + threadIdx.x];
+            }
         }
     } else if (capture) {
-        // 原 score_full 在一级门失败处返回全零结果。
         Record rejected{};
         rejected.index = i;
         records[i] = rejected;
     }
 }
 
+// 只有 Q 幸存者和少数不确定项重新跑完整 KSA，裁剪后的尾部决不进入 PRGA。
+template<int Block>
+__global__ void rebuild_snapshots(Id first, const Counts* counts, const U* indices, U* snapshots, U snapshot_cap) {
+    __shared__ U words[64 * Block];
+    const U n = min(counts->eligible, snapshot_cap);
+    for (U i = blockIdx.x * Block + threadIdx.x; i < n; i += gridDim.x * Block) {
+        const pbb_device::prefilter_detail::Box<Block> box{words + threadIdx.x};
+        box.schedule(device_input, first + (indices[i] & ~uncertain_q));
+        #pragma unroll 4
+        for (int j = 0; j < 64; ++j) snapshots[i * 64 + j] = words[j * Block + threadIdx.x];
+    }
+}
+
 // G3 独立运行，评分长路径不再降低绝大多数 Q 幸存者的驻留度。
 template<bool Capture>
 __global__ void select_g3(Id first, Counts* counts, Record* records, const U* in,
-                          const U* snapshots, U snapshot_cap, U* out, U* survivors) {
+                          const U* snapshots, U snapshot_cap, U* out, U* survivors, U* rejected) {
     const U n = counts->eligible;
     for (U slot = blockIdx.x * blockDim.x + threadIdx.x; slot < n; slot += gridDim.x * blockDim.x) {
-        const U id = in[slot];
+        const U queued = in[slot];
+        const U id = queued & ~uncertain_q;
         pbb_device::Name state;
         if (slot < snapshot_cap) {
             memcpy(state.val, snapshots + slot * 64, 256);
@@ -69,6 +101,10 @@ __global__ void select_g3(Id first, Counts* counts, Record* records, const U* in
             make_name(device_input, first + id, name);
             init_candidate(state, device_input);
             state.load_name(name, device_input.name_len);
+        }
+        if (queued & uncertain_q) {
+            int props[7];
+            if (!pbb_device::gate_level_of(state.name_base, props)) atomicAdd(rejected, 1u);
         }
         if (pbb_device::qualify_g3(state)) out[atomicAdd(survivors, 1u)] = id;
         else if constexpr (Capture) score_one(first, id, true, counts, records);
@@ -92,7 +128,8 @@ struct Device {
     Counts *counts = nullptr, *host_counts = nullptr;
     U *indices = nullptr, *snapshots = nullptr, *g3_indices = nullptr, *survivors = nullptr;
     U snapshot_cap = 0, host_capacity = 0;
-    bool split = false;
+    bool split = false, cropped = false;
+    U *rejected_q = nullptr, *host_rejected_q = nullptr;
     int score_grid = 0;
     Record *records = nullptr, *host_records = nullptr;
     cudaStream_t stream = nullptr;
@@ -107,6 +144,8 @@ struct Device {
         if (snapshots) cudaFree(snapshots);
         if (g3_indices) cudaFree(g3_indices);
         if (survivors) cudaFree(survivors);
+        if (rejected_q) cudaFree(rejected_q);
+        if (host_rejected_q) cudaFreeHost(host_rejected_q);
         if (host_counts) cudaFreeHost(host_counts);
         if (host_records) cudaFreeHost(host_records);
         if (begin) cudaEventDestroy(begin);
@@ -121,6 +160,11 @@ struct Device {
         std::cerr << "GPU " << property.name << '\n';
         const size_t capacity = opts.batch;
         split = opts.cuda_path == "split";
+        cropped = split && input.prefix_len == 31 && input.suffix_len == 0 && input.i_pre == 32 && input.j_pre == 31;
+        if (cropped) {
+            CHECK(cudaMalloc(&rejected_q, sizeof(U)));
+            CHECK(cudaMallocHost(&host_rejected_q, sizeof(U)));
+        }
         // grid-stride 后核至少铺满全部 SM，多派发几波缓解 PTT 造成的长尾。
         score_grid = 8 * property.multiProcessorCount;
         if (split) {
@@ -131,6 +175,18 @@ struct Device {
             CHECK(cudaMalloc(&survivors, sizeof(*survivors)));
         }
         CHECK(cudaMemcpyToSymbol(device_input, &input, sizeof(input)));
+        if (split) {
+            using namespace pbb_device::prefilter_detail;
+            PreparedFront front{};
+            for (int j = 0; j < 256; ++j) front.words[j / 4] |= U(input.prefix_box[j]) << (8 * (j & 3));
+            front.pairs[0] = static_cast<unsigned char>(input.prefix[0]) << 8;
+            for (int j = 1; j < 16; ++j) {
+                const auto a = static_cast<unsigned char>(input.prefix[2*j-1]);
+                const auto b = static_cast<unsigned char>(input.prefix[2*j]);
+                front.pairs[j] = a | (b << 8);
+            }
+            CHECK(cudaMemcpyToSymbol(prepared_front, &front, sizeof(front)));
+        }
         CHECK(cudaMalloc(&counts, sizeof(*counts)));
         CHECK(cudaMalloc(&records, capacity * sizeof(*records)));
         CHECK(cudaMallocHost(&host_counts, sizeof(*host_counts)));
@@ -141,21 +197,28 @@ struct Device {
     Batch run(Id first, U n, U block, bool capture, bool = false) {
         CHECK(cudaMemsetAsync(counts, 0, sizeof(*counts), stream));
         if (split) CHECK(cudaMemsetAsync(survivors, 0, sizeof(*survivors), stream));
+        if (cropped) CHECK(cudaMemsetAsync(rejected_q, 0, sizeof(U), stream));
         CHECK(cudaEventRecord(begin, stream));
         if (split) {
-            #define FRONT(b) select_ids<b><<<(n + b - 1) / b, b, 0, stream>>>(first, n, capture, counts, records, indices, snapshots, snapshot_cap)
+            #define FRONT(b, clipped) select_ids<b, clipped><<<(n + b - 1) / b, b, 0, stream>>>(first, n, capture, counts, records, indices, snapshots, snapshot_cap)
+            #define CHOOSE(b) if (cropped) { FRONT(b, true); } else { FRONT(b, false); }
             switch (block) {
-                case 32: FRONT(32); break;
-                case 64: FRONT(64); break;
-                case 128: FRONT(128); break;
+                case 32: CHOOSE(32); break;
+                case 64: CHOOSE(64); break;
+                case 128: CHOOSE(128); break;
                 default: throw std::runtime_error("split path supports block 32/64/128");
             }
+            #undef CHOOSE
             #undef FRONT
             CHECK(cudaGetLastError());
+            if (cropped) {
+                rebuild_snapshots<64><<<score_grid, 64, 0, stream>>>(first, counts, indices, snapshots, snapshot_cap);
+                CHECK(cudaGetLastError());
+            }
             if (capture)
-                select_g3<true><<<score_grid, 128, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors);
+                select_g3<true><<<score_grid, 128, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q);
             else
-                select_g3<false><<<score_grid, 128, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors);
+                select_g3<false><<<score_grid, 128, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q);
             CHECK(cudaGetLastError());
             evaluate_g3<<<score_grid, 32, 0, stream>>>(first, capture, counts, records, g3_indices, survivors);
         } else {
@@ -164,9 +227,14 @@ struct Device {
         CHECK(cudaGetLastError());
         CHECK(cudaEventRecord(end, stream));
         CHECK(cudaMemcpyAsync(host_counts, counts, sizeof(*counts), cudaMemcpyDeviceToHost, stream));
+        if (cropped) CHECK(cudaMemcpyAsync(host_rejected_q, rejected_q, sizeof(U), cudaMemcpyDeviceToHost, stream));
         CHECK(cudaStreamSynchronize(stream));
         Batch result;
         result.counts = *host_counts;
+        if (cropped) {
+            if (*host_rejected_q > result.counts.eligible) throw std::runtime_error("invalid Q gate count");
+            result.counts.eligible -= *host_rejected_q;
+        }
         if (capture) result.counts.written = n;
         if (result.counts.eligible > n || (split && result.counts.passed > result.counts.eligible) || result.counts.written > n || result.counts.passed > n || result.counts.keep > result.counts.passed
             || result.counts.blue > result.counts.passed || result.counts.ptt > result.counts.passed)
