@@ -42,8 +42,10 @@ struct Box {
     static_assert(Block > 0 && Block % 32 == 0);
     U* column;
 
-    PBB_PREFILTER_HD U& word_at(int slot) const { return column[(slot >> 2) * Block]; }
-    PBB_PREFILTER_HD static U byte(U word, int slot) { return (word >> (8 * (slot & 3))) & 255u; }
+    // CUDA 为小端；通过 unsigned char 读写字的对象表示，布局仍为每 lane 一个 bank。
+    PBB_PREFILTER_HD u8_t& cell(U slot) const {
+        return reinterpret_cast<u8_t*>(column)[(slot & ~3u) * Block + (slot & 3u)];
+    }
 
     PBB_PREFILTER_HD void restore(const Launch& input) const {
         for (int i = 0; i < words_per_thread; ++i) {
@@ -52,23 +54,40 @@ struct Box {
         }
     }
 
-    PBB_PREFILTER_HD void step(int i, U& sum, U key) const {
-        U& a = word_at(i);
-        const U word_a = a;
-        const U cur = byte(word_a, i);
+    PBB_PREFILTER_HD void step(U i, U& sum, U key) const {
+        u8_t& a = cell(i);
+        const U cur = a;
         sum = (sum + key + cur) & 255u;
-        U& b = word_at(sum);
-        const U word_b = b;
-        const U delta = cur ^ byte(word_b, sum);
-        const U update_a = word_a ^ (delta << (8 * (i & 3)));
-        a = update_a;
-        b = (((U(i) ^ sum) < 4) ? update_a : word_b) ^ (delta << (8 * (sum & 3)));
+        u8_t& b = cell(sum);
+        a = b;
+        b = u8_t(cur);
+    }
+
+    // 读前移：两次交换之间无需等待共享内存写回。
+    // 第一换只可能修改 i 和 j，第二次的两个读取用它们的新值做旁路。
+    PBB_PREFILTER_HD void step2(U i, U& sum, U key0, U key1) const {
+        u8_t& a = cell(i);
+        u8_t& c = cell(i + 1);
+        const U old_a = a, old_c = c;
+        const U j = (sum + key0 + old_a) & 255u;
+        const U cur_c = j == i + 1 ? old_a : old_c;
+        sum = (j + key1 + cur_c) & 255u;
+        u8_t& b = cell(j);
+        u8_t& d = cell(sum);
+        const U old_b = b, old_d = d;
+        const U cur_d = sum == j ? old_a : sum == i ? old_b : old_d;
+        a = u8_t(old_b);
+        b = u8_t(old_a);
+        c = u8_t(cur_d);
+        d = u8_t(cur_c);
     }
 
     PBB_PREFILTER_HD void literal(const char* bytes, int first, int end, int& i, U& sum) const {
         const int count = end - first;
         const int stop = i + count < N ? i + count : N;
-        for (int k = first; i < stop; ++i, ++k) step(i, sum, u8_t(bytes[k]));
+        int k = first;
+        for (; i + 1 < stop; i += 2, k += 2) step2(i, sum, u8_t(bytes[k]), u8_t(bytes[k + 1]));
+        for (; i < stop; ++i, ++k) step(i, sum, u8_t(bytes[k]));
     }
 
     PBB_PREFILTER_HD void generated(const Generated& key, int first, int& i, U& sum) const {
@@ -76,11 +95,12 @@ struct Box {
 #if defined(__CUDACC__) || defined(__CUDA__)
             #pragma unroll
 #endif
-            for (int c = 0; c < 6; ++c) {
-                const U word = key.chunks[c];
-                step(i++, sum, word & 255u);
-                step(i++, sum, (word >> 8) & 255u);
-                step(i++, sum, word >> 16);
+            for (int c = 0; c < 6; c += 2) {
+                const U a = key.chunks[c], b = key.chunks[c + 1];
+                step2(i, sum, a & 255u, (a >> 8) & 255u);
+                step2(i + 2, sum, a >> 16, b & 255u);
+                step2(i + 4, sum, (b >> 8) & 255u, b >> 16);
+                i += 6;
             }
         } else {
             for (int k = first; k < encoded_width && i < N; ++i, ++k) step(i, sum, key.byte_at(k));

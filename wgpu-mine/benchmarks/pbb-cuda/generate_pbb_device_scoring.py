@@ -2,7 +2,6 @@
 
 import argparse
 import hashlib
-import math
 import re
 from pathlib import Path
 
@@ -12,8 +11,8 @@ EXTRA_MODELS = (
     "MODEL_FP0", "MODEL_WC0", "MODEL_FS0", "MODEL_PJ0",
 )
 DEVICE_FUNCTIONS = {
-    "qp_shadow_deduction", "score_normal_pass", "score_output_keep", "poly_1124",
-    "dot_1124_f", "dot46", "build_x2", "sp_eval_plan", "ptt_model_of", "ptt_pass",
+    "qp_shadow_deduction", "score_normal_pass", "score_output_keep", "dot46",
+    "build_x2", "sp_eval_plan", "ptt_model_of", "ptt_pass",
     "ptt_fixed_of", "get43_from_base", "shadowi2_of", "ptt_score_max", "skill_ok_of",
     "fam_t1_of", "fam_gate_ok", "fam_pass_mask", "sort10_net", "gate_level_of", "score_full",
 }
@@ -42,7 +41,8 @@ def remove_between(text, begin, end):
 
 def check_numbers(body, expected, context):
     tokens = [token.strip() for token in body.split(",") if token.strip()]
-    if len(tokens) != expected or not all(math.isfinite(float(token)) for token in tokens):
+    limit = float.fromhex("0x1.fffffep127")  # 模型权重会被存成有限 binary32。
+    if len(tokens) != expected or not all(abs(float(token)) <= limit for token in tokens):
         raise ValueError(f"{context} 数组不再包含 {expected} 个有限数值")
 
 
@@ -72,6 +72,72 @@ def replace_min(match):
     raise ValueError(f"未支持的字节最小值组：{match[0]}")
 
 
+def sparse_polynomial(scoring):
+    # 先确认标量核的实际计算，再用原表生成权重索引；模型重排时不能静默沿用此变换。
+    find_once(scoring, "xp[y] = e.is_pair ? x[e.p] * x[e.q] : x[e.p];")
+    find_once(scoring, "double s = m[0];\n  for (int i = 0; i < 1123; i++) s += xa[i] * m[i + 1];")
+    table = re.search(r"POLY_TABLE_1124\[1123\] = \{(.*?)^\};", scoring, re.M | re.S)
+    if not table:
+        raise ValueError("未找到原版多项式项表")
+    terms = [tuple(map(int, t)) for t in re.findall(r"\{(\d+),(\d+),(\d+)\}", table[1])]
+    pairs = terms[46:]
+    if len(terms) != 1123 or terms[:46] != [(0, i, 0) for i in range(46)]:
+        raise ValueError("原版多项式一阶索引变化")
+    if pairs != sorted(set(pairs)) or any(t != 1 or not 0 <= i <= j < 46 for t, i, j in pairs):
+        raise ValueError("原版多项式二阶索引顺序变化")
+    rows = [[0] * 46 for _ in range(46)]
+    for k, (_, i, j) in enumerate(pairs, 47):  # bias 和 46 项一阶项之后
+        rows[i][j] = k
+    indices = "static __device__ const unsigned short sparse_index[46][46] = {\n"
+    indices += "".join("  {" + ",".join(map(str, row)) + "},\n" for row in rows) + "};\n"
+    helper = r'''
+// 未出现在原项表中的交互项对应 0。两个循环均按原特征下标递增，
+// 仅略过零贡献；QP/QD 每项仍以 double 相乘、累加后收回 float。
+template<class Accum>
+static __device__ inline Accum sparse_dot(const double* x, const float* w) {
+  u64_t active = 0;
+  for (int i = 0; i < 46; ++i) if (x[i] != 0.0) active |= 1ULL << i;
+  Accum sum = w[0];
+  for (u64_t m = active; m; m &= m - 1) {
+    const int i = __ffsll(m) - 1;
+    sum += x[i] * w[i + 1];
+  }
+  for (u64_t m = active; m; m &= m - 1) {
+    const int i = __ffsll(m) - 1;
+    const double a = x[i];
+    for (u64_t later = m; later; later &= later - 1) {
+      const int j = __ffsll(later) - 1;
+      const int at = sparse_index[i][j];
+      if (at) sum += (a * x[j]) * w[at];
+    }
+  }
+  return sum;
+}
+
+'''
+    start = find_once(scoring, "// ===== PolyEntry1124:")
+    stop = find_once(scoring, "// ---- 数据块 2/4:")
+    scoring = scoring[:start] + indices + helper + scoring[stop:]
+    scoring = remove_between(scoring, "// ===== poly_1124:", "// ===== 46 维点积")
+
+    # 普通评分保留所有族条件、取整与 any 短路；只把展开后的数组换成原特征。
+    scoring = remove_between(scoring, "  double a1[1123], a2[1123];", "  auto C = [](double v)")
+    for weights, incr, ptr in [("MODEL_QP0", "++i", "* a"), ("W", "i++", " *a")]:
+        dense = f"        const double{ptr} = get1();\n        float s = {weights}[0];\n"
+        dense += f"        for (int i = 0; i < 1123; {incr}) s += a[i] * {weights}[i + 1];"
+        scoring = exactly(re.escape(dense), f"        float s = sparse_dot<float>(xp_x, {weights});", scoring)
+    scoring = exactly(r"\bget1\(\)", "xp_x", scoring, 3)
+    scoring = exactly(r"\bget2\(\)", "x2", scoring, 5)
+
+    # PTT 仍按原顺序枚举同一组扰动、重判同一组族门、取最大值。
+    scoring = exactly(r"^  double xa\[1123\], xc\[50\];$", "  double xc[50];", scoring)
+    scoring = exactly(r"^  poly_1124\(xa, x\);\n  double best = dot_1124_f\(xa, W\);",
+                      "  double best = sparse_dot<double>(x, W);", scoring)
+    scoring = exactly(r"^( +)poly_1124\(xa, xc\);\n\1(double s|s) = dot_1124_f\(xa, W\);",
+                      r"\1\2 = sparse_dot<double>(xc, W);", scoring, 3)
+    return exactly(r"\bdot_1124_f\(", "sparse_dot<double>(", scoring, 9)
+
+
 def convert(scoring, extra):
     # 两个输入文件只读取不改动。默认计划、旧测试包装与 CPU batch4 无设备调用者。
     scoring = scoring[:find_once(scoring, "// ===== score_full_loaded_batch4:")]
@@ -95,8 +161,7 @@ def convert(scoring, extra):
     # 所有模型和门控动态下标表仍为同源常量，放 GPU 全局只读对象，不用 __constant__。
     scoring = device_models(scoring, SCORE_MODELS)
     extra = device_models(extra, EXTRA_MODELS)
-    scoring = exactly(r"^constexpr PolyEntry1124 (?=POLY_TABLE_1124\[1123\])",
-                      "static __device__ const PolyEntry1124 ", scoring)
+    scoring = sparse_polynomial(scoring)
     scoring = exactly(r"^constexpr double (?=(?:GATE_SK_|FAM_W_)[A-Z0-9_]+\[46\])",
                       "static __device__ const double ", scoring, 19)
     scoring = exactly(r"^static const FamGate (?=FAM_GATE\[M_N\])",
@@ -120,7 +185,7 @@ def convert(scoring, extra):
     scoring = exactly(fn, lambda m: (m[1] or "") + "__device__ inline " + m[2], scoring, len(DEVICE_FUNCTIONS))
     # 注释保留上游解释；只检查最终有效 C++ 没有宿主专用符号。
     code = re.sub(r"//[^\n]*|/\*.*?\*/", "", scoring + extra, flags=re.S)
-    if re.search(r"\b(_mm\w*|PBB_HAS_\w+|plan_default|score_full_loaded_batch4)\b|std::|__constant__", code):
+    if re.search(r"\b(_mm\w*|PBB_HAS_\w+|plan_default|score_full_loaded_batch4|poly_1124|dot_1124_f|POLY_TABLE_1124)\b|std::|__constant__", code):
         raise ValueError("仍存在宿主专用调用或非预期常量存储")
     return extra, scoring
 

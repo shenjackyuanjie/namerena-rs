@@ -71,6 +71,8 @@ struct Device {
     Counts *counts = nullptr, *host_counts = nullptr;
     U* indices = nullptr;
     bool split = false;
+    int score_grid = 0;
+    static constexpr int score_block = 64;
     Record *records = nullptr, *host_records = nullptr;
     cudaStream_t stream = nullptr;
     cudaEvent_t begin = nullptr, end = nullptr;
@@ -87,8 +89,10 @@ struct Device {
         if (end) cudaEventDestroy(end);
         if (stream) cudaStreamDestroy(stream);
     }
-    void init(const Launch& input, size_t capacity, bool use_split) {
+    void init(const Launch& input, size_t capacity, bool use_split, int sm_count) {
         split = use_split;
+        // grid-stride 后核至少铺满全部 SM，多派发几波缓解 PTT 造成的长尾。
+        score_grid = 8 * sm_count;
         if (split) CHECK(cudaMalloc(&indices, capacity * sizeof(*indices)));
         CHECK(cudaMemcpyToSymbol(device_input, &input, sizeof(input)));
         CHECK(cudaMalloc(&counts, sizeof(*counts)));
@@ -112,7 +116,7 @@ struct Device {
             }
             #undef FRONT
             CHECK(cudaGetLastError());
-            evaluate_selected<<<16, 32, 0, stream>>>(first, capture, counts, records, indices);
+            evaluate_selected<<<score_grid, score_block, 0, stream>>>(first, capture, counts, records, indices);
         } else {
             evaluate<<<(n + block - 1) / block, block, 0, stream>>>(first, n, capture, counts, records);
         }
@@ -300,7 +304,7 @@ int main(int argc, char** argv) try {
         CHECK(cudaGetDevice(&id));
         CHECK(cudaGetDeviceProperties(&dev, id));
         std::cout << "GPU " << dev.name << '\n';
-        gpu.init(input, opts.batch, opts.cuda_path == "split");
+        gpu.init(input, opts.batch, opts.cuda_path == "split", dev.multiProcessorCount);
     }
     if (opts.validate) { validate(opts, input, gpu); return 0; }
     std::ofstream metrics(opts.out / "metrics.csv", std::ios::binary);
