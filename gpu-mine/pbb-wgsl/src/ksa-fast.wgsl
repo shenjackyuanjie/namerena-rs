@@ -35,16 +35,27 @@ fn ksa_fast_pair(lane: u32, i: u32, sum: u32, keys: u32) -> u32 {
     let updated1 = select(word1, updated0, same_word) ^ ((d_after_j0 ^ c) << s1);
     let updated = select(select(fixed_word, updated0, at == at0), updated1, at == at1);
     let final_lo = select(b, c, j1 == i);
-    let final_hi = select(d, c, j1 == i + 1u);
-    if !same_word && at0 != at { sbox[at0] = updated0; }
-    if at1 != at { sbox[at1] = updated1; }
-    sbox[at] = (updated & ~(65535u << shift)) | ((final_lo | (final_hi << 8u)) << shift);
+    // j1 == i+1 时 d 已是第一换后的顺序值 c。别名处由较晚的写回覆盖。
+    sbox[at0] = updated0;
+    sbox[at1] = updated1;
+    sbox[at] = (updated & ~(65535u << shift)) | ((final_lo | (d << 8u)) << shift);
     return j1;
 }
 
 fn ksa_fast_put(word: u32, slot: u32, value: u32) -> u32 {
     let shift = (slot & 3u) * 8u;
     return (word & ~(255u << shift)) | (value << shift);
+}
+
+// 先提交一对随机写，后一对从共享内存读到已提交的字。
+fn ksa_fast_crop_put_pair(lane: u32, j0: u32, j1: u32, r0: u32, r1: u32) {
+    let at0 = (j0 >> 2u) * LANES + lane;
+    let at1 = (j1 >> 2u) * LANES + lane;
+    let word0 = sbox[at0];
+    let word1 = sbox[at1];
+    let updated0 = ksa_fast_put(word0, j0, r0);
+    sbox[at0] = updated0;
+    sbox[at1] = ksa_fast_put(select(word1, updated0, at0 == at1), j1, r1);
 }
 
 // i 按字对齐。每组开始时，[0,88) 和未处理区间仍与完整 KSA 一致。
@@ -61,35 +72,13 @@ fn ksa_fast_crop_word(lane: u32, i: u32, sum: u32, keys01: u32, keys23: u32) -> 
     let hit_next = j0 == i + 1u;
     let r1 = select(a1, a0, hit_next);
     let j1 = select(p1 + a1, p1 + a0, hit_next) & 255u;
-    let at0 = (j0 >> 2u) * LANES + lane;
-    let at1 = (j1 >> 2u) * LANES + lane;
-    // WGSL 只能按 u32 写共享数组：读取原字用于保留未改字节，不取随机旧值参与交换。
-    let word0 = sbox[at0];
-    let word1 = sbox[at1];
+    ksa_fast_crop_put_pair(lane, j0, j1, a0, r1);
 
     let r2 = select(select(a2, a0, j0 == i + 2u), r1, j1 == i + 2u);
     let j2 = (j1 + (keys23 & 255u) + r2) & 255u;
     let r3 = select(select(select(a3, a0, j0 == i + 3u), r1, j1 == i + 3u), r2, j2 == i + 3u);
     let j3 = (j2 + (keys23 >> 8u) + r3) & 255u;
-    let at2 = (j2 >> 2u) * LANES + lane;
-    let at3 = (j3 >> 2u) * LANES + lane;
-    let word2 = sbox[at2];
-    let word3 = sbox[at3];
-
-    let same01 = at0 == at1;
-    let same02 = at0 == at2;
-    let same03 = at0 == at3;
-    let same12 = at1 == at2;
-    let same13 = at1 == at3;
-    let same23 = at2 == at3;
-    let updated0 = ksa_fast_put(word0, j0, a0);
-    let updated1 = ksa_fast_put(select(word1, updated0, same01), j1, r1);
-    let updated2 = ksa_fast_put(select(select(word2, updated0, same02), updated1, same12), j2, r2);
-    let updated3 = ksa_fast_put(select(select(select(word3, updated0, same03), updated1, same13), updated2, same23), j3, r3);
-    if !(same01 || same02 || same03) { sbox[at0] = updated0; }
-    if !(same12 || same13) { sbox[at1] = updated1; }
-    if !same23 { sbox[at2] = updated2; }
-    sbox[at3] = updated3;
+    ksa_fast_crop_put_pair(lane, j2, j3, r2, r3);
     return j3;
 }
 

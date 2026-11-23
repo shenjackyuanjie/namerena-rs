@@ -57,7 +57,7 @@ fn ksa(lane: u32, start: u32, cursor: u32, seed: u32, words: ptr<function, array
     }
 }
 
-fn median(base: ptr<function, array<u32, 31>>, at: u32) -> i32 {
+fn median(base: ptr<function, array<u32, 34>>, at: u32) -> i32 {
     let a = (*base)[at];
     let b = (*base)[at + 1u];
     let c = (*base)[at + 2u];
@@ -71,7 +71,7 @@ fn compare_swap(hp: ptr<function, array<u32, 10>>, i: u32, j: u32) {
     (*hp)[j] = max(a, b);
 }
 
-fn sorted_hp(base: ptr<function, array<u32, 31>>) -> u32 {
+fn sorted_hp(base: ptr<function, array<u32, 34>>) -> u32 {
     // Q 门用完整排序网络。旧 V 路径交换这些字节的顺序不影响门中完整排序的结果。
     var hp: array<u32, 10>;
     for (var i = 0u; i < 10u; i += 1u) { hp[i] = (*base)[i]; }
@@ -87,7 +87,7 @@ fn sorted_hp(base: ptr<function, array<u32, 31>>) -> u32 {
     return 154u + hp[3] + hp[4] + hp[5] + hp[6];
 }
 
-fn gate_level(base: ptr<function, array<u32, 31>>) -> u32 {
+fn gate_level(base: ptr<function, array<u32, 34>>) -> u32 {
     let p7 = median(base, 28u);
     if p7 < MIN_P7 { return 0u; }
     let a = W7 * p7 + W2 * median(base, 13u) + W3 * median(base, 16u) + W6 * median(base, 25u);
@@ -124,19 +124,24 @@ fn load_name(lane: u32, words: ptr<function, array<u32, 6>>, crop: bool) {
     }
 }
 
-fn collect_properties(lane: u32, limit: u32, base: ptr<function, array<u32, 31>>) -> u32 {
+fn push_property(base: ptr<function, array<u32, 34>>, at: u32, raw: u32) -> u32 {
+    // 平移 89 后，原区间 [89,217) 恰为 [0,128)。无效字节的暂存槽会被下一项覆盖。
+    let mapped = (raw * 181u + 71u) & 255u;
+    (*base)[at] = (mapped + 89u) & 63u;
+    return at + u32(mapped < 128u);
+}
+
+fn collect_properties(lane: u32, limit: u32, base: ptr<function, array<u32, 34>>) -> u32 {
     var filled = 0u;
     for (var w = 0u; w < limit && filled < 31u; w += 1u) {
         let word = sbox[w * LANES + lane];
-        for (var b = 0u; b < 4u && filled < 31u; b += 1u) {
-            let value = ((word >> (8u * b)) * 181u + 160u) & 255u;
-            if 89u <= value && value < 217u {
-                (*base)[filled] = value & 63u;
-                filled += 1u;
-            }
-        }
+        // 从最多 30 项进入，四次写入的下标至多为 33；只消费前 31 项。
+        filled = push_property(base, filled, word);
+        filled = push_property(base, filled, word >> 8u);
+        filled = push_property(base, filled, word >> 16u);
+        filled = push_property(base, filled, word >> 24u);
     }
-    return filled;
+    return min(filled, 31u);
 }
 
 @compute @workgroup_size(LANES)
@@ -146,7 +151,7 @@ fn prefilter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invoca
     if i >= params.count { return; }
     var words = name_words(i);
     load_name(lane, &words, FAST_KEY);
-    var base: array<u32, 31>;
+    var base: array<u32, 34>;
     if FAST_KEY {
         if collect_properties(lane, 22u, &base) != 31u {
             // 未收齐时重新计算完整排列，不能从裁剪之后的尾部补值。

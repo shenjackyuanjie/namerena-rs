@@ -140,7 +140,7 @@ impl Front {
             let module = if fast && entry == "prefilter" {
                 // 只有固定 50 字节键环的 Q 核去掉运行时边界检查：fast 守卫了键环形状，
                 // 顺序槽 0..255、随机槽按 255 掩码，每个 lane 只访问自己的 64 个字。
-                // 属性和排序固定 31/10 项；早退守住 i<n，每个 i 最多写一次，队列容量为 n 的上界。
+                // 属性扫描的 34 槽内只消费前 31 项，排序 10 项；早退守住 i<n，每个 i 最多入队一次。
                 // 通用模板和读压缩队列的 G3 核保持完整运行时检查。
                 unsafe { device.create_shader_module_trusted(descriptor, wgpu::ShaderRuntimeChecks::unchecked()) }
             } else {

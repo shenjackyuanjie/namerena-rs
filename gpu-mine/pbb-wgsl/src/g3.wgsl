@@ -95,7 +95,7 @@ fn decay_percent(skill: u32) -> u32 {
     }
 }
 
-fn may_pass_g3(base: ptr<function, array<u32, 31>>, lane: u32) -> bool {
+fn may_pass_g3(base: ptr<function, array<u32, 34>>, lane: u32) -> bool {
     // 原版两套 HP 比较网络的中间四项和在构建时经零一原理校验。
     var point = weights(0u) * sorted_hp(base);
     for (var i = 1u; i < 8u; i += 1u) {
@@ -143,7 +143,7 @@ fn secondary(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invoca
         if !pass_gate {
             var words = name_words(i);
             load_name(lane, &words, false);
-            var base: array<u32, 31>;
+            var base: array<u32, 34>;
             _ = collect_properties(lane, 64u, &base);
             pass_gate = may_pass_g3(&base, lane);
         }
