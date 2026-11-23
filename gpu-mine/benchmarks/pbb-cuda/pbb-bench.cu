@@ -1,20 +1,21 @@
 #include "pbb-run.hpp"
 #include <cuda_runtime.h>
+#include <cstdlib>
 #include "pbb_device_scoring.hpp" // 从同一份 PBB 源生成的 CUDA 评分。
 #include "pbb_device_prefilter.hpp"
 
 static_assert(pbb_device::M_N == families);
 __constant__ Launch device_input;
 
-template<bool Warp = false>
+template<int Width = 1>
 __device__ void score_one(Id first, U i, bool capture, Counts* counts, Record* records) {
     char name[name_limit + 1];
     make_name(device_input, first + i, name);
     pbb_device::Name state;
     init_candidate(state, device_input);
     const auto plan = make_plan<pbb_device::ScorePlan>(device_input.rules);
-    const auto score = pbb_device::score_full<Warp>(name, device_input.name_len, state, &plan);
-    if constexpr (Warp) if (threadIdx.x != 0) return;
+    const auto score = pbb_device::score_full<Width>(name, device_input.name_len, state, &plan);
+    if ((threadIdx.x & (Width - 1)) != 0) return;
     const auto flags = selection(device_input.rules, score);
     if (score.flag) atomicAdd(&counts->passed, 1u);
     if (flags.keep) atomicAdd(&counts->keep, 1u);
@@ -168,12 +169,14 @@ __global__ void select_g3(Id first, Counts* counts, Record* records, const U* in
         else if constexpr(Capture) score_one(first,id,true,counts,records);
     }
 }
-// 一个 block 恰好一个 warp，所有 lane 对同一候选执行原评分，PTT 变体分到各 lane。
+// 一个 block 恰好一个 warp；每个 Width 线程小组负责一个候选。
+template<int Width>
 __global__ void evaluate_g3(Id first, bool capture, Counts* counts, Record* records,
                             const U* indices, const U* survivors) {
     const U n = *survivors;
-    for (U slot = blockIdx.x; slot < n; slot += gridDim.x)
-        score_one<true>(first, indices[slot], capture, counts, records);
+    constexpr U groups = 32 / Width;
+    for (U slot = blockIdx.x * groups + threadIdx.x / Width; slot < n; slot += gridDim.x * groups)
+        score_one<Width>(first, indices[slot], capture, counts, records);
 }
 
 static void check(const char* operation, cudaError_t error) {
@@ -187,10 +190,11 @@ struct Device {
     U snapshot_cap = 0, host_capacity = 0;
     bool split = false, cropped = false;
     U *rejected_q = nullptr, *host_rejected_q = nullptr;
-    int score_grid = 0;
+    int score_grid = 0, tail_grid = 0;
     Record *records = nullptr, *host_records = nullptr;
     cudaStream_t stream = nullptr;
-    cudaEvent_t begin = nullptr, end = nullptr;
+    cudaEvent_t begin = nullptr, end = nullptr, q_done = nullptr, g3_done = nullptr;
+    double stage_s[3]{};
     Device() = default;
     Device(const Device&) = delete;
     ~Device() {
@@ -207,6 +211,12 @@ struct Device {
         if (host_records) cudaFreeHost(host_records);
         if (begin) cudaEventDestroy(begin);
         if (end) cudaEventDestroy(end);
+        if (q_done) cudaEventDestroy(q_done);
+        if (g3_done) {
+            cudaEventDestroy(g3_done);
+            std::cerr << "CUDA 分段（含预热）：Q=" << stage_s[0] << "s G3=" << stage_s[1]
+                      << "s Score=" << stage_s[2] << "s\n";
+        }
         if (stream) cudaStreamDestroy(stream);
     }
     void init(const Launch& input, const Options& opts) {
@@ -222,8 +232,9 @@ struct Device {
             CHECK(cudaMalloc(&rejected_q, sizeof(U)));
             CHECK(cudaMallocHost(&host_rejected_q, sizeof(U)));
         }
-        // grid-stride 后核至少铺满全部 SM，多派发几波缓解 PTT 造成的长尾。
         score_grid = 8 * property.multiProcessorCount;
+        // 让更多块各自开始处理一个小组批次，减轻 PTT 较重的候选拖慢同一块的后续批次。
+        tail_grid = 12 * property.multiProcessorCount;
         if (split) {
             CHECK(cudaMalloc(&indices, capacity * sizeof(*indices)));
             if (!cropped) {
@@ -252,6 +263,10 @@ struct Device {
         CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CHECK(cudaEventCreate(&begin));
         CHECK(cudaEventCreate(&end));
+        if (split && std::getenv("PBB_CUDA_PROFILE")) {
+            CHECK(cudaEventCreate(&q_done));
+            CHECK(cudaEventCreate(&g3_done));
+        }
     }
     Batch run(Id first, U n, U block, bool capture, bool = false) {
         CHECK(cudaMemsetAsync(counts, 0, sizeof(*counts), stream));
@@ -264,23 +279,26 @@ struct Device {
             switch (block) {
                 case 32: CHOOSE(32); break;
                 case 64: CHOOSE(64); break;
+                case 96: CHOOSE(96); break;
                 case 128: CHOOSE(128); break;
-                default: throw std::runtime_error("split path supports block 32/64/128");
+                default: throw std::runtime_error("split path supports block 32/64/96/128");
             }
             #undef CHOOSE
             #undef FRONT
             CHECK(cudaGetLastError());
-            #define G3(cap, clipped) select_g3<64, cap, clipped><<<score_grid, 64, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q)
+            if (q_done) CHECK(cudaEventRecord(q_done, stream));
+            #define G3(b, cap, clipped) select_g3<b, cap, clipped><<<score_grid, b, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q)
             if (cropped) {
-                if (capture) G3(true, true);
-                else G3(false, true);
+                if (capture) G3(64, true, true);
+                else G3(96, false, true);
             } else {
-                if (capture) G3(true, false);
-                else G3(false, false);
+                if (capture) G3(64, true, false);
+                else G3(64, false, false);
             }
             #undef G3
             CHECK(cudaGetLastError());
-            evaluate_g3<<<score_grid, 32, 0, stream>>>(first, capture, counts, records, g3_indices, survivors);
+            if (g3_done) CHECK(cudaEventRecord(g3_done, stream));
+            evaluate_g3<8><<<tail_grid, 32, 0, stream>>>(first, capture, counts, records, g3_indices, survivors);
         } else {
             evaluate<<<(n + block - 1) / block, block, 0, stream>>>(first, n, capture, counts, records);
         }
@@ -302,6 +320,13 @@ struct Device {
         float ms = 0;
         CHECK(cudaEventElapsedTime(&ms, begin, end));
         result.kernel_s = double(ms) / 1000;
+        if (g3_done) {
+            const cudaEvent_t boundaries[] = {begin, q_done, g3_done, end};
+            for (size_t i = 0; i < 3; ++i) {
+                CHECK(cudaEventElapsedTime(&ms, boundaries[i], boundaries[i + 1]));
+                stage_s[i] += double(ms) / 1000;
+            }
+        }
         if (result.counts.written) {
             if (result.counts.written > host_capacity) {
                 if (host_records) CHECK(cudaFreeHost(host_records));

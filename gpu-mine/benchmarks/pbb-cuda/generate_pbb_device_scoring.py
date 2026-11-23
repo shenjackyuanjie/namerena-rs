@@ -166,26 +166,28 @@ def parallel_tail(scoring):
 '''
     scorer = "__device__ inline ScoreResult score_full("
     find_once(scoring, scorer)
-    scoring = scoring.replace(scorer, helper + "template<bool Warp = false>\n" + scorer)
+    scoring = scoring.replace(scorer, helper + "template<int Width = 1>\n" + scorer)
 
-    # 扰动之间独立：各 lane 保留原始特征计算和同序点积，warp 只合并最大值。
+    # 扰动独立：小组按槽号分工，各扰动仍做原始特征计算和同序点积，组内只合并最大值。
     start = find_once(scoring, "__device__ inline int ptt_score_max(")
     end = scoring.index("\n}", start) + 2
     warp = scoring[start:end]
     replace = [
-        ("ptt_score_max(", "ptt_warp_max("),
+        ("__device__ inline int ptt_score_max(",
+         "template<int Width>\n__device__ inline int ptt_group_max("),
         ("  double best = sparse_dot<double>(x, W);",
-         "  const int lane = threadIdx.x & 31;\n  double best = lane == 0 ? sparse_dot<double>(x, W) : -1e300;"),
-        ("  if (ptt_pass(m, x)) {", "  if (lane >= 1 && lane <= 8 && ptt_pass(m, x)) {\n    if (lane == 1) {"),
-        ("    // 7 属性候选:", "    } else {\n    // 7 属性候选:"),
-        ("    for (int t = 1; t < 8; t++) {", "    {\n      const int t = lane - 1;"),
+         "  const int lane = threadIdx.x & (Width - 1);\n"
+          "  const unsigned mask = (0xffffffffu >> (32 - Width)) << ((threadIdx.x & 31) & ~(Width - 1));\n"
+          "  double best = lane == 0 ? sparse_dot<double>(x, W) : -1e300;"),
+        ("  if (ptt_pass(m, x)) {", "  if (ptt_pass(m, x)) {\n    if (lane == 1) {"),
+        ("    // 7 属性候选:", "    }\n    // 7 属性候选:"),
+        ("    for (int t = 1; t < 8; t++) {",
+         "    for (int t = 1 + ((lane - 2) & (Width - 1)); t < 8; t += Width) {"),
         ("      s = sparse_dot<double>(xc, W);", "      const double s = sparse_dot<double>(xc, W);"),
-        ("  // 18 技能候选:", "  }\n  // 18 技能候选:"),
-        ("  for (int i = -2; i < 16; i++) {", "  if (lane >= 9 && lane <= 26) {\n    const int i = lane - 11;"),
-        ("    if (nb[j] >= 63) continue;", "    if (nb[j] < 63) {"),
-        ("  return (int)::round(best);", '''  }
-  for (int d = 16; d; d >>= 1) {
-    const double peer = __shfl_xor_sync(0xffffffffu, best, d);
+        ("  for (int i = -2; i < 16; i++) {",
+         "  for (int i = -2 + ((lane - 9) & (Width - 1)); i < 16; i += Width) {"),
+        ("  return (int)::round(best);", '''  for (int d = Width / 2; d; d >>= 1) {
+    const double peer = __shfl_xor_sync(mask, best, d, Width);
     if (peer > best) best = peer;
   }
   return (int)::round(best);'''),
@@ -195,7 +197,7 @@ def parallel_tail(scoring):
         warp = warp.replace(old, new)
     scoring = scoring[:end] + "\n\n" + warp + scoring[end:]
     return exactly(r"result.sc_max\[m\] = ptt_score_max\(m,",
-                   "result.sc_max[m] = (Warp ? ptt_warp_max : ptt_score_max)(m,", scoring)
+                   "result.sc_max[m] = (Width != 1 ? ptt_group_max<Width> : ptt_score_max)(m,", scoring)
 
 
 def convert(scoring, extra):

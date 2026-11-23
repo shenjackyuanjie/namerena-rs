@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)][string]$Binary,
     [Parameter(Mandatory)][string]$OutputDir,
     [ValidateSet('split','direct','wgsl')][string]$Path='split',
-    [ValidateSet(32,64,128)][int]$Block=64
+    [ValidateSet(32,64,96,128)][int]$Block=64
 )
 $ErrorActionPreference='Stop'
 $exe=(Resolve-Path -LiteralPath $Binary).Path

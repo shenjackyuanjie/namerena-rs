@@ -66,10 +66,11 @@ static Options arguments(int argc, const char* const* argv, std::string_view dev
     const bool tuned = o.mine && o.backend == device && device == "cuda" && o.cuda_path == "split";
     if (!o.batch) o.batch = tuned ? 1048576 : 262144;
     if (!o.block) o.block = tuned ? 128 : 64;
-    const bool split_block = o.block == 32 || o.block == 64 || o.block == 128;
+    const bool split_block = o.block == 32 || o.block == 64 || o.block == 128
+        || (device == "cuda" && o.block == 96);
     if (o.block % 32 != 0 || (o.cuda_path == "split" && !split_block)
         || (o.cuda_path != "split" && (o.cuda_path != "direct" || device != "cuda")))
-        throw std::runtime_error(u8"\u524d\u7b5b\u5de5\u4f5c\u7ec4\u652f\u6301 32\u300164\u3001128\uff1bCUDA direct \u53ef\u7528 32 \u7684\u500d\u6570\u81f3 256");
+        throw std::runtime_error(u8"WGSL 工作组支持 32/64/128；CUDA split 支持 32/64/96/128；CUDA direct 支持 32 的倍数至 256");
     if (o.mine) {
         if (timed || o.validate || (o.count && o.end))
             throw std::runtime_error(u8"--mine \u53ef\u9009 --count \u6216 --end\uff0c\u4e0e --seconds\u3001--validate \u4e92\u65a5");

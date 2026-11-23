@@ -136,7 +136,8 @@ struct Box {
         const U cur_d = sum == j ? pair : sum == i ? old_b : old_d;
         asm volatile("st.shared.u8 [%0], %1; st.shared.u8 [%2], %3;"
                      :: "r"(ba), "r"(pair), "r"(da), "r"(c) : "memory");
-        const U final_pair = __byte_perm(sum == i ? c : old_b, sum == i + 1 ? c : cur_d, 0x0040);
+        // 若第二随机槽就是 i+1，其首换后的值 cur_d 已等于 c（取低字节）。
+        const U final_pair = __byte_perm(sum == i ? c : old_b, cur_d, 0x0040);
         asm volatile("st.shared.u16 [%0], %1;" :: "r"(address), "r"(final_pair) : "memory");
     }
 #endif

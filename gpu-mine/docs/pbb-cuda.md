@@ -22,7 +22,25 @@ $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 
 ## 实测
 
-### CUDA 与 WGSL 同轮复测：+10.6% / +6.4%
+### CUDA 分段调优：74.87 T/天
+
+RTX 5060 Ti 16 GB，驱动 621.24，`sm_120`。同一[完整足球计划](../benchmarks/pbb-cuda/fixtures/football-real.kv)从 ID 0 开始，每批 16,777,216。旧版 `f59548a` 和新版推荐参数各跑两轮，第二轮反转顺序；另跑一轮新版 128 线程与旧版同参对照。全部串行、实跑至少 60 秒，端到端计入回读、评分和 CSV。
+
+| 路线 | Q 工作组 | 各轮 T/天 | 候选/秒 | T/天 | T/周 | 对同轮旧版 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 旧版（两轮中位数） | 128 | 69.58 / 69.41 | 804,339,856 | 69.49 | 486.46 | — |
+| 新版（同参数单轮） | 128 | 72.68 | 841,203,918 | 72.68 | 508.76 | +4.6% |
+| **新版（两轮中位数）** | **96** | **74.85 / 74.88** | **866,525,870** | **74.87** | **524.07** | **+7.7%** |
+
+本轮旧版也快于上轮的 65.91 T/天，只用上表同轮数据计算增幅。五轮公共编号区间的 **247 条命中逐行一致**；两轮新版推荐参数在共同区间的 **266 条**亦逐行一致。
+
+- **Q 前核**：保留固定半字与两个随机槽的原写序，删除别名转发后已冗余的一次选择；96 线程在本卡的观测驻留上限为 4 CTA/SM，仍有 12 warp/SM。
+- **G3 中核**：固定模板生产路径从 64 改为 96 线程，通用模板和全捕获保持 64。
+- **尾评分**：一个 warp 划为四个 8 线程小组；每组负责一个候选，完整覆盖原版 PTT 的基线、HP、七个属性与十八个技能扰动。每次点积、取整顺序不变，组内只归约最大值。尾核用 12 × SM 数派发，减少较慢候选挡住同块后续候选。
+
+短分段诊断中，旧版 Q/G3/尾评分约占设备时间的 **85% / 7% / 8%**，新版约 **88% / 6% / 6%**。强制共享内存 carveout 没有提速；改写 KSA 写序、为每个编号段额外上传快照也未保留。复现见下方[对拍和一分钟基准](#对拍和一分钟基准)，旧版需在 `f59548a` 的独立工作树用旧参数构建。
+
+### CUDA 与 WGSL 同轮复测：+10.6% / +6.4%（上轮）
 
 RTX 5060 Ti 16 GB、Ryzen 7 5800X，同一[完整足球计划](../benchmarks/pbb-cuda/fixtures/football-real.kv)，从 ID 0 开始，Q 工作组 128、每批 16,777,216，WGSL 尾部用 6 个 CPU 线程。新、旧 CUDA 和 WGSL 各跑两轮，每轮实跑 60.00–60.04 秒。各轮串行，第二轮反转各路线的新旧顺序；端到端计入回读、评分和 CSV。
 
@@ -109,7 +127,7 @@ RTX 4090 已成功构建 `sm_89`，未做真机测速。要达成 180 T/天，�
 
 ~~~powershell
 # RTX 5060 Ti 16 GB：以完整足球计划持续测号
-./target/pbb-cuda/pbb-cuda.exe --mine --out target/pbb-live --batch 16777216 --block 128
+./target/pbb-cuda/pbb-cuda.exe --mine --out target/pbb-live --batch 16777216 --block 96
 # RTX 4090：单独构建 Ada 版本，再在目标卡上测量
 & ./gpu-mine/benchmarks/pbb-cuda/build.ps1 -Arch sm_89 -OutputDir target/pbb-cuda-ada
 ./target/pbb-cuda-ada/pbb-cuda.exe --out target/pbb-ada-minute --backend cuda --seconds 60 --batch 16777216 --block 128
@@ -174,7 +192,7 @@ WGSL 的一分钟样本中，Q 计算通道的 GPU 时间戳累计约 **14.16 �
 
 ### 继续降精度的收益上限
 
-Q 本身是精确整数门，耗时主要来自两轮 KSA 的排列读写。WGSL 的 G3 已使用 16.16 定点保守上界；本轮一分钟中 G3 约 2.5 秒，即使无代价地消除这段也只提升约 4.4%。放松上界会增加回读与 CPU 精算；尾列超过 4,096 项还需额外回读。因此本轮保持 G3 精度和精算分工，优化 Q/KSA。
+Q 本身是精确整数门，耗时主要来自两轮 KSA 的排列读写。WGSL 的 G3 已使用 16.16 定点保守上界；上一轮 WGSL 实测中 G3 每分钟约 2.5 秒，即使无代价地消除这段也只提升约 4.4%。放松上界会增加回读与 CPU 精算；尾列超过 4,096 项还需额外回读。因此本轮保持 G3 精度和精算分工，优化 Q/KSA。
 
 若高通过率计划将来实测卡在尾部，可先给各族门构造保守上界，把不确定项送回原版精算。普通分不达标并不排除 PTT 救回，蓝号也需独立判定；不能把只针对普通分的低精度结果当成最终淘汰条件。
 
@@ -185,20 +203,23 @@ Q 本身是精确整数门，耗时主要来自两轮 KSA 的排列读写。WGSL
 ~~~powershell
 $exe = './target/pbb-cuda/pbb-cuda.exe'
 $wgsl = './target/release/pbb-wgsl.exe'
-& ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $exe -OutputDir target/pbb-cuda/validation -Path split -Block 128
+& ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $exe -OutputDir target/pbb-cuda/validation -Path split -Block 96
 & ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $exe -OutputDir target/pbb-cuda/validation-direct -Path direct -Block 64
 & ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $wgsl -OutputDir target/pbb-wgsl-validation -Path wgsl -Block 128
 $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 & $exe --out target/pbb-cuda/validation-extended --plan $plan --validate 4194305 --block 128 --batch 1048576
-& $exe --out target/pbb-cuda/football-60s --plan $plan --backend cuda --seconds 60 --block 128 --batch 16777216
+& $exe --out target/pbb-cuda/football-60s --plan $plan --backend cuda --seconds 60 --block 96 --batch 16777216
 & $wgsl --out target/pbb-wgsl-60s --plan $plan --backend wgsl --seconds 60 --block 128 --batch 16777216 --threads 6
 ~~~
+
+CUDA `split` 支持 `--block 32/64/96/128`，正式默认值不变；本机大批足球计划用 96。需要拆分 Q、G3 和尾评分的设备时间时，可在单独一次运行前设置 `$env:PBB_CUDA_PROFILE = '1'`，结束后用 `Remove-Item Env:PBB_CUDA_PROFILE` 关闭。分段诊断含预热；正式吞吐关闭该开关。
 
 可用 [football-real.kv](../benchmarks/pbb-cuda/fixtures/football-real.kv) 或其它计划覆盖评分阈值、潜力、任意/全量、收集条件和枚举输入；--plan 不传时使用足球评分参数。输入为带一个 [] 的 UTF-8 模板、单槽 Base16384；名字上限 252 字节以适配原 PBB 影子缓冲。--cuda-path direct 用完整单核作对照；split 依次处理 Q 门、G3 门和完整评分。固定布局的 G3 中核用 Q 队列的 ID 在共享内存中重建完整排列；通用模板沿用有界快照，快照满时重建。两条 CUDA 路径都使用同序稀疏点积，CPU 保留未修改的原版稠密评分。
 
 ### 验证覆盖
 
-- 本轮 CUDA 与 WGSL 新版各通过 17 组、558,105 个候选的原版矩阵。CUDA 另在批容量 16,777,216 下对拍 1,048,577 个跨 u32 候选；WGSL 用 32 线程二维派发对拍 2,097,153 个跨 u32 候选。Clippy `-D warnings`、Linux 构建及 CPU 路线、CUDA `sm_89` 编译通过；RTX 4090 和 RX 580 均未实测。
+- 本轮 CUDA `split`（96 线程）和 `direct`（64 线程）各通过 17 组、558,105 个候选的原版矩阵。另在正式 96 线程、16,777,216 批容量下对拍 1,048,577 个跨 u32 候选；有实际命中的 `--mine` 诊断通过。共享参数头的 Clippy `-D warnings` 及新版 Ada `sm_89` 构建通过，未在 4090 实机测速。
+- 上一轮 CUDA 与 WGSL 新版各通过 17 组、558,105 个候选的原版矩阵。CUDA 另在批容量 16,777,216 下对拍 1,048,577 个跨 u32 候选；WGSL 用 32 线程二维派发对拍 2,097,153 个跨 u32 候选。Clippy `-D warnings`、Linux 构建及 CPU 路线、CUDA `sm_89` 编译通过；RTX 4090 和 RX 580 均未实测。
 - 共享技能中核通过 17 组、558,105 个候选的 CPU 原版对拍，以及 1,048,577 个跨 u32 的扩展候选。单核、强制快照只容纳 1 个候选的重建路径，以及重新构建的 WGSL 后端也分别通过完整矩阵。
 - 前缀裁剪通过 17 组、558,105 个候选的原版 CPU 对拍，另在 16,777,216 的批容量下校验跨 u32 的 1,048,577 个候选。验证模式额外核对精确 Q 门通过计数；完整记录、评分、潜力和收集集合沿用原版口径。
 - 三核和单核各对拍 17 组、558,105 个候选；另用仅容纳 1 个快照的独立构建强制触发回退，并复验全矩阵。三核在 8,388,608 的批容量下另对拍 1,048,577 个跨 u32 进位的候选，同时验证有实际命中的 `--mine`。Ada `sm_89` 构建通过，RTX 4090 尚未实测。
