@@ -73,6 +73,22 @@ fn write_sbox(lane: u32, slot: u32, value: u32) { // 写入一个状态字节，
     }
 }
 
+// 直接复用两次共享内存读取的打包字；若两个槽同字，第二次写入使用更新后的字。
+fn swap_packed(lane: u32, a: u32, b: u32, word_a: u32, current: u32) -> u32 {
+    let index_a = (a >> 2u) * LANES + lane;
+    let index_b = (b >> 2u) * LANES + lane;
+    let shift_a = (a & 3u) * 8u;
+    let shift_b = (b & 3u) * 8u;
+    let word_b = values[index_b];
+    let other = (word_b >> shift_b) & 255u;
+    // XOR 差量只改目标槽：current ^ delta == other，反过来也成立。
+    let delta = current ^ other;
+    let update_a = word_a ^ (delta << shift_a);
+    values[index_a] = update_a;
+    values[index_b] = select(word_b, update_a, index_a == index_b) ^ (delta << shift_b);
+    return other;
+}
+
 fn restore_team(lane: u32) { // 把宿主准备的队伍状态或前缀快照复制到本 lane。
     if (PACKED) {
         for (var i = 0u; i < 64u; i += 1u) {
@@ -124,11 +140,18 @@ fn name_ksa(lane: u32, info: NameInfo, with_shadow: bool) {
         var first = 0u;
         if (GENERATED && round == 0u) { first = info.offset; k = first; s = names[1u].offset; } // 生成模式第一轮从宿主预计算的公共前缀快照继续；第二轮从零开始。
         for (var i = first; i < 256u; i += 1u) {
-            let current = read_sbox(lane, i);
-            s = (s + key_byte(info, k) + current) & 255u; // 累加密钥和当前槽，& 255 等价于对 256 取余。
-            let other = read_sbox(lane, s);
-            write_sbox(lane, i, other); // 交换 i 与 s 两槽；两次写入各自重新读取打包字。
-            write_sbox(lane, s, current);
+            if (PACKED) {
+                let word = values[(i >> 2u) * LANES + lane];
+                let current = (word >> ((i & 3u) * 8u)) & 255u;
+                s = (s + key_byte(info, k) + current) & 255u;
+                swap_packed(lane, i, s, word, current);
+            } else {
+                let current = read_sbox(lane, i);
+                s = (s + key_byte(info, k) + current) & 255u;
+                let other = read_sbox(lane, s);
+                write_sbox(lane, i, other);
+                write_sbox(lane, s, current);
+            }
             if (k == key_length) { k = 0u; } else { k += 1u; } // k 在前导零和全部名字字节间循环。
         }
     }
@@ -152,24 +175,48 @@ fn median3(x: u32, y: u32, z: u32) -> u32 { // 三个值的中位数，不需要
 }
 
 fn properties(base: ptr<function, array<u32, 128>>) -> array<u32, 8> {
-    // HP 排序只作用于局部副本，保留 skills 所用完整原 base。
-    var hp: array<u32, 10>;
-    for (var i = 0u; i < 10u; i += 1u) {
-        hp[i] = (*base)[i];
-    }
-    for (var i = 1u; i < 10u; i += 1u) { // 插入排序前十个值；只对 hp 副本操作。
-        let value = hp[i];
-        var j = i;
-        loop {
-            if (j == 0u) { break; }
-            if (hp[j - 1u] <= value) { break; }
-            hp[j] = hp[j - 1u];
-            j -= 1u;
-        }
-        hp[j] = value;
-    }
+    // 借鉴 PBB 的固定 compare-exchange 网络，避免同组候选按不同次数执行插入排序。
+    var h0 = (*base)[0];
+    var h1 = (*base)[1];
+    var h2 = (*base)[2];
+    var h3 = (*base)[3];
+    var h4 = (*base)[4];
+    var h5 = (*base)[5];
+    var h6 = (*base)[6];
+    var h7 = (*base)[7];
+    var h8 = (*base)[8];
+    var h9 = (*base)[9];
+    let low0 = min(h0, h5); h5 = max(h0, h5); h0 = low0;
+    let low1 = min(h1, h6); h6 = max(h1, h6); h1 = low1;
+    let low2 = min(h2, h7); h7 = max(h2, h7); h2 = low2;
+    let low3 = min(h3, h8); h8 = max(h3, h8); h3 = low3;
+    let low4 = min(h4, h9); h9 = max(h4, h9); h4 = low4;
+    let low5 = min(h0, h3); h3 = max(h0, h3); h0 = low5;
+    let low6 = min(h1, h4); h4 = max(h1, h4); h1 = low6;
+    let low7 = min(h5, h8); h8 = max(h5, h8); h5 = low7;
+    let low8 = min(h6, h9); h9 = max(h6, h9); h6 = low8;
+    let low9 = min(h0, h2); h2 = max(h0, h2); h0 = low9;
+    let low10 = min(h3, h6); h6 = max(h3, h6); h3 = low10;
+    let low11 = min(h7, h9); h9 = max(h7, h9); h7 = low11;
+    let low12 = min(h0, h1); h1 = max(h0, h1); h0 = low12;
+    let low13 = min(h2, h4); h4 = max(h2, h4); h2 = low13;
+    let low14 = min(h5, h7); h7 = max(h5, h7); h5 = low14;
+    let low15 = min(h8, h9); h9 = max(h8, h9); h8 = low15;
+    let low16 = min(h1, h2); h2 = max(h1, h2); h1 = low16;
+    let low17 = min(h3, h5); h5 = max(h3, h5); h3 = low17;
+    let low18 = min(h4, h6); h6 = max(h4, h6); h4 = low18;
+    let low19 = min(h7, h8); h8 = max(h7, h8); h7 = low19;
+    let low20 = min(h1, h3); h3 = max(h1, h3); h1 = low20;
+    let low21 = min(h2, h5); h5 = max(h2, h5); h2 = low21;
+    let low22 = min(h4, h7); h7 = max(h4, h7); h4 = low22;
+    let low23 = min(h6, h8); h8 = max(h6, h8); h6 = low23;
+    let low24 = min(h2, h3); h3 = max(h2, h3); h2 = low24;
+    let low25 = min(h6, h7); h7 = max(h6, h7); h6 = low25;
+    let low26 = min(h3, h4); h4 = max(h3, h4); h3 = low26;
+    let low27 = min(h5, h6); h6 = max(h5, h6); h5 = low27;
+    let low28 = min(h4, h5); h5 = max(h4, h5); h4 = low28;
     var props: array<u32, 8>;
-    props[0] = 154u + hp[3] + hp[4] + hp[5] + hp[6]; // 取排序后中间四项之和，加固定基数得到 HP。
+    props[0] = 154u + h3 + h4 + h5 + h6;
     for (var i = 1u; i < 8u; i += 1u) {
         let start = 10u + (i - 1u) * 3u; // 其余七项每项使用连续三个 base 值的中位数。
         props[i] = median3((*base)[start], (*base)[start + 1u], (*base)[start + 2u]) + 36u;
@@ -179,6 +226,13 @@ fn properties(base: ptr<function, array<u32, 128>>) -> array<u32, 8> {
 
 fn prga_byte(lane: u32, a: ptr<function, u32>, b: ptr<function, u32>) -> u32 { // PRGA 每次更新同一 lane 的状态并返回一个伪随机字节；a、b 通过指针延续。
     *a = (*a + 1u) & 255u; // & 255 让状态游标在 0 至 255 间循环。
+    if (PACKED) {
+        let word = values[(*a >> 2u) * LANES + lane];
+        let current = (word >> ((*a & 3u) * 8u)) & 255u;
+        *b = (*b + current) & 255u;
+        let other = swap_packed(lane, *a, *b, word, current);
+        return read_sbox(lane, (current + other) & 255u);
+    }
     let current = read_sbox(lane, *a);
     *b = (*b + current) & 255u;
     let other = read_sbox(lane, *b);
