@@ -2,7 +2,7 @@ use std::cmp::min;
 #[cfg(feature = "simd")]
 // 考虑到 avx512 的普及性
 // 咱还是用 u8x32 吧
-use std::simd::u8x32;
+use std::simd::{cmp::SimdPartialOrd, u8x32};
 
 use tracing::warn;
 
@@ -56,8 +56,22 @@ impl KsaPrefix {
         // 这是安全 API 的运行时条件。即使 release 也检查，不能仅靠 debug_assert。
         assert!(names.iter().all(|name| name.as_bytes().starts_with(&self.prefix)));
         let mut states = [self.state; N];
-        let mut positions = [self.prefix.len() + 1; N];
         let mut sums = [self.j; N];
+        if let Some(first) = names.first()
+            && names.iter().all(|name| name.len() == first.len())
+        {
+            let bytes = names.map(str::as_bytes);
+            let len = first.len();
+            let prefix_len = self.prefix.len();
+            Self::equal_length_round(&mut states, &mut sums, &bytes, prefix_len + 1, prefix_len, len);
+            sums.fill(0);
+            // 第二轮从前导零开始，不能沿用首轮的游标或 j。
+            Self::equal_length_round(&mut states, &mut sums, &bytes, 0, len, len);
+            return states;
+        }
+
+        // 十进制等枚举可能跨位宽；不同长度的 lane 仍各自回绕。
+        let mut positions = [self.prefix.len() + 1; N];
         for round in 0..2 {
             let start = if round == 0 { self.prefix.len() + 1 } else { 0 };
             if round == 1 {
@@ -70,21 +84,59 @@ impl KsaPrefix {
                     let k = positions[lane];
                     // 首轮已消耗整个名字时应回到前导零；空名字也只读取零。
                     let k = if k > bytes.len() { 0 } else { k };
-                    // 安全不变量：i∈0..256，j 是 u8；k 为0或 1..=bytes.len()。
-                    // 每个 lane 独占一个排列，ptr::swap 允许 i==j，未构造别名 &mut。
+                    // 安全不变量：i∈0..256，k 为 0 或 1..=bytes.len()。
                     unsafe {
                         let key = if k == 0 { 0 } else { *bytes.get_unchecked(k - 1) };
-                        let state = states.get_unchecked_mut(lane);
-                        let j = sums[lane].wrapping_add(key).wrapping_add(*state.get_unchecked(i));
-                        let ptr = state.as_mut_ptr();
-                        std::ptr::swap(ptr.add(i), ptr.add(usize::from(j)));
-                        sums[lane] = j;
+                        Self::ksa_swap(&mut states[lane], &mut sums[lane], i, key);
                     }
                     positions[lane] = if k == bytes.len() { 0 } else { k + 1 };
                 }
             }
         }
         states
+    }
+
+    /// 等长密钥共享一个游标：先消费连续字节，再显式走一步前导零。
+    #[inline]
+    fn equal_length_round<const N: usize>(
+        states: &mut [[u8; 256]; N],
+        sums: &mut [u8; N],
+        names: &[&[u8]; N],
+        mut i: usize,
+        mut position: usize,
+        len: usize,
+    ) {
+        loop {
+            let count = (256 - i).min(len - position);
+            for offset in 0..count {
+                for lane in 0..N {
+                    // 所有 name 的字节长度均为 len，position + offset < len 且 i + offset < 256。
+                    unsafe {
+                        let key = *names[lane].get_unchecked(position + offset);
+                        Self::ksa_swap(&mut states[lane], &mut sums[lane], i + offset, key);
+                    }
+                }
+            }
+            i += count;
+            if i == 256 {
+                return;
+            }
+            for lane in 0..N {
+                // 只有 i < 256 才会消费下一轮密钥的前导零。
+                unsafe { Self::ksa_swap(&mut states[lane], &mut sums[lane], i, 0) };
+            }
+            i += 1;
+            position = 0;
+        }
+    }
+
+    /// 调用方保证 i < 256。
+    #[inline(always)]
+    unsafe fn ksa_swap(state: &mut [u8; 256], sum: &mut u8, i: usize, key: u8) {
+        let j = sum.wrapping_add(key).wrapping_add(unsafe { *state.get_unchecked(i) });
+        let ptr = state.as_mut_ptr();
+        unsafe { std::ptr::swap(ptr.add(i), ptr.add(usize::from(j))) };
+        *sum = j;
     }
 }
 
@@ -127,6 +179,28 @@ impl TeamNamer {
     #[inline(always)]
     #[cfg(test)]
     pub fn clone_vals(&self) -> [u8; 256] { self.val }
+}
+
+/// 稳定压缩：掩码一次筛选 32 字节，按原排列顺序只写命中的元素。
+#[cfg(feature = "simd")]
+#[inline]
+fn decode_base_simd<const PROPS_ONLY: bool>(state: &[u8; 256], base: &mut [u8; 128]) {
+    let mut count = 0;
+    for chunk in state.as_chunks::<32>().0 {
+        let values = u8x32::from_array(*chunk) * u8x32::splat(181) + u8x32::splat(160);
+        // u8 环绕减法：[89, 217) 恰好映射到 [0, 128)，其它值映射到 [128, 256)。
+        let mut selected = (values - u8x32::splat(89)).simd_lt(u8x32::splat(128)).to_bitmask() as u32;
+        let values = (values & u8x32::splat(63)).to_array();
+        while selected != 0 {
+            let lane = selected.trailing_zeros() as usize;
+            base[count] = values[lane];
+            count += 1;
+            if PROPS_ONLY && count == 31 {
+                return;
+            }
+            selected &= selected - 1;
+        }
+    }
 }
 
 #[repr(C)]
@@ -234,34 +308,20 @@ impl Namer {
         self.name_base.fill(0);
         self.skl_id.fill(0);
         self.skl_freq.fill(0);
-        let mut count = 0;
         // 只解出八围必需的前 31 项。技能阶段仍从完整排列重新解出全部 128 项。
         #[cfg(feature = "simd")]
-        {
-            for chunk in self.val.chunks_exact(32) {
-                let transformed = (u8x32::from_slice(chunk) * u8x32::splat(181) + u8x32::splat(160)).to_array();
-                for value in transformed {
-                    if (89..217).contains(&value) {
-                        self.name_base[count] = value & 63;
-                        count += 1;
-                        if count == 31 {
-                            break;
-                        }
-                    }
-                }
-                if count == 31 {
-                    break;
-                }
-            }
-        }
+        decode_base_simd::<true>(&self.val, &mut self.name_base);
         #[cfg(not(feature = "simd"))]
-        for &value in &self.val {
-            let transformed = value.wrapping_mul(181).wrapping_add(160);
-            if (89..217).contains(&transformed) {
-                self.name_base[count] = transformed & 63;
-                count += 1;
-                if count == 31 {
-                    break;
+        {
+            let mut count = 0;
+            for &value in &self.val {
+                let transformed = value.wrapping_mul(181).wrapping_add(160);
+                if (89..217).contains(&transformed) {
+                    self.name_base[count] = transformed & 63;
+                    count += 1;
+                    if count == 31 {
+                        break;
+                    }
                 }
             }
         }
@@ -292,31 +352,7 @@ impl Namer {
 
         #[cfg(feature = "simd")]
         {
-            let mut simd_val = [0_u8; 256];
-            let mut simd_val_b = [0_u8; 256];
-            let simd_181 = u8x32::splat(181);
-            let simd_160 = u8x32::splat(160);
-            let simd_63 = u8x32::splat(63);
-
-            for i in (0..256).step_by(32) {
-                unsafe {
-                    let mut x = u8x32::from_slice(self.val.get_unchecked(i..));
-                    x = x * simd_181 + simd_160;
-                    x.copy_to_slice(simd_val.get_unchecked_mut(i..));
-                    let y = x & simd_63;
-                    y.copy_to_slice(simd_val_b.get_unchecked_mut(i..));
-                }
-            }
-
-            let mut mod_count = 0;
-            for i in 0..256 {
-                unsafe {
-                    if *simd_val.get_unchecked(i) > 88 && *simd_val.get_unchecked(i) < 217 {
-                        self.name_base[mod_count as usize] = simd_val_b[i];
-                        mod_count += 1;
-                    }
-                }
-            }
+            decode_base_simd::<false>(&self.val, &mut self.name_base);
             // const int N = 256, M = 128, K = 64, skill_cnt = 40, max_len = 25;
             let mut a: u8 = 0;
             let mut b: u8 = 0;

@@ -167,9 +167,12 @@ fn check(team: &str, name: &str, state: [u8; 256]) {
     let mut namer = Namer::new_raw_unchecked("", team);
     namer.replace_state(name, state);
     assert_eq!(namer.name_prop, props);
+    let base = reference_base(&expected);
+    assert_eq!(namer.name_base[..31], base[..31]);
+    assert!(namer.name_base[31..].iter().all(|&value| value == 0));
     namer.update_skill();
     assert_eq!(namer.val, after_prga);
-    assert_eq!(namer.name_base.as_slice(), reference_base(&expected));
+    assert_eq!(namer.name_base.as_slice(), base);
     assert_eq!(namer.skl_id.map(u32::from), ids);
     assert_eq!(namer.skl_freq[..16].iter().map(|&f| u32::from(f)).collect::<Vec<_>>(), freqs);
     assert!(namer.skl_freq[16..].iter().all(|&f| f == 0));
@@ -235,6 +238,27 @@ fn independent_safe_oracle_covers_ksa_prefix_and_length_edges() {
             }
             let prefix = KsaPrefix::new(&team, &name[..prefix_len]);
             check(&team.team, &name, prefix.states([name.as_str()])[0]);
+        }
+    }
+}
+
+#[test]
+fn four_lane_ksa_matches_reference_across_key_wraps_and_mixed_lengths() {
+    let team = TeamNamer::new_unchecked("队@伍\0");
+    let near_limit = "字".repeat(85);
+    let cases = [
+        ("", ["", "", "", ""]),
+        ("", ["a", "\0", "b", "c"]),
+        ("前", ["前", "前", "前", "前"]),
+        ("前", ["前\0中", "前abcd", "前中\0", "前éé"]),
+        ("前", ["前9", "前10", "前11", "前12"]),
+        ("", ["", "\0", "中", near_limit.as_str()]),
+        (near_limit.as_str(), [near_limit.as_str(); 4]),
+    ];
+    for (prefix, names) in cases {
+        let states = KsaPrefix::new(&team, prefix).states(names);
+        for (name, state) in names.into_iter().zip(states) {
+            assert_eq!(state, reference_state(&team.team, name), "{prefix:?} / {name:?}");
         }
     }
 }
