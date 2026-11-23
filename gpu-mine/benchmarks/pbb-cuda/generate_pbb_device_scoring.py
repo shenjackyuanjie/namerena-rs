@@ -156,7 +156,7 @@ def parallel_tail(scoring):
                     "  if (lvl != 1) return lvl == 2;", props)
     features = segment("  double xp_x[46] = {};", "  // ---- Step 4b: 构建 SP2")
     features = exactly(r"^ *result.props\[[^]]+\] = .+;\n", "", features, count=2)
-    helper = "__device__ inline bool qualify_g3(Name& name_obj) {\n"
+    helper = "template<class State>\n__device__ inline bool qualify_g3(State& name_obj) {\n"
     helper += props + "  name_obj.calc_skills();\n" + features
     helper += '''  if (xp_x[42] > 0) xp_x[44] = 1.0;
   if (xp_x[37] > 0) { xp_x[45] = xp_x[26]; xp_x[26] = 0; }

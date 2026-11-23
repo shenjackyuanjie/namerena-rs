@@ -83,34 +83,98 @@ __global__ void rebuild_snapshots(Id first, const Counts* counts, const U* indic
     }
 }
 
-// G3 独立运行，评分长路径不再降低绝大多数 Q 幸存者的驻留度。
-template<bool Capture>
+// G3 单独执行；连续候选独占共享内存列，避免 PRGA 随机访问落到局部内存。
+template<int Block>
+struct GateName {
+    const pbb_device::prefilter_detail::Box<Block> box;
+    pbb_device::u8_t name_base[31], freq[16], skill[40];
+    int V;
+
+    __device__ __forceinline__ U read(U i) const { return box.cell(i); }
+    __device__ __forceinline__ U prga(U i, U& j) const {
+        auto& a = box.cell(i);
+        const U x = a;
+        j = (j + x) & 255u;
+        auto& b = box.cell(j);
+        const U y = b;
+        a = y;
+        b = x;
+        return read((x+y)&255u);
+    }
+
+    __device__ __forceinline__ U prga2(U i, U& j) const {
+        const U high = prga(i, j), low = prga(i+1, j);
+        return (high<<8) | low;
+    }
+
+    __device__ __forceinline__ void calc_skills() {
+        // 逆扫 128 个有效字节中的末 68 项：16 个四元组、2 个加成二元组。
+        // 槽内顺序不影响最小值，扫描后仍用同一份完整 S-box 跑 PRGA。
+        U left = 68, minimum = 63, boost[2];
+        for (int word = 63;word >= 0 && left; --word) {
+            const U packed = box.column[word*Block];
+            #pragma unroll
+            for (int b = 3; b >= 0; --b) {
+                const U u=((packed>>(b*8))*181u+71u)&255u;
+                if (u<128u && left) {
+                    minimum=min(minimum,(u+89u)&63u);
+                    --left;
+                    if (left>=4 ? !(left&3u) : !(left&1u)) {
+                        if(left>=4)freq[(left-4)/4]=max(int(minimum)-10,0);
+                        else boost[left/2]=minimum;
+                        minimum=63;
+                    }
+                }
+            }
+        }
+        #pragma unroll 4
+        for (int i = 0; i < 40; ++i) skill[i]=i;
+        U move=0, j=0;
+        for (int p = 0; p < 2; ++p) {
+            for (int i = 0; i < 40; ++i) {
+                const U raw=prga2((p*40+i)*2+1,j);
+                // ((raw % 40) + move + skill[i]) % 40 与一次取余相同。
+                move = (move + raw + skill[i]) % 40u;
+                const auto x=skill[i];
+                skill[i]=skill[move]; skill[move]=x;
+            }
+        }
+        int last=-1;
+        for (int i = 0; i < 16; ++i) {
+            if(skill[i]>=35)freq[i]=0;
+            else if(skill[i]<25 && freq[i])last=i;
+        }
+        if(last>=0)freq[last]*=2;
+        for (int i = 14; i < 16; ++i)
+            if (i != last && freq[i]) freq[i] += min(U(freq[i]), boost[i-14]);
+    }
+};
+
+template<int Block, bool Capture>
 __global__ void select_g3(Id first, Counts* counts, Record* records, const U* in,
-                          const U* snapshots, U snapshot_cap, U* out, U* survivors, U* rejected) {
-    const U n = counts->eligible;
-    for (U slot = blockIdx.x * blockDim.x + threadIdx.x; slot < n; slot += gridDim.x * blockDim.x) {
-        const U queued = in[slot];
-        const U id = queued & ~uncertain_q;
-        pbb_device::Name state;
-        if (slot < snapshot_cap) {
-            memcpy(state.val, snapshots + slot * 64, 256);
-            state.load_properties();
+    const U* snapshots, U snapshot_cap, U* out, U* survivors, U* rejected) {
+    __shared__ U words[64*Block];
+    const U n=counts->eligible;
+    for (U slot = blockIdx.x * Block + threadIdx.x; slot < n; slot += Block * gridDim.x) {
+        const U queued=in[slot], id=queued&~uncertain_q;
+        GateName<Block> state{{words+threadIdx.x}};
+        if (slot >= snapshot_cap) {
+            // 有界缓存满后，走同一个完整 KSA，只重建当前候选。
+            state.box.schedule(device_input, first + id);
         } else {
-            // 缓存满仍照原流程重建，不丢过门候选。
-            char name[name_limit + 1];
-            make_name(device_input, first + id, name);
-            init_candidate(state, device_input);
-            state.load_name(name, device_input.name_len);
+            #pragma unroll 4
+            for (int w=0;w<64;++w) words[w*Block+threadIdx.x]=snapshots[slot*64+w];
         }
+        state.box.collect(state.name_base);
+        state.V=pbb_device::prefilter_detail::finish_base(state.name_base);
         if (queued & uncertain_q) {
-            int props[7];
-            if (!pbb_device::gate_level_of(state.name_base, props)) atomicAdd(rejected, 1u);
+            int p[7];
+            if (!pbb_device::gate_level_of(state.name_base,p))atomicAdd(rejected,1u);
         }
-        if (pbb_device::qualify_g3(state)) out[atomicAdd(survivors, 1u)] = id;
-        else if constexpr (Capture) score_one(first, id, true, counts, records);
+        if (pbb_device::qualify_g3(state)) out[atomicAdd(survivors,1u)]=id;
+        else if constexpr(Capture) score_one(first,id,true,counts,records);
     }
 }
-
 // 一个 block 恰好一个 warp，所有 lane 对同一候选执行原评分，PTT 变体分到各 lane。
 __global__ void evaluate_g3(Id first, bool capture, Counts* counts, Record* records,
                             const U* indices, const U* survivors) {
@@ -216,9 +280,9 @@ struct Device {
                 CHECK(cudaGetLastError());
             }
             if (capture)
-                select_g3<true><<<score_grid, 128, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q);
+                select_g3<64, true><<<score_grid, 64, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q);
             else
-                select_g3<false><<<score_grid, 128, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q);
+                select_g3<64, false><<<score_grid, 64, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q);
             CHECK(cudaGetLastError());
             evaluate_g3<<<score_grid, 32, 0, stream>>>(first, capture, counts, records, g3_indices, survivors);
         } else {
