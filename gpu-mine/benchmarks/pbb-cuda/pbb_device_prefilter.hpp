@@ -21,6 +21,14 @@ struct PreparedFront {
     unsigned short pairs[16];
 };
 static __constant__ PreparedFront prepared_front;
+// 低四个半字节为 PRMT 源下标（4 指向零），高位为有效字节数。
+// 动态取表放普通只读显存，避免 constant bank 在一个 warp 中串行化。
+static __device__ const U compact_q[16] = {
+    0x04444u, 0x14440u, 0x14441u, 0x24410u,
+    0x14442u, 0x24420u, 0x24421u, 0x34210u,
+    0x14443u, 0x24430u, 0x24431u, 0x34310u,
+    0x24432u, 0x34320u, 0x34321u, 0x43210u,
+};
 #endif
 
 PBB_PREFILTER_HD U utf8_word(U c) {
@@ -94,8 +102,16 @@ struct Box {
     }
 
 #if defined(__CUDA_ARCH__)
+    // slot 已截断为 u8。先抵消低两位的跨列偏移，再合成共享地址。
     __device__ __forceinline__ U shared_address(U slot) const {
-        return U(__cvta_generic_to_shared(column)) + (slot & 252u) * Block + (slot & 3u);
+        const U base = U(__cvta_generic_to_shared(column));
+        return slot * Block + (base + (slot & 3u) * U(1 - Block));
+    }
+
+    __device__ __forceinline__ U load_byte(U addr) const {
+        U value;
+        asm volatile("ld.shared.u8 %0, [%1];" : "=r"(value) : "r"(addr) : "memory");
+        return value;
     }
 
     __device__ __forceinline__ void store_byte(U slot, U value) const {
@@ -103,29 +119,25 @@ struct Box {
         asm volatile("st.shared.u8 [%0], %1;" :: "r"(addr), "r"(value) : "memory");
     }
 
-    // i 为偶数时两个连续槽可一并读写。先提交随机槽，再用转发后的值写回固定位置。
+    // 固定位置偶数对可一并读写；先发首个随机读，首换命中下一槽则转发。
     __device__ __forceinline__ void step_aligned(U i, U& sum, U key0, U key1) const {
         const U address = shared_address(i);
         U pair;
         asm volatile("ld.shared.u16 %0, [%1];" : "=r"(pair) : "r"(address) : "memory");
-        const U a = pair & 255u;
-        const U j = (sum + key0 + a) & 255u;
-        const U high = pair >> 8;
-        const bool hit_next = j == i+1;
-        const U c = hit_next ? a : high;
-        // 普通第二游标与 j 并行计算；只有首换命中下个固定槽才转发 a。
-        const U predicted = sum + (key0 + key1) + (a + high);
-        sum = (hit_next ? j + key1 + a : predicted) & 255u;
-        // 无条件发出两个共享读取，避免先等别名判断才读取随机槽。
-        U old_b, old_d;
-        const U ba = shared_address(j), da = shared_address(sum);
-        asm volatile("{ .reg .u32 x, y; ld.shared.u8 x, [%2]; ld.shared.u8 y, [%3]; mov.u32 %0, x; mov.u32 %1, y; }"
-            : "=r"(old_b), "=r"(old_d) : "r"(ba), "r"(da) : "memory");
-        const U cur_d = sum == j ? a : sum == i ? old_b : old_d;
+        // 此处 pair 的高字节只参与已截断的游标和写入，不需要提前清零。
+        const U raw_j = sum + key0 + pair;
+        const U j = raw_j & 255u;
+        const U ba = shared_address(j);
+        const U old_b = load_byte(ba);
+        const U c = j == i + 1 ? pair : pair >> 8;
+        sum = (raw_j + key1 + c) & 255u;
+        const U da = shared_address(sum);
+        const U old_d = load_byte(da);
+        const U cur_d = sum == j ? pair : sum == i ? old_b : old_d;
         asm volatile("st.shared.u8 [%0], %1; st.shared.u8 [%2], %3;"
-                     :: "r"(ba), "r"(a), "r"(da), "r"(c) : "memory");
-        const unsigned short final_pair = (sum == i ? c : old_b) | ((sum == i+1 ? c : cur_d) << 8);
-        asm volatile("st.shared.u16 [%0], %1;" :: "r"(address), "h"(final_pair) : "memory");
+                     :: "r"(ba), "r"(pair), "r"(da), "r"(c) : "memory");
+        const U final_pair = __byte_perm(sum == i ? c : old_b, sum == i + 1 ? c : cur_d, 0x0040);
+        asm volatile("st.shared.u16 [%0], %1;" :: "r"(address), "r"(final_pair) : "memory");
     }
 #endif
 
@@ -177,28 +189,25 @@ struct Box {
         U word;
         asm volatile("ld.shared.u16 %0, [%1];" : "=r"(word) : "r"(address) : "memory");
 
-        const U a = word & 255u, b = word >> 8;
-        const U j = (sum+key0+a)&255u;
-        const bool next = j == i+1;
-        const U c = next ? a : b;
-        const U predicted = sum + (key0+key1) + (a+b);
-        sum = (next ? j + key1 + a : predicted) & 255u;
+        const U raw_j = sum + key0 + word;
+        const U j = raw_j & 255u;
+        const U c = j == i + 1 ? word : word >> 8;
+        sum = (raw_j + key1 + c) & 255u;
         // 同组固定槽的变化已转发；写入已退出观察范围的槽无影响，省掉逐 lane 谓词。
-        store_byte(j, a);
+        store_byte(j, word);
         store_byte(sum, c);
     }
 
     __device__ __forceinline__ void cropped_word(U i, U& carry, U k0, U k1, U k2, U k3) const {
         const U x = column[(i >> 2) * Block];
-        const U a0 = x & 255u, a1 = (x >> 8) & 255u, a2 = (x >> 16) & 255u, a3 = x >> 24;
-        const U j0 = (carry + k0 + a0) & 255u;
-        const U r1 = (j0 == i+1 ? a0 : a1);
-        const U j1 = ((j0 == i+1 ? j0 + k1 + a0 : carry + (k0+k1) + (a0+a1))) & 255u;
-        const U r2 = j1 == i+2 ? r1 : j0 == i+2 ? a0 : a2;
-        const U j2 = (j1 + k2 + r2) & 255u;
-        const U r3 = j2 == i+3 ? r2 : j1 == i+3 ? r1 : j0 == i+3 ? a0 : a3;
-        const U j3 = (j2 + k3 + r3) & 255u;
-        store_byte(j0, a0);
+        const U s0 = carry + k0 + x, j0 = s0 & 255u;
+        const U r1 = j0 == i+1 ? x : x >> 8;
+        const U s1 = s0 + k1 + r1, j1 = s1 & 255u;
+        const U r2 = j1 == i+2 ? r1 : j0 == i+2 ? x : x >> 16;
+        const U s2 = s1 + k2 + r2, j2 = s2 & 255u;
+        const U r3 = j2 == i+3 ? r2 : j1 == i+3 ? r1 : j0 == i+3 ? x : x >> 24;
+        const U j3 = (s2 + k3 + r3) & 255u;
+        store_byte(j0, x);
         store_byte(j1, r1);
         store_byte(j2, r2);
         store_byte(j3, r3);
@@ -220,6 +229,15 @@ struct Box {
         }
     }
 
+    __device__ __forceinline__ void aligned_tail(U carry) const {
+        // 50 字节键环走完第 5 圈后，尾 6 槽消费 NUL 与前缀首 5 字节。
+        #pragma unroll
+        for (int i = 0; i < 3; ++i) {
+            const U pair = prepared_front.pairs[i];
+            step_aligned(250 + i * 2, carry, pair & 255u, pair >> 8);
+        }
+    }
+
     template<int Limit>
     __device__ __forceinline__ void schedule_cropped(const Launch& input, Id id) const {
         static_assert(Limit >= 50 && Limit <= 100 && Limit % 2 == 0);
@@ -237,7 +255,7 @@ struct Box {
             #pragma unroll
             for (int k=0; k<18; k+=2) step_aligned(i+32+k,j,key.byte_at(k),key.byte_at(k+1));
         }
-        round(input,key,250,input.name_len,j);
+        aligned_tail(j);
         j=0;
         #pragma unroll 4
         for (int k=0; k<32; k+=2) {
@@ -262,38 +280,77 @@ struct Box {
     }
 #endif
 
-    PBB_PREFILTER_HD void schedule(const Launch& input, Id id) const {
+#if defined(__CUDACC__) || defined(__CUDA__)
+    // 仅布局满足 31 字节前缀、无后缀且已走完 NUL+前缀时调用。
+    __device__ __forceinline__ void schedule_aligned(const Launch& input, Id id) const {
+#if defined(__CUDA_ARCH__)
         restore(input);
         const Generated key(id);
+        for (int r = 0; r < 2; ++r) {
+            int i = r ? 0 : 32;
+            U j = r ? 0 : input.s_pre;
+            if (!r) {
+                #pragma unroll
+                for (int k = 0; k < 18; k += 2) step_aligned(i+k, j, key.byte_at(k), key.byte_at(k+1));
+                i += 18;
+            }
+            for (; i + 50 <= N; i += 50) {
+                #pragma unroll 4
+                for (int k = 0; k < 32; k += 2) {
+                    const U pair = prepared_front.pairs[k/2];
+                    step_aligned(i+k, j, pair & 255u, pair >> 8);
+                }
+                #pragma unroll
+                for (int k = 0; k < 18; k += 2) step_aligned(i+32+k, j, key.byte_at(k), key.byte_at(k+1));
+            }
+            aligned_tail(j);
+        }
+#endif
+    }
+#endif
+
+    PBB_PREFILTER_HD void schedule(const Launch& input, Id id) const {
 #if defined(__CUDA_ARCH__)
         // 32 字节 NUL+前缀和 18 字节生成段组成偶数长度的圈，任何此前缀内容都能走此路径。
         if (input.prefix_len == 31 && input.suffix_len == 0 && input.i_pre == 32 && input.j_pre == 31) {
-            for (int r = 0; r < 2; ++r) {
-                int i = r ? 0 : 32;
-                U j = r ? 0 : input.s_pre;
-                if (!r) {
-                    #pragma unroll
-                    for (int k = 0; k < 18; k += 2) step_aligned(i+k, j, key.byte_at(k), key.byte_at(k+1));
-                    i += 18;
-                }
-                for (; i + 50 <= N; i += 50) {
-                    #pragma unroll 4
-                    for (int k = 0; k < 32; k += 2) {
-                        const U pair = prepared_front.pairs[k/2];
-                        step_aligned(i+k, j, pair & 255u, pair >> 8);
-                    }
-                    #pragma unroll
-                    for (int k = 0; k < 18; k += 2) step_aligned(i+32+k, j, key.byte_at(k), key.byte_at(k+1));
-                }
-                // 尾部仍从 NUL 开始，沿用通用输入规则。
-                round(input, key, i, input.name_len, j);
-            }
+            schedule_aligned(input, id);
             return;
         }
 #endif
+        restore(input);
+        const Generated key(id);
         round(input, key, input.i_pre, input.j_pre, input.s_pre);
         round(input, key, 0, input.name_len, 0);
     }
+
+#if defined(__CUDA_ARCH__)
+    template<int Words>
+    __device__ __forceinline__ int collect_packed(U (&base)[8]) const {
+        int filled = 0;
+        U pending = 0;
+        for (int i = 0; i < Words && filled < 31; ++i) {
+            const U word = column[i * Block];
+            // 两个字节分别占 16 位：乘法与偏置的最大和小于 2^16，不串道。
+            const U even = (word & 0x00ff00ffu) * 181u + 0x00470047u;
+            const U odd = ((word >> 8) & 0x00ff00ffu) * 181u + 0x00470047u;
+            const U joined = __byte_perm(even, odd, 0x6240);
+            // u=(181*x+71) mod 256；原 Q 窗口等价于 u<128，载荷是 (u+89) mod 64。
+            const U mask = ((~joined & 0x80808080u) * 0x00204081u) >> 28;
+            const U values = ((joined & 0x3f3f3f3fu) + 0x19191919u) & 0x3f3f3f3fu;
+            const U select = __ldg(compact_q + mask);
+            const U bytes = __byte_perm(values, 0u, select);
+            const U shift = (filled & 3) * 8u;
+            const U merged = pending | (bytes << shift);
+            const int next = filled + int(select >> 16);
+            const bool full = ((next ^ filled) & 4) != 0;
+            if (full) base[filled / 4] = merged;
+            pending = full ? __funnelshift_l(bytes, 0u, shift) : merged;
+            filled = next;
+        }
+        if (filled < 32 && (filled & 3)) base[filled / 4] = pending;
+        return filled;
+    }
+#endif
 
     template<int Words = words_per_thread>
     PBB_PREFILTER_HD int collect(u8_t (&base)[31]) const {
