@@ -138,6 +138,66 @@ static __device__ inline Accum sparse_dot(const double* x, const float* w) {
     return exactly(r"\bdot_1124_f\(", "sparse_dot<double>(", scoring, 9)
 
 
+def parallel_tail(scoring):
+    # 提前计算 G3 只对原版三张平面不读取暗影维的版本成立。
+    for plane in "ABC":
+        weight = re.search(rf"GATE_SK_{plane}\[46\] = \{{([^}}]+)\}};", scoring)
+        if not weight:
+            raise ValueError("原版 G3 平面缺失")
+        check_numbers(weight[1], 46, f"G3 {plane}")
+        if float(weight[1].split(",")[43]):
+            raise ValueError("G3 读取暗影维，不能提前计算")
+
+    def segment(a, b):
+        return scoring[find_once(scoring, a):find_once(scoring, b)]
+
+    props = segment("  int prop[8];", "  int V = name_obj.V;")
+    props = exactly(r"  if \(lvl == 0\) \{\n    result.flag = false;\n    return result;\n  \}",
+                    "  if (lvl != 1) return lvl == 2;", props)
+    features = segment("  double xp_x[46] = {};", "  // ---- Step 4b: 构建 SP2")
+    features = exactly(r"^ *result.props\[[^]]+\] = .+;\n", "", features, count=2)
+    helper = "__device__ inline bool qualify_g3(Name& name_obj) {\n"
+    helper += props + "  name_obj.calc_skills();\n" + features
+    helper += '''  if (xp_x[42] > 0) xp_x[44] = 1.0;
+  if (xp_x[37] > 0) { xp_x[45] = xp_x[26]; xp_x[26] = 0; }
+  return skill_ok_of(xp_x);
+}
+
+'''
+    scorer = "__device__ inline ScoreResult score_full("
+    find_once(scoring, scorer)
+    scoring = scoring.replace(scorer, helper + "template<bool Warp = false>\n" + scorer)
+
+    # 扰动之间独立：各 lane 保留原始特征计算和同序点积，warp 只合并最大值。
+    start = find_once(scoring, "__device__ inline int ptt_score_max(")
+    end = scoring.index("\n}", start) + 2
+    warp = scoring[start:end]
+    replace = [
+        ("ptt_score_max(", "ptt_warp_max("),
+        ("  double best = sparse_dot<double>(x, W);",
+         "  const int lane = threadIdx.x & 31;\n  double best = lane == 0 ? sparse_dot<double>(x, W) : -1e300;"),
+        ("  if (ptt_pass(m, x)) {", "  if (lane >= 1 && lane <= 8 && ptt_pass(m, x)) {\n    if (lane == 1) {"),
+        ("    // 7 属性候选:", "    } else {\n    // 7 属性候选:"),
+        ("    for (int t = 1; t < 8; t++) {", "    {\n      const int t = lane - 1;"),
+        ("      s = sparse_dot<double>(xc, W);", "      const double s = sparse_dot<double>(xc, W);"),
+        ("  // 18 技能候选:", "  }\n  // 18 技能候选:"),
+        ("  for (int i = -2; i < 16; i++) {", "  if (lane >= 9 && lane <= 26) {\n    const int i = lane - 11;"),
+        ("    if (nb[j] >= 63) continue;", "    if (nb[j] < 63) {"),
+        ("  return (int)::round(best);", '''  }
+  for (int d = 16; d; d >>= 1) {
+    const double peer = __shfl_xor_sync(0xffffffffu, best, d);
+    if (peer > best) best = peer;
+  }
+  return (int)::round(best);'''),
+    ]
+    for old, new in replace:
+        find_once(warp, old)
+        warp = warp.replace(old, new)
+    scoring = scoring[:end] + "\n\n" + warp + scoring[end:]
+    return exactly(r"result.sc_max\[m\] = ptt_score_max\(m,",
+                   "result.sc_max[m] = (Warp ? ptt_warp_max : ptt_score_max)(m,", scoring)
+
+
 def convert(scoring, extra):
     # 两个输入文件只读取不改动。默认计划、旧测试包装与 CPU batch4 无设备调用者。
     scoring = scoring[:find_once(scoring, "// ===== score_full_loaded_batch4:")]
@@ -187,7 +247,7 @@ def convert(scoring, extra):
     code = re.sub(r"//[^\n]*|/\*.*?\*/", "", scoring + extra, flags=re.S)
     if re.search(r"\b(_mm\w*|PBB_HAS_\w+|plan_default|score_full_loaded_batch4|poly_1124|dot_1124_f|POLY_TABLE_1124)\b|std::|__constant__", code):
         raise ValueError("仍存在宿主专用调用或非预期常量存储")
-    return extra, scoring
+    return extra, parallel_tail(scoring)
 
 
 def main():

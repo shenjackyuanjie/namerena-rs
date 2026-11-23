@@ -24,7 +24,7 @@ $cases=@(
     @{name='football-real';         start='4294967240';n=513},
     @{name='football-real';         start='18446744073709551102';n=513}
 )
-$layout=@('[]','前[]后',('字'*77+'abc[]')) # 空字面、固定后缀、252 字节名字
+$layout=@('[]','前[]后',('字'*77+'abc[]'),('测'*10+'x[]')) # 空字面、后缀、252 字节、另一个 31 字节对齐前缀
 for ($i=0; $i -lt $layout.Count; $i++) {
     $plan=Join-Path $output "layout-$i.kv"
     "template=$($layout[$i])" | Set-Content -LiteralPath $plan -Encoding utf8

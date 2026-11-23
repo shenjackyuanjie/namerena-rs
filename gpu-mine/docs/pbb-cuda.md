@@ -22,6 +22,34 @@ $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 
 ## 实测
 
+### 三核版：RTX 5060 Ti 突破 40 T/天
+
+同一卡、从 ID 0 开始，使用[完整足球计划](../benchmarks/pbb-cuda/fixtures/football-real.kv)：十族 all、五族 PTT、蓝号收集。前核 128 线程，三核版每批 8,388,608 个候选。三轮各按 60 秒实跑，包含结果回读、排序、名字恢复和 CSV 写入。
+
+| 三核版 | 实际秒数 | 完成候选 | 候选/秒 | T/天 | T/周 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 第 1 轮 | 60.016366 | 28,462,546,944 | 474,246,425 | 40.97 | 286.82 |
+| **第 2 轮（中位数）** | **60.017583** | **28,437,381,120** | **473,817,501** | **40.94** | **286.56** |
+| 第 3 轮 | 60.009773 | 28,328,329,216 | 472,061,928 | 40.79 | 285.50 |
+
+旧两阶段同次复测为 237,495,587 候选/秒（20.52 T/天、143.64 T/周），三核中位数为其 2.00 倍。三轮与旧版在共同 ID 区间内的 78 条命中逐行相同。三轮彼此在共同区间的 144 条命中也相同。
+
+### 三核版的实现与运行参数
+
+- **前核**只计算原版 Q 门需要的属性，不先计算旧 V。31 字节前缀、无后缀时，两个相邻 S-box 槽一次读写；其他模板继续走通用交换。
+- **中核**从有界快照恢复完整排列与旧 V，运行精确 G3。三张 G3 平面的暗影系数都是零，构建时检查这一前提。快照装满仍计算每一位候选，多出的候选重新生成主号排列。
+- **尾核**为每个候选分配一个 warp。PTT 的基线、一项 HP、七项属性和十八项技能变体分给不同 lane。每个变体仍按原顺序累加，仅在 warp 内取最大值，最后按原版取整。
+- `--batch 8388608 --block 128` 是本卡足球计划的冲刺配置。批容量越大占用显存越多；默认长跑仍为 1,048,576，显存不足时用较小批次。PTT 等后段语义不随批大小改变。
+
+~~~powershell
+# RTX 5060 Ti：以完整足球计划持续测号
+./target/pbb-cuda/pbb-cuda.exe --mine --out target/pbb-live --batch 8388608 --block 128
+# RTX 4090：单独构建 Ada 版本，再在目标卡上测量
+& ./gpu-mine/benchmarks/pbb-cuda/build.ps1 -Arch sm_89 -OutputDir target/pbb-cuda-ada
+~~~
+
+### 两阶段早期实测（历史）
+
 在 RTX 5060 Ti（驱动 621.24，CUDA 12.8 / `sm_120`）上，从 ID 0 开始跑同一 [足球计划](../benchmarks/pbb-cuda/fixtures/football-real.kv)：十族 all、五个 PTT 族、collect_mode=1，批次均为 1,048,576。前核 block 128；新后核按 8 × SM 数派发，这张卡为 288 个 block，每 block 64 线程。
 
 | 同口径实测 | 实际秒数 | 完成候选 | E2E 候选/秒 | T/天 | T/周 |
@@ -37,7 +65,7 @@ $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 - **后核铺满 GPU**：取代旧的 16 个 block，按 SM 数铺开，让各 SM 都能处理压缩候选；多批 block 分摊潜力路径的长尾。
 - **前核双步 KSA**：在原有每 lane 独立的转置共享内存上做字节交换，相邻两步提前读取，用首步新值处理地址重叠，保留原写入顺序、V 和首道门控。
 
-### 长跑入口完成后复测
+### 两阶段版本的长跑入口复测（历史）
 
 RTX 5060 Ti / Ryzen 7 5800X，足球计划，从 ID 0 开始。WGSL 前筛用 128 线程工作组和 524,288 个候选的批次，后评分用六个 CPU 线程。CUDA 前核为 128 线程，批次为 1,048,576。
 
@@ -81,15 +109,16 @@ $wgsl = './target/release/pbb-wgsl.exe'
 & ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $wgsl -OutputDir target/pbb-wgsl-validation -Path wgsl -Block 128
 $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 & $exe --out target/pbb-cuda/validation-extended --plan $plan --validate 4194305 --block 128 --batch 1048576
-& $exe --out target/pbb-cuda/football-60s --plan $plan --backend cuda --seconds 60 --block 128 --batch 1048576
+& $exe --out target/pbb-cuda/football-60s --plan $plan --backend cuda --seconds 60 --block 128 --batch 8388608
 & $wgsl --out target/pbb-wgsl-60s --plan $plan --backend wgsl --seconds 60 --block 128 --batch 524288 --threads 6
 ~~~
 
-可用 [football-real.kv](../benchmarks/pbb-cuda/fixtures/football-real.kv) 或其它计划覆盖评分阈值、潜力、任意/全量、收集条件和枚举输入；--plan 不传时使用足球评分参数。输入为带一个 [] 的 UTF-8 模板、单槽 Base16384；名字上限 252 字节以适配原 PBB 影子缓冲。--cuda-path direct 用完整单核作对照；split 先运行同一原版一级门，幸存者再执行完整评分。两条 CUDA 路径都使用同序稀疏点积，CPU 保留未修改的原版稠密评分。
+可用 [football-real.kv](../benchmarks/pbb-cuda/fixtures/football-real.kv) 或其它计划覆盖评分阈值、潜力、任意/全量、收集条件和枚举输入；--plan 不传时使用足球评分参数。输入为带一个 [] 的 UTF-8 模板、单槽 Base16384；名字上限 252 字节以适配原 PBB 影子缓冲。--cuda-path direct 用完整单核作对照；split 依次派发 Q 门、G3 门和完整评分三个核。两条 CUDA 路径都使用同序稀疏点积，CPU 保留未修改的原版稠密评分。
 
 ### 验证覆盖
 
-- 稀疏版真机对拍覆盖完整验证矩阵。单核和两阶段各 **16 组 / 549,910 个候选**，两阶段另在正式 block、batch 上额外对拍 **4,194,305 个候选**。每组既全捕获逐字段和计数，又按正式筛选验证主结果及特殊集合的并集。十族整数分、潜力、属性、技能、频次、门、集合均精确相等，双精度诊断量用明确误差界比较。覆盖 32 位进位、u64 末端、空前后缀、固定后缀和 252 字节名字上限。
+- 三核和单核各对拍 17 组、558,105 个候选；另用仅容纳 1 个快照的独立构建强制触发回退，并复验全矩阵。三核在 8,388,608 的批容量下另对拍 1,048,577 个跨 u32 进位的候选，同时验证有实际命中的 `--mine`。Ada `sm_89` 构建通过，RTX 4090 尚未实测。
+- 早期稀疏版真机对拍覆盖完整验证矩阵。单核和两阶段各 **16 组 / 549,910 个候选**，两阶段另在正式 block、batch 上额外对拍 **4,194,305 个候选**。每组既全捕获逐字段和计数，又按正式筛选验证主结果及特殊集合的并集。十族整数分、潜力、属性、技能、频次、门、集合均精确相等，双精度诊断量用明确误差界比较。覆盖 32 位进位、u64 末端、空前后缀、固定后缀和 252 字节名字上限。
 - 双步 KSA 前端在 96,287 项 CPU 对拍上逐值匹配完整 S-box、31 个属性字节、V 和原一级门档位（含 10 种附加模板和 u32/u64 边界）。
 - 原足球计划有真实普通命中；诊断计划有仅潜力救回的命中以及三个单样本覆盖五族 PTT。all 与 any 的命中集合一致，但后续未计算列为零。自定义收集覆盖主结果为空、两集合相交和整数除法的边界；正式足球窗口没有自然出现 mode 1 的特殊号，不用诊断阈值冒充生产成绩。对应的四个 mode 1 判据另用原版 CPU 流程的合成边界核对。
 - WGSL 同样跑过 16 组、549,910 个候选的完整矩阵，逐 ID 核对淘汰、PRE 和 FREE 三档，再对照原版完整评分与实际收集。已在 RTX 5060 Ti 验证，RX 580 的运行仍待其 Vulkan 驱动环境可用。

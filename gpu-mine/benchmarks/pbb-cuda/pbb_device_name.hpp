@@ -78,6 +78,9 @@ struct Name {
         properties<true>();
     }
 
+    // 从首核传来的完整双轮 KSA 快照恢复原版属性和 V。
+    PBB_NAME_HD void load_properties() { properties<true>(); }
+
     // 影子独立从队伍状态做双轮 KSA；不看前缀，不改 skill/freq。
     PBB_NAME_HD void loading_name(const char* name) {
         copy_box(val, val_base);

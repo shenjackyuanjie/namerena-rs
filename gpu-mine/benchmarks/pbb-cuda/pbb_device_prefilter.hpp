@@ -82,6 +82,27 @@ struct Box {
         d = u8_t(cur_c);
     }
 
+#if defined(__CUDA_ARCH__)
+    // i 为偶数时两个连续槽可一并读写。先提交随机槽，再用转发后的值写回固定位置。
+    __device__ __forceinline__ void step_aligned(U i, U& sum, U key0, U key1) const {
+        const U address = U(__cvta_generic_to_shared(&cell(i)));
+        U pair;
+        asm volatile("ld.shared.u16 %0, [%1];" : "=r"(pair) : "r"(address) : "memory");
+        const U a = pair & 255u;
+        const U j = (sum + key0 + a) & 255u;
+        const U c = j == i+1 ? a : pair >> 8;
+        sum = (j + key1 + c) & 255u;
+        auto& b = cell(j);
+        auto& d = cell(sum);
+        const U old_b = b;
+        const U cur_d = sum == j ? a : sum == i ? old_b : d;
+        b = u8_t(a);
+        d = u8_t(c);
+        const unsigned short final_pair = (sum == i ? c : old_b) | ((sum == i+1 ? c : cur_d) << 8);
+        asm volatile("st.shared.u16 [%0], %1;" :: "r"(address), "h"(final_pair) : "memory");
+    }
+#endif
+
     PBB_PREFILTER_HD void literal(const char* bytes, int first, int end, int& i, U& sum) const {
         const int count = end - first;
         const int stop = i + count < N ? i + count : N;
@@ -125,6 +146,30 @@ struct Box {
     PBB_PREFILTER_HD void schedule(const Launch& input, Id id) const {
         restore(input);
         const Generated key(id);
+#if defined(__CUDA_ARCH__)
+        // 32 字节 NUL+前缀和 18 字节生成段组成偶数长度的圈，任何此前缀内容都能走此路径。
+        if (input.prefix_len == 31 && input.suffix_len == 0 && input.i_pre == 32 && input.j_pre == 31) {
+            for (int r = 0; r < 2; ++r) {
+                int i = r ? 0 : 32;
+                U j = r ? 0 : input.s_pre;
+                if (!r) {
+                    #pragma unroll
+                    for (int k = 0; k < 18; k += 2) step_aligned(i+k, j, key.byte_at(k), key.byte_at(k+1));
+                    i += 18;
+                }
+                for (; i + 50 <= N; i += 50) {
+                    step_aligned(i, j, 0, u8_t(input.prefix[0]));
+                    #pragma unroll 4
+                    for (int k = 2; k < 32; k += 2) step_aligned(i+k, j, u8_t(input.prefix[k-1]), u8_t(input.prefix[k]));
+                    #pragma unroll
+                    for (int k = 0; k < 18; k += 2) step_aligned(i+32+k, j, key.byte_at(k), key.byte_at(k+1));
+                }
+                // 尾部仍从 NUL 开始，沿用通用输入规则。
+                round(input, key, i, input.name_len, j);
+            }
+            return;
+        }
+#endif
         round(input, key, input.i_pre, input.j_pre, input.s_pre);
         round(input, key, 0, input.name_len, 0);
     }
@@ -172,7 +217,10 @@ PBB_PREFILTER_HD int prefilter_base(const Launch& input, Id id, U* column, u8_t 
 template<int Block>
 __device__ __forceinline__ bool prefilter(const Launch& input, Id id, U* column) {
     u8_t base[31];
-    prefilter_base<Block>(input, id, column, base);
+    const prefilter_detail::Box<Block> box{column};
+    box.schedule(input, id);
+    box.collect(base);
+    // Q 门重新完整排序前十项，不需要提前计算旧 V 或重复排序。
     int prop[7];
     return gate_level_of(base, prop) != 0;
 }
