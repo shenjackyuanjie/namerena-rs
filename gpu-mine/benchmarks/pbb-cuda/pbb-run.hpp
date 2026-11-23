@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <thread>
+#include <type_traits>
 #include <vector>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -237,6 +238,41 @@ struct Progress {
     }
 };
 
+template<class Device>
+static Batch start_batch(Device& gpu, Id first, U n, U block) {
+    return gpu.run(first, n, block, false);
+}
+
+static Batch finish_batch(Batch batch) { return batch; }
+template<class Pending>
+static Batch finish_batch(Pending&& pending) { return pending.get(); }
+
+// 立即返回 Batch 的后端按原方式提交。可延迟精算的后端重叠相邻批次，按 ID 顺序交付。
+// 每次只提前提交下一批；检查取消/截止时停止提交，再完成已提交的连续范围。
+template<class Runner, class Next, class Consumer>
+static void pump_batches(Id first, Runner run, Next next, Consumer consume) {
+    using Work = decltype(run(first, U{}));
+    if constexpr (std::is_same_v<Work, Batch>) {
+        while (const U n = next(first)) {
+            consume(first, n, run(first, n));
+            first += n;
+        }
+    } else {
+        std::optional<Work> pending;
+        Id pending_first = 0;
+        U pending_size = 0;
+        while (const U n = next(first)) {
+            auto current = run(first, n);
+            if (pending) consume(pending_first, pending_size, finish_batch(std::move(*pending)));
+            pending.emplace(std::move(current));
+            pending_first = first;
+            pending_size = n;
+            first += n;
+        }
+        if (pending) consume(pending_first, pending_size, finish_batch(std::move(*pending)));
+    }
+}
+
 template<class Runner>
 static void mine(const Options& opt, const Launch& input, const std::string& label, Runner run) {
     const auto start = Clock::now();
@@ -256,17 +292,17 @@ static void mine(const Options& opt, const Launch& input, const std::string& lab
                   << " names/s=" << rate << " T/day=" << rate * 86400 / 1e12
                   << " T/week=" << rate * 604800 / 1e12 << '\n';
     };
-    while (progress.next < *opt.end && !stopped.load(std::memory_order_relaxed)) {
-        const U n = U(std::min<Id>(opt.batch, *opt.end - progress.next));
-        const auto batch = run(progress.next, n);
-        write_batch(out, opt, input, progress.next, batch);
+    pump_batches(opt.start, run, [&](Id first) {
+        return stopped.load(std::memory_order_relaxed) ? 0u : U(std::min<Id>(opt.batch, *opt.end - first));
+    }, [&](Id first, U n, const Batch& batch) {
+        write_batch(out, opt, input, first, batch);
         progress.add(batch, n);
         if (Clock::now() - last_report >= std::chrono::seconds(opt.report)) {
             out.flush();
             report(u8"\u8fd0\u884c\u4e2d");
             last_report = Clock::now();
         }
-    }
+    });
     out.flush();
     report(progress.next == *opt.end ? u8"\u5df2\u5b8c\u6210" : u8"\u5df2\u505c\u6b62");
 }
@@ -274,19 +310,21 @@ static void mine(const Options& opt, const Launch& input, const std::string& lab
 template<class Runner>
 static void measure(const Options& opt, const Launch& input, const std::string& label, Runner run, std::ostream& metrics) {
     const U warmup = U(std::min<Id>(opt.batch, std::numeric_limits<Id>::max() - opt.start));
-    run(opt.start, warmup);
+    finish_batch(run(opt.start, warmup));
     const auto start = Clock::now();
     std::ofstream out(opt.out / (label + ".csv"), std::ios::binary);
     out.exceptions(std::ios::badbit | std::ios::failbit);
     write_header(out);
     Progress progress{opt.start};
-    while (!stopped.load(std::memory_order_relaxed) && Clock::now() - start < std::chrono::seconds(opt.seconds)) {
-        const U n = U(std::min<Id>(opt.batch, std::numeric_limits<Id>::max() - progress.next));
+    pump_batches(opt.start, run, [&](Id first) {
+        if (stopped.load(std::memory_order_relaxed) || Clock::now() - start >= std::chrono::seconds(opt.seconds)) return 0u;
+        const U n = U(std::min<Id>(opt.batch, std::numeric_limits<Id>::max() - first));
         if (!n) throw std::runtime_error(u8"\u8ba1\u65f6\u7ed3\u675f\u524d\u5df2\u7528\u5b8c ID \u533a\u95f4");
-        const auto batch = run(progress.next, n);
-        write_batch(out, opt, input, progress.next, batch);
+        return n;
+    }, [&](Id first, U n, const Batch& batch) {
+        write_batch(out, opt, input, first, batch);
         progress.add(batch, n);
-    }
+    });
     out.flush();
     const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
     const Id n = progress.next - opt.start;
@@ -320,7 +358,7 @@ static int pbb_main(int argc, const char* const* argv, const std::string& device
     if ((opts.validate || opts.backend != "cpu") && (!opts.mine || opts.start != *opts.end))
         gpu.init(input, opts);
     const auto run_cpu = [&](Id first, U n) { return cpu(input, first, n, opts.threads, false); };
-    const auto run_gpu = [&](Id first, U n) { return gpu.run(first, n, opts.block, false); };
+    const auto run_gpu = [&](Id first, U n) { return start_batch(gpu, first, n, opts.block); };
     if (opts.validate) {
         validate(opts, input, gpu);
     } else if (opts.mine) {

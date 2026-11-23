@@ -3,7 +3,7 @@
 | 评分 | WGSL | CUDA |
 | --- | --- | --- |
 | XP/XD 2.0 | `gpu-mine --backend wgsl` | `gpu-mine --backend cuda` |
-| PBB | `pbb-wgsl --mine`，GPU 完成 Q 门，CPU 完成原版评分 | `pbb-cuda --mine`，完整 GPU 评分 |
+| PBB | `pbb-wgsl --mine`，GPU 完成 Q 门、技能和保守 G3，CPU 原版精算 | `pbb-cuda --mine`，完整 GPU 评分 |
 
 四条路线支持按 ID 测号、CSV 写入和 Ctrl+C 结束。XP/XD 使用八围、XP、XD 阈值。PBB 支持十族评分、PTT 潜力和蓝号收集。两种 PBB 后端共用评分计划、范围参数和输出。见 [PBB 构建与用法](docs/pbb-cuda.md)。
 
@@ -13,12 +13,12 @@
 | --- | ---: | ---: | ---: |
 | XP/XD WGSL | 86,244,621 | 7.45 | 52.16 |
 | XP/XD CUDA | 122,815,187 | 10.61 | 74.28 |
-| PBB WGSL + 原版 CPU 评分 | 61,381,981 | 5.30 | 37.12 |
+| PBB WGSL 双门控 + 原版 CPU 评分，三轮中位数 | **453,637,845** | **39.19** | **274.36** |
 | PBB CUDA，三轮中位数 | **751,467,998** | **64.93** | **454.49** |
 | XP/XD CPU，6 线程 | 2,636,930 | 0.23 | 1.59 |
 | PBB CPU，6 线程原版标量 | 3,877,412 | 0.34 | 2.35 |
 
-RTX 5060 Ti，Ryzen 7 5800X。PBB CUDA 为最新版本三轮各 60 秒的中位数，其余各项沿用同机的一分钟结果。XP/XD 使用 p550/x4000/d5000，PBB 使用十族足球计划和五族 PTT。日、周数字按实测端到端速度折算，T = 10¹²。仓库只记录基准摘要与复现办法。另见 [XP/XD CPU 实测](docs/wgsl-pbb-2026-11-23.md) 和 [PBB 实测](docs/pbb-cuda.md#实测)。
+RTX 5060 Ti，Ryzen 7 5800X。PBB 的 WGSL 和 CUDA 均取各自三轮 60 秒的中位数；其余各项沿用同机的一分钟结果。XP/XD 使用 p550/x4000/d5000，PBB 使用十族足球计划和五族 PTT。日、周数字按实测端到端速度折算，T = 10¹²。仓库只记录基准摘要与复现办法。另见 [XP/XD CPU 实测](docs/wgsl-pbb-2026-11-23.md) 和 [PBB 实测](docs/pbb-cuda.md#实测)。
 
 用新入口复测 XP/XD 吞吐时，定时脚本会在写出 CSV 表头后计时，收完批次并检查命中行数。脚本退出时会清理本轮的临时 CSV 和日志。
 

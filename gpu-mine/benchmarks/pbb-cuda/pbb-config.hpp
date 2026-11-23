@@ -47,7 +47,7 @@ static Options arguments(int argc, const char* const* argv, std::string_view dev
         else if (key == "--backend") o.backend = val;
         else if (key == "--cuda-path") o.cuda_path = val;
         else if (key == "--seconds") { o.seconds = bounded(val, 1, 3600); timed = true; }
-        else if (key == "--batch" || key == "--batch-size") o.batch = bounded(val, 1, device == "cuda" ? 16777216 : 1048576);
+        else if (key == "--batch" || key == "--batch-size") o.batch = bounded(val, 1, 16777216);
         else if (key == "--block") o.block = bounded(val, 32, 256);
         else if (key == "--threads" || key == "--thread-count") o.threads = bounded(val, 1, 64);
         else if (key == "--validate") o.validate = bounded(val, 1, 10000000);

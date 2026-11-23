@@ -6,6 +6,9 @@ struct Setup {
     first_cursor: u32,
     first_sum: u32,
     name_len: u32,
+    g3_weights: array<u32, 46>,
+    g3_minimum: array<u32, 3>,
+    key_pairs: array<u32, 16>,
 }
 struct Params {
     low: u32,
@@ -20,6 +23,7 @@ struct Output {
 @group(0) @binding(0) var<storage, read> setup: Setup;
 @group(0) @binding(1) var<uniform> params: Params;
 @group(0) @binding(2) var<storage, read_write> output: Output;
+@group(0) @binding(3) var<storage, read_write> selected: Output;
 var<workgroup> sbox: array<u32, 64u * LANES>;
 
 fn utf8(point: u32) -> u32 {
@@ -67,14 +71,7 @@ fn compare_swap(hp: ptr<function, array<u32, 10>>, i: u32, j: u32) {
     (*hp)[j] = max(a, b);
 }
 
-fn gate_level(base: ptr<function, array<u32, 31>>) -> u32 {
-    let p7 = median(base, 28u);
-    if p7 < MIN_P7 { return 0u; }
-    let a = W7 * p7 + W2 * median(base, 13u) + W3 * median(base, 16u) + W6 * median(base, 25u);
-    if all(a + REM2 < TH) { return 0u; }
-    let b = a + W1 * median(base, 10u) + W4 * median(base, 19u) + W5 * median(base, 22u);
-    if all(b + REM3 < TH) { return 0u; }
-
+fn sorted_hp(base: ptr<function, array<u32, 31>>) -> u32 {
     // Q 门用完整排序网络。旧 V 路径交换这些字节的顺序不影响门中完整排序的结果。
     var hp: array<u32, 10>;
     for (var i = 0u; i < 10u; i += 1u) { hp[i] = (*base)[i]; }
@@ -87,18 +84,26 @@ fn gate_level(base: ptr<function, array<u32, 31>>) -> u32 {
     compare_swap(&hp, 2u, 3u); compare_swap(&hp, 6u, 7u);
     compare_swap(&hp, 3u, 4u); compare_swap(&hp, 5u, 6u);
     compare_swap(&hp, 4u, 5u);
-    let accepted = b + W0 * i32(154u + hp[3] + hp[4] + hp[5] + hp[6]) >= TH;
+    return 154u + hp[3] + hp[4] + hp[5] + hp[6];
+}
+
+fn gate_level(base: ptr<function, array<u32, 31>>) -> u32 {
+    let p7 = median(base, 28u);
+    if p7 < MIN_P7 { return 0u; }
+    let a = W7 * p7 + W2 * median(base, 13u) + W3 * median(base, 16u) + W6 * median(base, 25u);
+    if all(a + REM2 < TH) { return 0u; }
+    let b = a + W1 * median(base, 10u) + W4 * median(base, 19u) + W5 * median(base, 22u);
+    if all(b + REM3 < TH) { return 0u; }
+
+    let accepted = b + W0 * i32(sorted_hp(base)) >= TH;
     if accepted.x { return 2u; }
     return u32(any(accepted.yzw));
 }
 
-@compute @workgroup_size(LANES)
-fn prefilter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
-    let i = id.x;
-    if i >= params.count { return; }
+fn name_words(i: u32) -> array<u32, 6> {
     let low = params.low + i;
     let high = params.high + u32(low < params.low);
-    var words = array<u32, 6>(
+    return array<u32, 6>(
         utf8(0x4e00u + ((high >> 18u) & 0x3fffu)),
         utf8(0x4e00u + ((high >> 4u) & 0x3fffu)),
         utf8(0x4e00u + (((high << 10u) | (low >> 22u)) & 0x3fffu)),
@@ -106,27 +111,54 @@ fn prefilter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invoca
         utf8(0x4e00u + ((low & 255u) << 6u)),
         utf8(0x3d01u),
     );
-    // 每个 lane 独占其列，线程之间不读写对方的地址。
+}
+
+fn load_name(lane: u32, words: ptr<function, array<u32, 6>>, crop: bool) {
+    // 每个 lane 独占并完整恢复其列；不需要工作组同步或初始化。
     for (var w = 0u; w < 64u; w += 1u) { sbox[w * LANES + lane] = setup.state[w]; }
-    ksa(lane, setup.first_step, setup.first_cursor, setup.first_sum, &words);
-    ksa(lane, 0u, setup.name_len, 0u, &words);
-    var base: array<u32, 31>;
+    if FAST_KEY {
+        ksa_fast(lane, words, crop);
+    } else {
+        ksa(lane, setup.first_step, setup.first_cursor, setup.first_sum, words);
+        ksa(lane, 0u, setup.name_len, 0u, words);
+    }
+}
+
+fn collect_properties(lane: u32, limit: u32, base: ptr<function, array<u32, 31>>) -> u32 {
     var filled = 0u;
-    for (var w = 0u; w < 64u && filled < 31u; w += 1u) {
+    for (var w = 0u; w < limit && filled < 31u; w += 1u) {
         let word = sbox[w * LANES + lane];
         for (var b = 0u; b < 4u && filled < 31u; b += 1u) {
             let value = ((word >> (8u * b)) * 181u + 160u) & 255u;
             if 89u <= value && value < 217u {
-                base[filled] = value & 63u;
+                (*base)[filled] = value & 63u;
                 filled += 1u;
             }
         }
     }
+    return filled;
+}
+
+@compute @workgroup_size(LANES)
+fn prefilter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) lane: u32,
+             @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = id.x + id.y * groups.x * LANES;
+    if i >= params.count { return; }
+    var words = name_words(i);
+    load_name(lane, &words, FAST_KEY);
+    var base: array<u32, 31>;
+    if FAST_KEY {
+        if collect_properties(lane, 22u, &base) != 31u {
+            // 未收齐时重新计算完整排列，不能从裁剪之后的尾部补值。
+            load_name(lane, &words, false);
+            _ = collect_properties(lane, 64u, &base);
+        }
+    } else { _ = collect_properties(lane, 64u, &base); }
     let tier = gate_level(&base);
     if params.capture != 0u {
         output.entries[i] = tier;
         if tier != 0u { atomicAdd(&output.count, 1u); }
     } else if tier != 0u {
-        output.entries[atomicAdd(&output.count, 1u)] = i;
+        output.entries[atomicAdd(&output.count, 1u)] = i | (u32(tier == 2u) << 31u);
     }
 }
