@@ -225,11 +225,25 @@ __global__ void mine(Header* output, Record* records, const float2* __restrict__
     if (last != 14 && freqs[14]) freqs[14] += min(min(U(base[60]), U(base[61])), U(freqs[14]));
     if (last != 15 && freqs[15]) freqs[15] += min(min(U(base[62]), U(base[63])), U(freqs[15]));
 
-    float features[44] = {};
-    for (U i = 0; i < 8; ++i) features[i] = float(props[i]);
-    for (U i = 0; i < 16; ++i) if (freqs[i]) features[ids[i] + 8] = float(freqs[i]);
+    // f32 正整数（范围 1..406）的最低六个位恒为零：用它们记录特征编号。
+    // 保留 float 局部对象（而非先前 U 数组），评分项与字节频率的布局独立。
+    float features[43];
+    U active_lo = 0, active_hi = 0;
+    for (U i = 0; i < 16; ++i) {
+        const U f = freqs[i];
+        if (f != 0) {
+            const U id = ids[i], feature = id + 8;
+            const U bit = 1u << (feature & 31u);
+            if (feature < 32u) active_lo |= bit;
+            else active_hi |= bit;
+            features[feature] = __uint_as_float(__float_as_uint(float(f + (id == 34u ? 20u : 0u))) | feature);
+        }
+    }
+    #pragma unroll
+    for (U i = 0; i < 8; ++i) features[i] = __uint_as_float(__float_as_uint(float(props[i])) | i);
     int32_t shadow = 0;
-    if (features[32] > 0.0f) {
+    float shadow_feature = 0.0f;
+    if ((active_hi & 1u) != 0) {
         atomicAdd(&output->shadows, 1u);
         box.ksa(chunks, 7);
         slot = 0;
@@ -238,33 +252,58 @@ __global__ void mine(Header* output, Record* records, const float2* __restrict__
         U shadow_props[8];
         U shadow_sum = properties<Mode == 2>(base, shadow_props);
         shadow = int32_t(shadow_sum) - 3 * 7 * 36 - 9 * int32_t(shadow_props[7] - 36) - 630;
-        features[43] = float(shadow) / 3.0f * features[32] / 100.0f;
+        shadow_feature = float(shadow) / 3.0f * __uint_as_float(__float_as_uint(features[32]) & ~63u) / 100.0f;
     }
-    if (features[42] > 0.0f) features[42] += 20.0f;
-
-    U indices[32], size = 0;
-    for (U i = 0; i < 44; ++i) {
-        float f = features[i];
-        if (f != 0.0f) {
-            indices[size] = i;
-            features[size++] = f;
-        }
+    // 按原特征编号顺序写回，目的位置不会覆盖后续待访问的编号。
+    U size = 8;
+    #pragma unroll 1
+    for (; active_lo; active_lo &= active_lo - 1) {
+        const U k = U(__ffs(active_lo) - 1);
+        features[size++] = features[k];
     }
+    #pragma unroll 1
+    for (; active_hi; active_hi &= active_hi - 1) {
+        const U k = 32u + U(__ffs(active_hi) - 1);
+        features[size++] = features[k];
+    }
+    const bool use_shadow = shadow_feature != 0.0f;
     float2 score = weights[0];
     for (U i = 0; i < size; ++i) {
-        float2 w = weights[1 + indices[i]];
-        score.x += w.x * features[i];
-        score.y += w.y * features[i];
+        const U item = __float_as_uint(features[i]);
+        const float val = __uint_as_float(item & ~63u);
+        const float2 w = weights[1 + (item & 63u)];
+        score.x += w.x * val;
+        score.y += w.y * val;
+    }
+    if (use_shadow) {
+        const float2 w = weights[44];
+        score.x += w.x * shadow_feature;
+        score.y += w.y * shadow_feature;
     }
     for (U i = 0; i < size; ++i) {
-        U feature = indices[i];
-        U row = 45 + feature * (89 - feature) / 2 - feature;
+        const U item = __float_as_uint(features[i]), feature = item & 63u;
+        const float val = __uint_as_float(item & ~63u);
+        const float2* row = weights + 45 + feature * (87u - feature) / 2u;
+        #pragma unroll 2
         for (U j = i; j < size; ++j) {
-            float2 w = weights[row + indices[j]];
-            float term = features[i] * features[j];
+            const U other = __float_as_uint(features[j]);
+            const float2 w = row[other & 63u];
+            const float term = val * __uint_as_float(other & ~63u);
             score.x += w.x * term;
             score.y += w.y * term;
         }
+        if (use_shadow) {
+            const float2 w = row[43];
+            const float term = val * shadow_feature;
+            score.x += w.x * term;
+            score.y += w.y * term;
+        }
+    }
+    if (use_shadow) {
+        const float2 w = weights[1034];
+        const float term = shadow_feature * shadow_feature;
+        score.x += w.x * term;
+        score.y += w.y * term;
     }
     atomicAdd(&output->scored, 1u);
     bool hit = (xp == 0 || score.x + 10.0f >= float(xp)) && (xd == 0 || score.y + 10.0f >= float(xd));
