@@ -309,7 +309,8 @@ static void mine(const Options& opt, const Launch& input, const std::string& lab
 
 template<class Runner>
 static void measure(const Options& opt, const Launch& input, const std::string& label, Runner run, std::ostream& metrics) {
-    const U warmup = U(std::min<Id>(opt.batch, std::numeric_limits<Id>::max() - opt.start));
+    const Id end = input.fill_domain ? input.fill_domain : std::numeric_limits<Id>::max();
+    const U warmup = U(std::min<Id>(opt.batch, end - opt.start));
     finish_batch(run(opt.start, warmup));
     const auto start = Clock::now();
     std::ofstream out(opt.out / (label + ".csv"), std::ios::binary);
@@ -318,9 +319,7 @@ static void measure(const Options& opt, const Launch& input, const std::string& 
     Progress progress{opt.start};
     pump_batches(opt.start, run, [&](Id first) {
         if (stopped.load(std::memory_order_relaxed) || Clock::now() - start >= std::chrono::seconds(opt.seconds)) return 0u;
-        const U n = U(std::min<Id>(opt.batch, std::numeric_limits<Id>::max() - first));
-        if (!n) throw std::runtime_error(u8"\u8ba1\u65f6\u7ed3\u675f\u524d\u5df2\u7528\u5b8c ID \u533a\u95f4");
-        return n;
+        return U(std::min<Id>(opt.batch, end - first));
     }, [&](Id first, U n, const Batch& batch) {
         write_batch(out, opt, input, first, batch);
         progress.add(batch, n);
@@ -339,37 +338,67 @@ static void measure(const Options& opt, const Launch& input, const std::string& 
               << " names/s=" << rate << std::endl;
 }
 
-template<class Device>
+template<class Device, bool CpuOnly = false>
 static int pbb_main(int argc, const char* const* argv, const std::string& device) try {
     if (argc == 1 || (argc == 2 && std::string_view(argv[1]) == "--help")) {
         std::cout << "PBB " << device << u8" \u6d4b\u53f7\n"
                   << u8"  --mine --out \u65b0\u76ee\u5f55 [--start ID] [--end ID | --count N] [--report-interval \u79d2]\n"
-                  << u8"  --out \u65b0\u76ee\u5f55 [--backend " << device << "|cpu|both] [--seconds 60 | --validate N]\n"
-                  << u8"  \u516c\u7528\u9009\u9879\uff1a--plan \u6587\u4ef6 --team \u961f\u540d --name-template \u6a21\u677f --batch N --block N --threads N\n"
-                  << u8"  \u6d4b\u53f7\u7ed3\u679c\u5199\u5165 results.csv\uff1bCtrl+C \u5b8c\u6210\u5f53\u524d\u6279\u6b21\u540e\u62a5\u544a next_id\u3002\n";
+                  << u8"  --out \u65b0\u76ee\u5f55";
+        if constexpr (CpuOnly) std::cout << " [--cpu-path fast|scalar]";
+        else std::cout << " [--backend " << device << "|cpu|both]";
+        std::cout << " [--seconds 60 | --validate N]\n"
+                  << u8"  \u516c\u7528\u9009\u9879\uff1a--plan \u6587\u4ef6 --team \u961f\u540d --name-template \u6a21\u677f --batch N --threads N";
+        if constexpr (!CpuOnly) std::cout << " --block N";
+        std::cout << u8"\n  \u6d4b\u53f7\u7ed3\u679c\u5199\u5165 results.csv\uff1bCtrl+C \u5b8c\u6210\u5f53\u524d\u6279\u6b21\u540e\u62a5\u544a next_id\u3002\n";
+        std::cout << u8"  --fill-plan \u6587\u4ef6 --shuffle affine|mix|feistel --seed N\n"
+                  << u8"  --encode-id ID | --decode-fill \u586b\u5145\uff08\u4e0d\u9700\u8981 --out\uff09\n";
         return 0;
     }
     auto opts = arguments(argc, argv, device);
     const auto plan = rules(opts);
-    const auto input = prepare(opts, plan);
+    const auto fill = load_fill(opts.fill_plan);
+    const auto input = prepare(opts, plan, fill);
+    if (opts.decode) {
+        std::cout << fill_decode(input, *opts.decode) << '\n';
+        return 0;
+    }
+    if (opts.encode) {
+        if (fill.domain && *opts.encode >= fill.domain) throw std::runtime_error(u8"ID \u8d85\u51fa\u586b\u5145\u5bb9\u91cf");
+        char bytes[name_limit];
+        make_fill(input, *opts.encode, bytes);
+        std::cout.write(bytes, fill.length) << '\n';
+        return 0;
+    }
+    const Id range_end = fill.domain ? fill.domain : std::numeric_limits<Id>::max();
+    if (opts.mine) {
+        opts.end = opts.end.value_or(range_end);
+        if (opts.start > *opts.end || *opts.end > range_end)
+            throw std::runtime_error(u8"\u6d4b\u53f7\u533a\u95f4\u5fc5\u987b\u6ee1\u8db3 start <= end <= \u586b\u5145\u5bb9\u91cf");
+    } else if (opts.start >= range_end || opts.validate > range_end - opts.start) {
+        throw std::runtime_error(u8"\u57fa\u51c6\u533a\u95f4\u8d85\u51fa\u586b\u5145\u5bb9\u91cf");
+    }
     install_stop_handler();
     if (!fs::create_directory(opts.out)) throw std::runtime_error(u8"\u8f93\u51fa\u76ee\u5f55\u5df2\u7ecf\u5b58\u5728");
-    Device gpu;
-    if ((opts.validate || opts.backend != "cpu") && (!opts.mine || opts.start != *opts.end))
-        gpu.init(input, opts);
-    const auto run_cpu = [&](Id first, U n) { return cpu(input, first, n, opts.threads, false); };
-    const auto run_gpu = [&](Id first, U n) { return start_batch(gpu, first, n, opts.block); };
+    Device target;
+    if ((CpuOnly || opts.validate || opts.backend != "cpu") && (!opts.mine || opts.start != *opts.end))
+        target.init(input, opts);
+    const auto run_ref = [&](Id first, U n) { return cpu(input, first, n, opts.threads, false); };
+    const auto run_target = [&](Id first, U n) { return start_batch(target, first, n, opts.block); };
     if (opts.validate) {
-        validate(opts, input, gpu);
+        validate(opts, input, target);
     } else if (opts.mine) {
-        if (opts.backend == "cpu") mine(opts, input, "cpu", run_cpu);
-        else mine(opts, input, device, run_gpu);
+        if constexpr (CpuOnly) mine(opts, input, device, run_target);
+        else if (opts.backend == "cpu") mine(opts, input, "cpu", run_ref);
+        else mine(opts, input, device, run_target);
     } else {
         std::ofstream metrics(opts.out / "metrics.csv", std::ios::binary);
         metrics.exceptions(std::ios::badbit | std::ios::failbit);
         metrics << "backend,candidates,passed,normal,blue,nonzero_ptt,e2e_s,kernel_s,names_s,T_per_day,T_per_week,eligible\n";
-        if (opts.backend != device) measure(opts, input, "cpu", run_cpu, metrics);
-        if (opts.backend != "cpu" && !stopped.load(std::memory_order_relaxed)) measure(opts, input, device, run_gpu, metrics);
+        if constexpr (CpuOnly) measure(opts, input, device, run_target, metrics);
+        else {
+            if (opts.backend != device) measure(opts, input, "cpu", run_ref, metrics);
+            if (opts.backend != "cpu" && !stopped.load(std::memory_order_relaxed)) measure(opts, input, device, run_target, metrics);
+        }
     }
     return stopped.load(std::memory_order_relaxed) ? 130 : 0;
 } catch (const std::exception& e) {

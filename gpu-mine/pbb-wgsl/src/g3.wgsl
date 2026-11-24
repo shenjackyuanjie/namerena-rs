@@ -142,7 +142,7 @@ fn secondary(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invoca
         var pass_gate = (entry & FREE) != 0u;
         if !pass_gate {
             var words = name_words(i);
-            load_name(lane, &words, false);
+            load_name(lane, &words);
             var base: array<u32, 34>;
             _ = collect_properties(lane, 64u, &base);
             pass_gate = may_pass_g3(&base, lane);

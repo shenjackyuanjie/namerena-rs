@@ -1,26 +1,80 @@
 # PBB 长跑测号与性能
 
-PBB CUDA 在 GPU 上运行完整评分。PBB WGSL 在 Vulkan 上生成候选、运行整数 Q 门、完成技能洗牌和保守 G3，只将剩余候选交给原版 PBB 标量 CPU 做完整评分与收集。两条路线共用队伍、Base16384 编号、计划、CSV 和停止逻辑。
+PBB CUDA 在 GPU 上运行完整评分。PBB WGSL 在 Vulkan 上生成候选、运行整数 Q 门、完成技能洗牌和保守 G3，只将剩余候选交给原版 PBB 标量 CPU 做完整评分与收集。两条路线和 [CPU 矿工 `tswn pbb`](../../miner/docs/pbb-cpu.md)共用队伍、填充编码、编号置换、评分计划、CSV 和停止逻辑。
 
 ## 日常使用
 
 CUDA 版需要 CUDA Toolkit 12.8、MSVC x64、Python 3。WGSL 版需要可用的 Vulkan 计算驱动、Rust 和 C++17 工具链，支持 Windows x86_64 和 Linux x86_64。两条路线从同一份 PBB 头编译。默认查找仓库旁边的 `PBB/source/pbb/native/src`。自定义位置用 CUDA 的 `-PbbSource` 参数或 WGSL 的 `PBB_SOURCE_DIR` 环境变量。
 
-在仓库根目录构建并用已知有命中的有限区间验收。
+在仓库根目录构建，先用已知有命中的有限区间检查输出。以下默认五字布局的足球计划在区间内命中 ID `460778730`；旧 18 字节布局的历史命中不能用于这版。
 
 ~~~powershell
 & ./gpu-mine/benchmarks/pbb-cuda/build.ps1 -OutputDir target/pbb-cuda
 cargo build -p pbb-wgsl --features native-pbb --release --locked
 $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
-./target/pbb-cuda/pbb-cuda.exe --mine --out target/pbb-cuda-demo --plan $plan --start 15118306 --count 65537
-./target/release/pbb-wgsl.exe --mine --out target/pbb-wgsl-demo --plan $plan --start 15118306 --count 65537
+./target/pbb-cuda/pbb-cuda.exe --mine --out target/pbb-cuda-demo --plan $plan --start 460745962 --count 65537
+./target/release/pbb-wgsl.exe --mine --out target/pbb-wgsl-demo --plan $plan --start 460745962 --count 65537
 ~~~
 
-每次用 `--out` 指定新目录，产物为 `results.csv`。区间是 `[start,end)`，可用 `--count` 或 `--end` 指定结束位置。省略两者后可以持续跑，按 Ctrl+C 会写完当前批次、刷新 CSV 并报告 `next_id`。续跑时用该值作为 `--start`，沿用评分计划、队伍、模板和新的输出目录。
+每次用 `--out` 指定新目录，产物为 `results.csv`。区间是 `[start,end)`，可用 `--count` 或 `--end` 指定结束位置。省略两者时，有限混合进制布局会在总容量处自动停止；默认五字布局的排除性终点是 `u64::MAX`。按 Ctrl+C 会写完已提交批次、刷新 CSV 并报告 `next_id`。续跑时把 `next_id` 用作 `--start`，使用新的输出目录，并沿用评分计划、队伍、模板、填充布局、词表顺序、置换算法和种子。
 
 可用 `--team` 和 `--name-template` 覆盖文件或默认输入。模板含一个 `[]`，生成后最多 252 个 UTF-8 字节。复制足球计划可编辑 `min_*`、`ptt_*`、`score_list`、`score_mode`、`collect_mode` 和自定义收集阈值。主命中与蓝号共用一份 CSV，由 `keep` 和 `blue` 两列区分。带引号的名字按 CSV 规则转义。
 
+### 填充编码和编号置换
+
+名字模板中的 `[]` 由按 ID 生成的填充段替换。下面的命令只处理填充段，不读取或输出完整名字、队伍或 CSV，也不需要 `--out`。
+
+~~~powershell
+$exe = './target/pbb-cuda/pbb-cuda.exe'  # 也可换为 pbb-wgsl.exe
+& $exe --encode-id 0                   # 一一一一一
+& $exe --decode-fill '一一一一一'      # 0
+& $exe --decode-fill '一一一一一㴁'    # 0，旧填充仅解析
+
+$opts = @('--shuffle', 'feistel', '--seed', '42')
+$fill = & $exe --encode-id 4294967296 @opts
+& $exe --decode-fill $fill @opts       # 4294967296
+~~~
+
+- 默认 Base16384 使用五个汉字（15 个 UTF-8 字节），就是旧版前五字，位段不变。旧版末尾多一个标志字 `㴁`，共 18 字节；默认布局的 `--decode-fill` 仍按旧顺序解析，指定置换也不应用它。测号和编码均不再生成旧格式；不要用新默认布局继续旧任务并期待枚举相同的名字。
+- `--shuffle affine|mix|feistel` 在填充前对编号做可逆置换。不指定时按原编号顺序，选择置换后默认 `--seed 0`；种子是 `u64`，不能单独传 `--seed`。用原方案逆解时，布局、词表顺序、算法和种子必须一致。起止参数和 CSV 的 `id` 始终是置换前的编号。
+- 默认布局的单项编码和解码覆盖整个 `u64`，包括 `18446744073709551615`；半开测号范围不枚举这个终点。
+
+### 自定义填充布局
+
+`--fill-plan <路径>` 指向 UTF-8 的 `.kv` 文件，独立于评分参数的 `--plan`。例如 [汉字示例](../benchmarks/pbb-cuda/fixtures/fill-hanzi.kv)：
+
+~~~ini
+format={abc}{hanzi}字面{digits}
+chars.abc=甲乙丙
+~~~
+
+- `format` 至少含一个 `{族名}`；括号外的字面内容原样输出。最右侧可变位置先变；容量是各位置条目数的乘积，编号覆盖 `[0,容量)`。
+- `chars.<族名>` 按 Unicode 字符定义条目；`file.<族名>` 按 UTF-8 词库的行顺序定义条目，每行一个，路径相对填充计划文件的目录。每一家族的条目必须非空、互不重复且 UTF-8 **字节数**相同；不同族可以有不同宽度。
+- 内置 `digits` 为 `0–9`，`lower` 为 `a–z`，`upper` 为 `A–Z`，`alnum` 依次为数字、小写、大写，`hanzi` 是按码点递增的基础汉字 `U+4E00–U+9FFF`。不含扩展区。
+- 另见 [字母数字布局](../benchmarks/pbb-cuda/fixtures/fill-alnum.kv)、[简短词组布局](../benchmarks/pbb-cuda/fixtures/fill-words.kv) 与 [完整四词库短语布局](../benchmarks/pbb-cuda/fixtures/fill-phrase.kv)。完整布局为「形容词的名词副词地动词」，现有词表容量为 19,178,507,248,992。两种词组布局都直接引用相邻 PBB 仓库的 `charsets`；PBB 位于其他位置时，修改填充计划中文件路径即可。
+
+~~~powershell
+$layout = './gpu-mine/benchmarks/pbb-cuda/fixtures/fill-hanzi.kv'
+& $exe --encode-id 10 --fill-plan $layout                    # 甲丁字面0
+& $exe --decode-fill '甲丁字面0' --fill-plan $layout          # 10
+& $exe --mine --out target/pbb-hanzi --plan $plan --fill-plan $layout --shuffle mix --seed 42 --start 10000 --count 5000
+~~~
+
+## 新填充短测
+
+旧通用 CUDA 前核与 WGSL 的历史短测（RTX 5060 Ti 16 GB，足球评分计划，实测句式的字面前缀为 41 字节）；每项单次跑约 8 秒，批大小 4,194,304，CUDA split 用 96 线程，WGSL 用 128 线程。表中为包含结果写入的端到端吞吐，单位 T/天（10¹² 个候选/天）。
+
+| 布局 | CUDA split | WGSL |
+| --- | ---: | ---: |
+| 默认五字 Base16384，无置换 | 48.52 | 21.75 |
+| [完整四词库短语](../benchmarks/pbb-cuda/fixtures/fill-phrase.kv)，`--shuffle feistel --seed 2026` | 28.18 | 18.67 |
+| 34 字节前缀、默认五字，无置换 | 65.16 | — |
+
+完整短语两路线在公共编号区间 `[0,1732247552)` 内的 6 条命中 CSV 逐行一致。这组短测独立于下方的旧 18 字节基准。不同填充与前缀改变实际枚举的名字和命中；34 字节项只验证当前 CUDA 特化路径的短测表现，不是同负载提速对照。
+
 ## 实测
+
+以下历史 PBB 吞吐与命中数属于旧版 18 字节填充；当前默认五字或自定义布局的名字、命中与吞吐不能从这些数字推得。要复现历史结果，使用对应旧提交和旧二进制。
 
 ### CUDA 分段调优：74.87 T/天
 
@@ -198,25 +252,52 @@ Q 本身是精确整数门，耗时主要来自两轮 KSA 的排列读写。WGSL
 
 ## 对拍和一分钟基准
 
-构建后的二进制可运行 `--validate` 捕获逐字段对拍，或用 `--seconds 60` 测端到端吞吐。测速产生的临时结果无需入库。
+正确性验证使用 PowerShell 7。先运行 [填充回归脚本](../benchmarks/pbb-cuda/verify-fill.ps1)：它不初始化 GPU，覆盖新旧编码、三种置换、有限域唯一性、`u64` 边界、字母数字/汉字/词组布局、自动停止和连续分片 CSV。再运行 [实机对拍脚本](../benchmarks/pbb-cuda/verify.ps1)：`--validate` 捕获各候选并与原版 CPU 逐字段比较，也核对正式筛选路径和计数。两脚本的词组用例复用相邻的 PBB 词库。
 
 ~~~powershell
 $exe = './target/pbb-cuda/pbb-cuda.exe'
 $wgsl = './target/release/pbb-wgsl.exe'
+& ./gpu-mine/benchmarks/pbb-cuda/verify-fill.ps1 -Binary $exe
+& ./gpu-mine/benchmarks/pbb-cuda/verify-fill.ps1 -Binary $wgsl
 & ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $exe -OutputDir target/pbb-cuda/validation -Path split -Block 96
 & ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $exe -OutputDir target/pbb-cuda/validation-direct -Path direct -Block 64
 & ./gpu-mine/benchmarks/pbb-cuda/verify.ps1 -Binary $wgsl -OutputDir target/pbb-wgsl-validation -Path wgsl -Block 128
 $plan = './gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv'
 & $exe --out target/pbb-cuda/validation-extended --plan $plan --validate 4194305 --block 128 --batch 1048576
+~~~
+
+一分钟基准可用以下命令测当前口径。复现上面的旧计数和吞吐必须换成对应历史二进制；测速输出无需入库。
+
+~~~powershell
 & $exe --out target/pbb-cuda/football-60s --plan $plan --backend cuda --seconds 60 --block 96 --batch 16777216
 & $wgsl --out target/pbb-wgsl-60s --plan $plan --backend wgsl --seconds 60 --block 128 --batch 16777216 --threads 6
 ~~~
 
 CUDA `split` 支持 `--block 32/64/96/128`，正式默认值不变；本机大批足球计划用 96。需要拆分 Q、G3 和尾评分的设备时间时，可在单独一次运行前设置 `$env:PBB_CUDA_PROFILE = '1'`，结束后用 `Remove-Item Env:PBB_CUDA_PROFILE` 关闭。分段诊断含预热；正式吞吐关闭该开关。
 
-可用 [football-real.kv](../benchmarks/pbb-cuda/fixtures/football-real.kv) 或其它计划覆盖评分阈值、潜力、任意/全量、收集条件和枚举输入；--plan 不传时使用足球评分参数。输入为带一个 [] 的 UTF-8 模板、单槽 Base16384；名字上限 252 字节以适配原 PBB 影子缓冲。--cuda-path direct 用完整单核作对照；split 依次处理 Q 门、G3 门和完整评分。固定布局的 G3 中核用 Q 队列的 ID 在共享内存中重建完整排列；通用模板沿用有界快照，快照满时重建。两条 CUDA 路径都使用同序稀疏点积，CPU 保留未修改的原版稠密评分。
+可用 [football-real.kv](../benchmarks/pbb-cuda/fixtures/football-real.kv) 或其它评分计划调整阈值、潜力、族门和收集条件；不传 `--plan` 时使用足球评分参数。`--cuda-path direct` 用完整单核作对照；`split` 依次处理 Q 门、G3 门和完整评分。CUDA 五字填充的 5–50 字节前缀使用按槽对齐的通用裁剪前核，允许字面后缀与编号置换。34 字节前缀、无后缀继续走独立 50 字节键环（34 + 15 + NUL）；两种裁剪前核都只传候选 ID，G3 在共享内存重建完整排列。其他前缀和自定义字表/词表使用原通用前核及有界快照，快照满时重建。历史记录里的 31 字节专用前缀来自旧 18 字节填充。当前速度见 [一分钟对照](../../miner/docs/pbb-cpu.md#一分钟对照)。两条 CUDA 路径都使用同序稀疏点积，CPU 保留原版稠密评分。
 
-### 验证覆盖
+### 验证覆盖（当前填充）
+
+- RTX 5060 Ti 上，WGSL（128 线程）、CUDA split（96 线程）、CUDA direct（64 线程）各通过 **32 组、720,434 个候选**的原版 CPU 逐字段对拍，三份计数 CSV 逐行一致。覆盖三种置换、跨 32 位和接近 `u64::MAX` 的范围、各混合布局、252 字节名字以及 34 字节 CUDA 裁剪前缀（含 Feistel）。
+- 新默认足球窗口 `[460745962,460811499)` 的普通命中为 `460778730`；两个 PTT 单样本合计覆盖五个 PTT 族。新五字蓝号边界 `46422` 的总和为 708、HP 为 349，七围整数门槛为 592。
+- 两个发布版均通过无 GPU 的填充回归。有限域整段 65,537 个候选、5 条实际命中，连续两片合并后的 CSV 完全相同，自动停止游标为 419,120。
+
+### 验证覆盖（旧 18 字节填充）
+
+旧 `verify.ps1` 固定窗口的计数如下，仅作为历史事实保留。新脚本保留这些窗口的 CPU/GPU 自动逐字段对拍，但不沿用旧命中数；额外覆盖新裁剪前缀、三种置换、混合布局及其边界。
+
+| 评分计划 | 起点 | 候选 | passed | keep | blue | 非零 PTT（旧脚本固定值） |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| football-real | 15118306 | 65537 | 5 | 1 | 0 | — |
+| gate-off | 0 | 65537 | 7 | 7 | 0 | — |
+| all-order | 0 | 65537 | 7 | 2 | 0 | — |
+| any-order | 0 | 65537 | 7 | 2 | 0 | — |
+| ptt-rescue | 0 | 65537 | 7 | 3 | 0 | 3 |
+| custom-blue | 0 | 65537 | 7 | 0 | 4 | — |
+| custom-blue-rounding | 0 | 65537 | 7 | 0 | 2 | — |
+| mixed-keep-blue | 0 | 65537 | 7 | 3 | 4 | — |
+| ptt-cover-all | 7275811、4003673、4018689 | 各 1 | 各 1 | 各 1 | 各 0 | 各 1 |
 
 - 本轮 CUDA `split`（96 线程）和 `direct`（64 线程）各通过 17 组、558,105 个候选的原版矩阵。另在正式 96 线程、16,777,216 批容量下对拍 1,048,577 个跨 u32 候选；有实际命中的 `--mine` 诊断通过。共享参数头的 Clippy `-D warnings` 及新版 Ada `sm_89` 构建通过，未在 4090 实机测速。
 - 上一轮 CUDA 与 WGSL 新版各通过 17 组、558,105 个候选的原版矩阵。CUDA 另在批容量 16,777,216 下对拍 1,048,577 个跨 u32 候选；WGSL 用 32 线程二维派发对拍 2,097,153 个跨 u32 候选。Clippy `-D warnings`、Linux 构建及 CPU 路线、CUDA `sm_89` 编译通过；RTX 4090 和 RX 580 均未实测。
@@ -239,7 +320,7 @@ vulkaninfo --summary
 cargo build -p pbb-wgsl --features native-pbb --release --locked
 ./target/release/pbb-wgsl --backend wgsl --out target/pbb-rx580-check \
   --plan gpu-mine/benchmarks/pbb-cuda/fixtures/football-real.kv \
-  --start 15118306 --validate 65537 --block 32 --batch 8192
+  --start 460745962 --validate 65537 --block 32 --batch 8192
 ~~~
 
 小范围对拍通过后，再按同样的 `--seconds 60` 口径实测吞吐；目前没有 RX 580 实机性能数据。

@@ -1328,6 +1328,7 @@ version = "0.3.4"
 dependencies = [
  "base16384",
  "base64",
+ "cc",
  "chrono",
  "clap",
  "crossbeam",

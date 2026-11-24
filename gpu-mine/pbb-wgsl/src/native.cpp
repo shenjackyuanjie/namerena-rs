@@ -3,10 +3,14 @@
 #endif
 #include "pbb-run.hpp"
 #include <array>
+#include <cstddef>
 #include <future>
 
 static_assert(!PBB_HAS_SIMD && N == 256 && M == 128 && K == 64 && skill_cnt == 40);
 static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits == 53);
+static_assert(sizeof(FillSlot) == 4 * sizeof(U) && alignof(FillSlot) == alignof(U) &&
+              offsetof(FillSlot, offset) == 0 && offsetof(FillSlot, width) == sizeof(U) &&
+              offsetof(FillSlot, radix) == 2 * sizeof(U) && offsetof(FillSlot, table) == 3 * sizeof(U));
 
 static constexpr auto make_g3() {
     std::array<U, 49> data{};
@@ -30,7 +34,8 @@ static constexpr auto make_g3() {
 
 extern "C" {
 void* pbb_front_open(const U* state, const U* key, const U* setup, const int32_t* gate,
-                     const U* g3, U capacity, U block) noexcept;
+                     const U* g3, const U* fill_setup, const FillSlot* fill_slots,
+                     const U* fill_data, U fill_data_count, U capacity, U block) noexcept;
 int pbb_front_run(void* device, Id first, U n, U capture, U* result, U* counts,
                   U* gate_indices, double* seconds) noexcept;
 void pbb_front_close(void* device) noexcept;
@@ -53,16 +58,23 @@ struct WgslDevice {
             state[i / 4] |= U(input.prefix_box[i]) << (8 * (i % 4));
         std::array<U, name_limit + 1> key{};
         for (int i = 0; i < input.prefix_len; ++i) key[i] = U(u8_t(input.prefix[i]));
-        for (int i = 0; i < encoded_width; ++i) key[input.prefix_len + i] = 256u + U(i);
-        for (int i = 0; i < input.suffix_len; ++i) key[input.prefix_len + encoded_width + i] = U(u8_t(input.suffix[i]));
+        for (int i = 0; i < input.fill_len; ++i) key[input.prefix_len + i] = 256u + U(i);
+        for (int i = 0; i < input.suffix_len; ++i) key[input.prefix_len + input.fill_len + i] = U(u8_t(input.suffix[i]));
         const std::array<U, 4> setup{input.i_pre, input.j_pre, input.s_pre, U(input.name_len)};
+        const std::array<U, 10> fill_setup{
+            U(input.fill_len), input.fill_slots_count, input.fill_shuffle,
+            input.fill_mask_lo, input.fill_mask_hi, U(input.fill_seed), U(input.fill_seed >> 32),
+            U(input.fill_domain), U(input.fill_domain >> 32), input.fill_shift,
+        };
         #define PLANES(k) GATE_F_##k, GATE_R_##k, GATE_S_##k, GATE_T_##k
         const std::array<int32_t, 45> gate{PLANES(W0), PLANES(W1), PLANES(W2), PLANES(W3),
             PLANES(W4), PLANES(W5), PLANES(W6), PLANES(W7), PLANES(TH), PLANES(REM2), PLANES(REM3), PBB_MIN_P7};
         #undef PLANES
         static constexpr auto g3 = make_g3();
         readback.resize(opts.batch);
-        front = pbb_front_open(state.data(), key.data(), setup.data(), gate.data(), g3.data(), opts.batch, opts.block);
+        front = pbb_front_open(state.data(), key.data(), setup.data(), gate.data(), g3.data(),
+                               fill_setup.data(), input.fill_slots, input.fill_data, input.fill_data_count,
+                               opts.batch, opts.block);
         if (!front) throw std::runtime_error("无法初始化 WGSL 前筛，请检查上方的设备错误");
         launch = &input;
         threads = opts.threads;

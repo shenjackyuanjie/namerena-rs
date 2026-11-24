@@ -13,14 +13,22 @@
 
 namespace pbb_device {
 namespace prefilter_detail {
-static_assert(N == 256 && encoded_width == 18 && name_limit <= 252);
+static_assert(N == 256 && encoded_width == 15 && name_limit <= 252);
 inline constexpr int words_per_thread = N / 4;
 #if defined(__CUDACC__)
 struct PreparedFront {
     U words[words_per_thread];
-    unsigned short pairs[16];
+    unsigned short pairs[18];
 };
 static __constant__ PreparedFront prepared_front;
+
+// 两轮的键环都从 NUL 开始。逐槽铺开固定键，生成段留零；相同模板的 warp 广播读取。
+struct PreparedGeneric {
+    unsigned short pairs[N / 2];
+    U words[N / 4];
+    int crop_fill;
+};
+static __constant__ PreparedGeneric prepared_generic;
 // 低四个半字节为 PRMT 源下标（4 指向零），高位为有效字节数。
 // 动态取表放普通只读显存，避免 constant bank 在一个 warp 中串行化。
 static __device__ const U compact_q[16] = {
@@ -37,19 +45,37 @@ PBB_PREFILTER_HD U utf8_word(U c) {
 }
 
 struct Generated {
-    U chunks[6];
+    U chunks[5];
 
     PBB_PREFILTER_HD explicit Generated(Id id)
         : chunks{utf8_word(0x4e00u + U((id >> 50) & 0x3fff)),
                  utf8_word(0x4e00u + U((id >> 36) & 0x3fff)),
                  utf8_word(0x4e00u + U((id >> 22) & 0x3fff)),
                  utf8_word(0x4e00u + U((id >> 8) & 0x3fff)),
-                 utf8_word(0x4e00u + U((id & 255) << 6)), utf8_word(0x3d01u)} {}
+                 utf8_word(0x4e00u + U((id & 255) << 6))} {}
 
     PBB_PREFILTER_HD U byte_at(int k) const {
         return (chunks[k / 3] >> (8 * (k % 3))) & 255u;
     }
 };
+
+#if defined(__CUDA_ARCH__)
+struct PackedFill {
+    U a, b, c, d;
+
+    __device__ __forceinline__ explicit PackedFill(const Generated& key)
+        : a(key.chunks[0] | (key.chunks[1] << 24)),
+          b((key.chunks[1] >> 8) | (key.chunks[2] << 16)),
+          c((key.chunks[2] >> 16) | (key.chunks[3] << 8)), d(key.chunks[4]) {}
+
+    // 仅用于 88/256 截点处不完整的生成段；固定段和完整生成段均不用逐字节选取。
+    __device__ __forceinline__ U byte_or_zero(int k) const {
+        if (U(k) >= encoded_width) return 0;
+        const U pair0 = k & 8 ? c : a, pair1 = k & 8 ? d : b;
+        return ((k & 4 ? pair1 : pair0) >> ((k & 3) * 8)) & 255u;
+    }
+};
+#endif
 
 // 每个线程独占一个列。Block 为 warp 大小的整数倍时每个 lane 使用独立 bank。
 template<int Block>
@@ -155,13 +181,17 @@ struct Box {
 #if defined(__CUDACC__) || defined(__CUDA__)
             #pragma unroll
 #endif
-            for (int c = 0; c < 6; c += 2) {
+            for (int c = 0; c < 4; c += 2) {
                 const U a = key.chunks[c], b = key.chunks[c + 1];
                 step2(i, sum, a & 255u, (a >> 8) & 255u);
                 step2(i + 2, sum, a >> 16, b & 255u);
                 step2(i + 4, sum, (b >> 8) & 255u, b >> 16);
                 i += 6;
             }
+            const U tail = key.chunks[4];
+            step2(i, sum, tail & 255u, (tail >> 8) & 255u);
+            step(i + 2, sum, tail >> 16);
+            i += 3;
         } else {
             for (int k = first; k < encoded_width && i < N; ++i, ++k) step(i, sum, key.byte_at(k));
         }
@@ -215,8 +245,107 @@ struct Box {
         carry = j3;
     }
 
+    __device__ __forceinline__ void exact_keys(int i, U& sum, U pair) const {
+        step_aligned(i, sum, pair, pair >> 8);
+    }
+
+    __device__ __forceinline__ void exact_literals(int& i, int end, U& sum) const {
+        #pragma unroll 4
+        for (; i < end; i += 2) exact_keys(i, sum, prepared_generic.pairs[i / 2]);
+    }
+
+    template<bool SkipHead = false>
+    __device__ __forceinline__ void exact_fill(int fill, const PackedFill& key, U& sum) const {
+        const int i = fill & ~1;
+        const U shift = (fill & 1) * 8;
+        const U a = key.a << shift, b = __funnelshift_l(key.a, key.b, shift);
+        const U c = __funnelshift_l(key.b, key.c, shift), d = __funnelshift_l(key.c, key.d, shift);
+        if constexpr (!SkipHead) exact_keys(i, sum, a | prepared_generic.pairs[i / 2]);
+        exact_keys(i + 2, sum, a >> 16);
+        exact_keys(i + 4, sum, b);
+        exact_keys(i + 6, sum, b >> 16);
+        exact_keys(i + 8, sum, c);
+        exact_keys(i + 10, sum, c >> 16);
+        exact_keys(i + 12, sum, d);
+        exact_keys(i + 14, sum, (d >> 16) | prepared_generic.pairs[i / 2 + 7]);
+    }
+
+    template<int End, bool First = false>
+    __device__ __forceinline__ void generic_exact(const Launch& input, const PackedFill& key, U& sum) const {
+        static_assert(End % 2 == 0);
+        const int cycle = input.name_len + 1;
+        int fill = input.i_pre, i = First ? fill : 0;
+        if constexpr (First) {
+            if (i & 1) {
+                step(i, sum, key.a); // 首槽为奇数时，只余下七个完整的偶地址对。
+                exact_fill<true>(fill, key, sum);
+                i = (fill & ~1) + 16;
+                fill += cycle;
+            }
+        }
+        // 每圈一次生成段。圈长为奇数时，相邻两圈的生成段相位交替；固定段直接续接。
+        for (; fill + encoded_width <= End; fill += cycle) {
+            const int start = fill & ~1;
+            exact_literals(i, start, sum);
+            exact_fill(fill, key, sum);
+            i = start + 16;
+        }
+        exact_literals(i, fill < End ? fill & ~1 : End, sum);
+        for (; i < End; i += 2) {
+            const U pair = key.byte_or_zero(i - fill) | (key.byte_or_zero(i + 1 - fill) << 8);
+            exact_keys(i, sum, pair | prepared_generic.pairs[i / 2]);
+        }
+    }
+
+    __device__ __forceinline__ void cropped_keys(int i, U& sum, U word) const {
+        cropped_word(i, sum, word, word >> 8, word >> 16, word >> 24);
+    }
+
+    __device__ __forceinline__ void cropped_literals(int& i, int end, U& sum) const {
+        #pragma unroll 4
+        for (; i < end; i += 4) cropped_keys(i, sum, prepared_generic.words[i / 4]);
+    }
+
+    __device__ __forceinline__ void cropped_fill(int fill, const PackedFill& key, U& sum) const {
+        const int i = fill & ~3;
+        const U shift = (fill & 3) * 8;
+        cropped_keys(i, sum, (key.a << shift) | prepared_generic.words[i / 4]);
+        cropped_keys(i + 4, sum, __funnelshift_l(key.a, key.b, shift));
+        cropped_keys(i + 8, sum, __funnelshift_l(key.b, key.c, shift));
+        cropped_keys(i + 12, sum, __funnelshift_l(key.c, key.d, shift) | prepared_generic.words[i / 4 + 3]);
+        if (shift > 8)
+            cropped_keys(i + 16, sum, __funnelshift_l(key.d, 0u, shift) | prepared_generic.words[i / 4 + 4]);
+    }
+
+    __device__ __forceinline__ void cropped_edge(int& i, int end, int fill, const PackedFill& key, U& sum) const {
+        for (; i < end; i += 4) {
+            U word = prepared_generic.words[i / 4];
+            #pragma unroll
+            for (int k = 0; k < 4; ++k) word |= key.byte_or_zero(i + k - fill) << (k * 8);
+            cropped_keys(i, sum, word);
+        }
+    }
+
+    template<int Limit>
+    __device__ __forceinline__ void generic_cropped(const Launch& input, const PackedFill& key, U& sum) const {
+        static_assert(Limit % 4 == 0);
+        const int cycle = input.name_len + 1;
+        int fill = prepared_generic.crop_fill, i = Limit;
+        if (fill < Limit) {
+            cropped_edge(i, (fill + encoded_width + 3) & ~3, fill, key, sum);
+            fill += cycle;
+        }
+        for (; fill + encoded_width <= N; fill += cycle) {
+            cropped_literals(i, fill & ~3, sum);
+            cropped_fill(fill, key, sum);
+            i = (fill + encoded_width + 3) & ~3;
+        }
+        cropped_literals(i, fill < N ? fill & ~3 : N, sum);
+        cropped_edge(i, N, fill, key, sum);
+    }
+
     __device__ __forceinline__ U fixed_key(const Generated& key, int k) const {
-        if (k >= 32) return key.byte_at(k-32);
+        if (k >= 35) return key.byte_at(k - 35);
         const U x = prepared_front.pairs[k/2];
         return (x >> ((k&1)*8)) & 255u;
     }
@@ -239,87 +368,94 @@ struct Box {
         }
     }
 
+    // 50 字节键环：NUL + 34 字节前缀 + 不带尾标的 15 字节。第 34 个槽正好跨字面/生成分界。
+    template<int Exact>
+    __device__ __forceinline__ void aligned_cycle(const Generated& key, int i, U& j) const {
+        #pragma unroll 4
+        for (int k = 0; k < 34; k += 2) {
+            const U p = prepared_front.pairs[k / 2];
+            if (k < Exact) step_aligned(i + k, j, p & 255u, p >> 8);
+            else cropped_pair(i + k, j, p & 255u, p >> 8);
+        }
+        if constexpr (34 < Exact) step_aligned(i + 34, j, prepared_front.pairs[17] & 255u, key.byte_at(0));
+        else cropped_pair(i + 34, j, prepared_front.pairs[17] & 255u, key.byte_at(0));
+        #pragma unroll
+        for (int k = 36; k < 50; k += 2) {
+            if (k < Exact) step_aligned(i + k, j, key.byte_at(k - 35), key.byte_at(k - 34));
+            else cropped_pair(i + k, j, key.byte_at(k - 35), key.byte_at(k - 34));
+        }
+    }
+
+    __device__ __forceinline__ void aligned_first(const Generated& key, U j) const {
+        step(35, j, key.byte_at(0));
+        #pragma unroll
+        for (int k = 36; k < 50; k += 2) step_aligned(k, j, key.byte_at(k - 35), key.byte_at(k - 34));
+        for (int i = 50; i + 50 <= N; i += 50) aligned_cycle<50>(key, i, j);
+        aligned_tail(j);
+    }
+
     template<int Limit>
     __device__ __forceinline__ void schedule_cropped(const Launch& input, Id id) const {
         static_assert(Limit >= 50 && Limit <= 100 && Limit % 2 == 0);
         restore(input);
-        const Generated key(id);
-        U j = input.s_pre;
-        #pragma unroll
-        for (int k=0; k<18; k+=2) step_aligned(32+k,j,key.byte_at(k),key.byte_at(k+1));
-        for (int i=50; i+50<=N; i+=50) {
-            #pragma unroll 4
-            for (int k=0; k<32; k+=2) {
-                const U p=prepared_front.pairs[k/2];
-                step_aligned(i+k,j,p&255u,p>>8);
-            }
-            #pragma unroll
-            for (int k=0; k<18; k+=2) step_aligned(i+32+k,j,key.byte_at(k),key.byte_at(k+1));
-        }
-        aligned_tail(j);
-        j=0;
-        #pragma unroll 4
-        for (int k=0; k<32; k+=2) {
-            const U p=prepared_front.pairs[k/2];
-            step_aligned(k,j,p&255u,p>>8);
-        }
-        #pragma unroll
-        for (int k=0; k<18; k+=2) step_aligned(32+k,j,key.byte_at(k),key.byte_at(k+1));
-        #pragma unroll
-        for (int k=0; k<32; k+=2) {
-            const U p=prepared_front.pairs[k/2];
-            if (50+k < Limit) step_aligned(50+k,j,p&255u,p>>8);
-            else cropped_pair(50+k,j,p&255u,p>>8);
-        }
-        #pragma unroll
-        for (int k=0; k<18; k+=2) {
-            if (82+k < Limit) step_aligned(82+k,j,key.byte_at(k),key.byte_at(k+1));
-            else cropped_pair(82+k,j,key.byte_at(k),key.byte_at(k+1));
-        }
+        const Generated key(shuffle_id<false>(input, id));
+        aligned_first(key, input.s_pre);
+        U j = 0;
+        aligned_cycle<50>(key, 0, j);
+        aligned_cycle<Limit - 50>(key, 50, j);
         cropped_words<100>(key,100,j);
         cropped_words<56>(key,200,j);
     }
 #endif
 
 #if defined(__CUDACC__) || defined(__CUDA__)
-    // 仅布局满足 31 字节前缀、无后缀且已走完 NUL+前缀时调用。
+    template<int Limit = N>
+    __device__ __forceinline__ void schedule_generic(const Launch& input, Id id) const {
+#if defined(__CUDA_ARCH__)
+        restore(input);
+        const PackedFill key{Generated(shuffle_id<false>(input, id))};
+        U sum = input.s_pre;
+        generic_exact<N, true>(input, key, sum);
+        sum = 0;
+        generic_exact<Limit>(input, key, sum);
+        if constexpr (Limit < N) generic_cropped<Limit>(input, key, sum);
+#endif
+    }
+
     __device__ __forceinline__ void schedule_aligned(const Launch& input, Id id) const {
 #if defined(__CUDA_ARCH__)
         restore(input);
-        const Generated key(id);
-        for (int r = 0; r < 2; ++r) {
-            int i = r ? 0 : 32;
-            U j = r ? 0 : input.s_pre;
-            if (!r) {
-                #pragma unroll
-                for (int k = 0; k < 18; k += 2) step_aligned(i+k, j, key.byte_at(k), key.byte_at(k+1));
-                i += 18;
-            }
-            for (; i + 50 <= N; i += 50) {
-                #pragma unroll 4
-                for (int k = 0; k < 32; k += 2) {
-                    const U pair = prepared_front.pairs[k/2];
-                    step_aligned(i+k, j, pair & 255u, pair >> 8);
-                }
-                #pragma unroll
-                for (int k = 0; k < 18; k += 2) step_aligned(i+32+k, j, key.byte_at(k), key.byte_at(k+1));
-            }
-            aligned_tail(j);
-        }
+        const Generated key(shuffle_id<false>(input, id));
+        aligned_first(key, input.s_pre);
+        U j = 0;
+        for (int i = 0; i + 50 <= N; i += 50) aligned_cycle<50>(key, i, j);
+        aligned_tail(j);
 #endif
     }
+    __host__ __device__ __noinline__
+#else
+    inline
 #endif
+    void schedule_mixed(const Launch& input, Id id) const {
+        char name[name_limit + 1];
+        make_name(input, id, name);
+        for (int r = 0; r < 2; ++r) {
+            int i = r ? 0 : input.i_pre, k = r ? input.name_len : input.j_pre;
+            U sum = r ? 0 : input.s_pre;
+            while (i < N) {
+                literal(name, k, input.name_len + 1, i, sum);
+                k = 0;
+            }
+        }
+    }
 
     PBB_PREFILTER_HD void schedule(const Launch& input, Id id) const {
-#if defined(__CUDA_ARCH__)
-        // 32 字节 NUL+前缀和 18 字节生成段组成偶数长度的圈，任何此前缀内容都能走此路径。
-        if (input.prefix_len == 31 && input.suffix_len == 0 && input.i_pre == 32 && input.j_pre == 31) {
-            schedule_aligned(input, id);
+        restore(input);
+        if (input.fill_slots_count) {
+            schedule_mixed(input, id);
             return;
         }
-#endif
-        restore(input);
-        const Generated key(id);
+        const Generated key(shuffle_id<false>(input, id));
         round(input, key, input.i_pre, input.j_pre, input.s_pre);
         round(input, key, 0, input.name_len, 0);
     }

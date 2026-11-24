@@ -8,6 +8,8 @@ mod evaluate;
 mod generate;
 mod interrupt;
 mod name;
+#[cfg(feature = "native-pbb")]
+mod pbb;
 #[cfg(test)]
 mod reference;
 
@@ -19,6 +21,7 @@ use tracing::{info, warn};
 use crate::cacluate::CacluateConfig;
 
 #[derive(Parser, Debug, Clone)]
+#[command(after_help = "PBB 模式：tswn pbb --help（需要 native-pbb 特性）")]
 pub struct Command {
     /// 开始的 id
     #[arg(long, default_value_t = 0)]
@@ -238,6 +241,15 @@ pub fn set_process_priority_to_high() {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("pbb")) {
+        #[cfg(feature = "native-pbb")]
+        std::process::exit(pbb::run());
+        #[cfg(not(feature = "native-pbb"))]
+        {
+            eprintln!("PBB 后端未构建：cargo build -p tswn --features native-pbb --release");
+            std::process::exit(2);
+        }
+    }
     let cli_arg = Command::parse();
     tracing_subscriber::fmt()
         .with_max_level(if cli_arg.debug {

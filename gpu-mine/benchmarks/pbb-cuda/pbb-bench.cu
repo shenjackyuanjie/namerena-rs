@@ -35,8 +35,9 @@ __global__ void evaluate(Id first, U n, bool capture, Counts* counts, Record* re
 // 批内编号仅占低 24 位。高位标记未收满 31 个属性字节、须由完整排列复核的候选。
 constexpr U uncertain_q = 1u << 31;
 constexpr int q_prefix = 88;
+enum class FrontPath { Legacy, Fixed34, Generic };
 
-template<int Block, bool Cropped>
+template<int Block, FrontPath Path>
 __global__ void select_ids(Id first, U n, bool capture, Counts* counts, Record* records,
                            U* indices, U* snapshots, U snapshot_cap) {
     __shared__ U words[64 * Block];
@@ -45,9 +46,10 @@ __global__ void select_ids(Id first, U n, bool capture, Counts* counts, Record* 
     const pbb_device::prefilter_detail::Box<Block> box{words + threadIdx.x};
     int props[7];
     bool uncertain = false, eligible = false;
-    if constexpr (Cropped) {
+    if constexpr (Path != FrontPath::Legacy) {
 #if defined(__CUDA_ARCH__)
-        box.template schedule_cropped<q_prefix>(device_input, first + i);
+        if constexpr (Path == FrontPath::Fixed34) box.template schedule_cropped<q_prefix>(device_input, first + i);
+        else box.template schedule_generic<q_prefix>(device_input, first + i);
         U packed[8];
         uncertain = box.template collect_packed<q_prefix / 4>(packed) < 31;
         eligible = uncertain || pbb_device::gate_level_of(reinterpret_cast<const pbb_device::u8_t*>(packed), props);
@@ -61,7 +63,7 @@ __global__ void select_ids(Id first, U n, bool capture, Counts* counts, Record* 
     if (eligible) {
         const U slot = atomicAdd(&counts->eligible, 1u);
         indices[slot] = i | (uncertain ? uncertain_q : 0);
-        if constexpr (!Cropped) {
+        if constexpr (Path == FrontPath::Legacy) {
             if (slot < snapshot_cap) {
                 #pragma unroll 8
                 for (int j = 0; j < 64; ++j) snapshots[slot * 64 + j] = words[j * Block + threadIdx.x];
@@ -141,7 +143,7 @@ struct GateName {
     }
 };
 
-template<int Block, bool Capture, bool Cropped>
+template<int Block, bool Capture, FrontPath Path>
 __global__ void select_g3(Id first, Counts* counts, Record* records, const U* in,
     const U* snapshots, U snapshot_cap, U* out, U* survivors, U* rejected) {
     __shared__ U words[64*Block];
@@ -149,9 +151,11 @@ __global__ void select_g3(Id first, Counts* counts, Record* records, const U* in
     for (U slot = blockIdx.x * Block + threadIdx.x; slot < n; slot += Block * gridDim.x) {
         const U queued=in[slot], id=queued&~uncertain_q;
         GateName<Block> state{{words+threadIdx.x}};
-        if constexpr (Cropped) {
-            // 核间只传候选号；在 PRGA 所在的列直接重建完整排列。
+        // 裁剪核只传候选号；在 PRGA 所在的列直接重建完整排列。
+        if constexpr (Path == FrontPath::Fixed34) {
             state.box.schedule_aligned(device_input, first + id);
+        } else if constexpr (Path == FrontPath::Generic) {
+            state.box.schedule_generic(device_input, first + id);
         } else if (slot >= snapshot_cap) {
             // 通用模板的有界快照满后，重建当前候选。
             state.box.schedule(device_input, first + id);
@@ -161,7 +165,7 @@ __global__ void select_g3(Id first, Counts* counts, Record* records, const U* in
         }
         state.box.collect(state.name_base);
         state.V=pbb_device::prefilter_detail::finish_base(state.name_base);
-        if (Cropped && (queued & uncertain_q)) {
+        if (Path != FrontPath::Legacy && (queued & uncertain_q)) {
             int p[7];
             if (!pbb_device::gate_level_of(state.name_base,p))atomicAdd(rejected,1u);
         }
@@ -188,7 +192,10 @@ struct Device {
     Counts *counts = nullptr, *host_counts = nullptr;
     U *indices = nullptr, *snapshots = nullptr, *g3_indices = nullptr, *survivors = nullptr;
     U snapshot_cap = 0, host_capacity = 0;
+    U* fill_data = nullptr;
+    FillSlot* fill_slots = nullptr;
     bool split = false, cropped = false;
+    FrontPath front_path = FrontPath::Legacy;
     U *rejected_q = nullptr, *host_rejected_q = nullptr;
     int score_grid = 0, tail_grid = 0;
     Record *records = nullptr, *host_records = nullptr;
@@ -206,6 +213,8 @@ struct Device {
         if (g3_indices) cudaFree(g3_indices);
         if (survivors) cudaFree(survivors);
         if (rejected_q) cudaFree(rejected_q);
+        if (fill_data) cudaFree(fill_data);
+        if (fill_slots) cudaFree(fill_slots);
         if (host_rejected_q) cudaFreeHost(host_rejected_q);
         if (host_counts) cudaFreeHost(host_counts);
         if (host_records) cudaFreeHost(host_records);
@@ -227,7 +236,13 @@ struct Device {
         std::cerr << "GPU " << property.name << '\n';
         const size_t capacity = opts.batch;
         split = opts.cuda_path == "split";
-        cropped = split && input.prefix_len == 31 && input.suffix_len == 0 && input.i_pre == 32 && input.j_pre == 31;
+        if (split && !input.fill_slots_count && input.fill_len == encoded_width
+            && input.i_pre == input.prefix_len + 1 && input.j_pre == input.prefix_len) {
+            if (input.prefix_len == 34 && !input.suffix_len) front_path = FrontPath::Fixed34;
+            else if (input.prefix_len >= 5 && input.prefix_len <= 50 && !std::getenv("PBB_CUDA_LEGACY_FRONT"))
+                front_path = FrontPath::Generic;
+        }
+        cropped = front_path != FrontPath::Legacy;
         if (cropped) {
             CHECK(cudaMalloc(&rejected_q, sizeof(U)));
             CHECK(cudaMallocHost(&host_rejected_q, sizeof(U)));
@@ -244,7 +259,18 @@ struct Device {
             CHECK(cudaMalloc(&g3_indices, capacity * sizeof(*g3_indices)));
             CHECK(cudaMalloc(&survivors, sizeof(*survivors)));
         }
-        CHECK(cudaMemcpyToSymbol(device_input, &input, sizeof(input)));
+        Launch device_launch = input;
+        if (input.fill_slots_count) {
+            const auto data_bytes = input.fill_data_count * sizeof(*fill_data);
+            const auto slot_bytes = input.fill_slots_count * sizeof(*fill_slots);
+            CHECK(cudaMalloc(&fill_data, data_bytes));
+            CHECK(cudaMalloc(&fill_slots, slot_bytes));
+            CHECK(cudaMemcpy(fill_data, input.fill_data, data_bytes, cudaMemcpyHostToDevice));
+            CHECK(cudaMemcpy(fill_slots, input.fill_slots, slot_bytes, cudaMemcpyHostToDevice));
+            device_launch.fill_data = fill_data;
+            device_launch.fill_slots = fill_slots;
+        }
+        CHECK(cudaMemcpyToSymbol(device_input, &device_launch, sizeof(device_launch)));
         if (split) {
             using namespace pbb_device::prefilter_detail;
             PreparedFront front{};
@@ -255,7 +281,25 @@ struct Device {
                 const auto b = static_cast<unsigned char>(input.prefix[2*j]);
                 front.pairs[j] = a | (b << 8);
             }
+            front.pairs[16] = U(static_cast<unsigned char>(input.prefix[31]))
+                | (U(static_cast<unsigned char>(input.prefix[32])) << 8);
+            front.pairs[17] = static_cast<unsigned char>(input.prefix[33]);
             CHECK(cudaMemcpyToSymbol(prepared_front, &front, sizeof(front)));
+            if (front_path == FrontPath::Generic) {
+                PreparedGeneric generic{};
+                const int fill = input.i_pre, fill_end = fill + encoded_width, cycle = input.name_len + 1;
+                for (int i = 0, k = 0; i < N; ++i) {
+                    U byte = 0;
+                    if (k > 0 && k < fill) byte = static_cast<unsigned char>(input.prefix[k - 1]);
+                    if (k >= fill_end) byte = static_cast<unsigned char>(input.suffix[k - fill_end]);
+                    generic.pairs[i / 2] |= byte << (8 * (i & 1));
+                    generic.words[i / 4] |= byte << (8 * (i & 3));
+                    if (++k == cycle) k = 0;
+                }
+                generic.crop_fill = fill;
+                while (generic.crop_fill + encoded_width <= q_prefix) generic.crop_fill += cycle;
+                CHECK(cudaMemcpyToSymbol(prepared_generic, &generic, sizeof(generic)));
+            }
         }
         CHECK(cudaMalloc(&counts, sizeof(*counts)));
         CHECK(cudaMalloc(&records, capacity * sizeof(*records)));
@@ -274,8 +318,9 @@ struct Device {
         if (cropped) CHECK(cudaMemsetAsync(rejected_q, 0, sizeof(U), stream));
         CHECK(cudaEventRecord(begin, stream));
         if (split) {
-            #define FRONT(b, clipped) select_ids<b, clipped><<<(n + b - 1) / b, b, 0, stream>>>(first, n, capture, counts, records, indices, snapshots, snapshot_cap)
-            #define CHOOSE(b) if (cropped) { FRONT(b, true); } else { FRONT(b, false); }
+            #define FRONT(b, path) select_ids<b, FrontPath::path><<<(n + b - 1) / b, b, 0, stream>>>(first, n, capture, counts, records, indices, snapshots, snapshot_cap)
+            #define CHOOSE(b) if (front_path == FrontPath::Fixed34) { FRONT(b, Fixed34); } \
+                else if (front_path == FrontPath::Generic) { FRONT(b, Generic); } else { FRONT(b, Legacy); }
             switch (block) {
                 case 32: CHOOSE(32); break;
                 case 64: CHOOSE(64); break;
@@ -287,13 +332,16 @@ struct Device {
             #undef FRONT
             CHECK(cudaGetLastError());
             if (q_done) CHECK(cudaEventRecord(q_done, stream));
-            #define G3(b, cap, clipped) select_g3<b, cap, clipped><<<score_grid, b, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q)
-            if (cropped) {
-                if (capture) G3(64, true, true);
-                else G3(96, false, true);
+            #define G3(b, cap, path) select_g3<b, cap, FrontPath::path><<<score_grid, b, 0, stream>>>(first, counts, records, indices, snapshots, snapshot_cap, g3_indices, survivors, rejected_q)
+            if (front_path == FrontPath::Fixed34) {
+                if (capture) G3(64, true, Fixed34);
+                else G3(96, false, Fixed34);
+            } else if (front_path == FrontPath::Generic) {
+                if (capture) G3(64, true, Generic);
+                else G3(96, false, Generic);
             } else {
-                if (capture) G3(64, true, false);
-                else G3(64, false, false);
+                if (capture) G3(64, true, Legacy);
+                else G3(64, false, Legacy);
             }
             #undef G3
             CHECK(cudaGetLastError());

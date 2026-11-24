@@ -13,6 +13,8 @@ const HEADER: u64 = 8;
 const INLINE_ENTRIES: u32 = 4096;
 const CAPACITY_LIMIT: u32 = 1 << 24;
 const FREE: u32 = 1 << 31;
+// state、key、游标及名字长度、G3、置换参数；然后是填充运行时数组。
+const SETUP_WORDS: usize = 64 + 253 + 4 + 49 + 7;
 
 struct Timer {
     queries: wgpu::QuerySet,
@@ -41,40 +43,39 @@ struct Front {
     profile: Option<Cell<[f64; 3]>>,
 }
 
-fn shader(config: &[u32], gate: &[i32; 45], block: u32, fast: bool) -> String {
+struct FillShape {
+    len: u32,
+    slots: u32,
+    shuffle: u32,
+}
+
+#[repr(C)]
+struct FillSlot {
+    offset: u32,
+    width: u32,
+    radix: u32,
+    table: u32,
+}
+
+fn shader(gate: &[i32; 45], block: u32, fill: &FillShape) -> String {
+    let words = fill.len.div_ceil(3).max(6);
     let mut source = format!(
-        "const LANES: u32 = {block}u;\nconst MIN_P7: i32 = {};\nconst FAST_KEY: bool = {fast};\n",
-        gate[44]
+        "const LANES: u32 = {block}u;\nconst MIN_P7: i32 = {};\n\
+         const FILL_WORDS: u32 = {words}u;\nconst FILL_LEN: u32 = {}u;\n\
+         const FILL_SLOTS_COUNT: u32 = {}u;\nconst FILL_SHUFFLE: u32 = {}u;\n",
+        gate[44], fill.len, fill.slots, fill.shuffle,
     );
     let planes = ["W0", "W1", "W2", "W3", "W4", "W5", "W6", "W7", "TH", "REM2", "REM3"];
     for (name, w) in planes.iter().zip(gate.as_chunks::<4>().0) {
         writeln!(source, "const {name} = vec4<i32>({}, {}, {}, {});", w[0], w[1], w[2], w[3]).unwrap();
     }
     source.push_str(include_str!("prefilter.wgsl"));
-    let mut fast_code = include_str!("ksa-fast.wgsl").to_owned();
-    if fast {
-        let pairs = &config[config.len() - 16..];
-        let mut prefix = String::new();
-        for (index, pair) in pairs.iter().enumerate().skip(1) {
-            let k = index * 2;
-            writeln!(prefix, "    if end > {k}u {{ j = ksa_fast_pair(lane, i + {k}u, j, {pair}u); }}").unwrap();
-        }
-        let mut crop = String::new();
-        for k in (4..32).step_by(4) {
-            let (a, b) = (pairs[k / 2], pairs[k / 2 + 1]);
-            writeln!(crop, "    j = ksa_fast_crop_word(lane, i + {k}u, j, {a}u, {b}u);").unwrap();
-        }
-        fast_code = fast_code
-            .replace("// FULL_LITERAL_PAIRS", &prefix)
-            .replace("// CROPPED_LITERAL_PAIRS", &crop);
-    }
-    source.push_str(&fast_code);
     source.push_str(include_str!("g3.wgsl"));
     source
 }
 
 impl Front {
-    async fn new(config: &[u32], gate: &[i32; 45], capacity: u32, block: u32, fast: bool) -> Result<Self, String> {
+    async fn new(config: &[u32], gate: &[i32; 45], capacity: u32, block: u32, fill: &FillShape) -> Result<Self, String> {
         if ![32, 64, 128].contains(&block) || !(1..=CAPACITY_LIMIT).contains(&capacity) {
             return Err("WGSL 批容量或工作组大小无效".to_owned());
         }
@@ -97,6 +98,9 @@ impl Front {
         if !limits.check_limits(&adapter.limits()) || out_bytes > limits.max_storage_buffer_binding_size {
             return Err("批大小或工作组共享内存超出设备限制，请减小 --batch 或 --block".to_owned());
         }
+        if std::mem::size_of_val(config) as u64 > limits.max_storage_buffer_binding_size {
+            return Err("WGSL 填充配置超出存储缓冲区大小限制".to_owned());
+        }
         let max_dispatch = limits.max_compute_workgroups_per_dimension;
         let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
         let (device, queue) = adapter
@@ -118,7 +122,7 @@ impl Front {
             })
         };
         let init = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("PBB 模板、前缀快照与 G3 权重"),
+            label: Some("PBB 模板、前缀快照、G3 权重及填充配置"),
             contents: bytemuck::cast_slice(config),
             usage: wgpu::BufferUsages::STORAGE,
         });
@@ -135,17 +139,9 @@ impl Front {
         let make = |entry, lanes, bufs: &[&wgpu::Buffer]| {
             let descriptor = wgpu::ShaderModuleDescriptor {
                 label: Some(entry),
-                source: wgpu::ShaderSource::Wgsl(shader(config, gate, lanes, fast).into()),
+                source: wgpu::ShaderSource::Wgsl(shader(gate, lanes, fill).into()),
             };
-            let module = if fast && entry == "prefilter" {
-                // 只有固定 50 字节键环的 Q 核去掉运行时边界检查：fast 守卫了键环形状，
-                // 顺序槽 0..255、随机槽按 255 掩码，每个 lane 只访问自己的 64 个字。
-                // 属性扫描的 34 槽内只消费前 31 项，排序 10 项；早退守住 i<n，每个 i 最多入队一次。
-                // 通用模板和读压缩队列的 G3 核保持完整运行时检查。
-                unsafe { device.create_shader_module_trusted(descriptor, wgpu::ShaderRuntimeChecks::unchecked()) }
-            } else {
-                device.create_shader_module(descriptor)
-            };
+            let module = device.create_shader_module(descriptor);
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry),
                 layout: None,
@@ -366,27 +362,65 @@ unsafe extern "C" fn pbb_front_open(
     setup: *const [u32; 4],
     gate: *const [i32; 45],
     g3: *const [u32; 49],
+    fill_setup: *const [u32; 10],
+    fill_slots: *const FillSlot,
+    fill_data: *const u32,
+    fill_data_count: u32,
     capacity: u32,
     block: u32,
 ) -> *mut c_void {
     ffi(|| {
         // 调用期间数组有效；生成完的 GPU 资源不保留 C++ 指针。
-        let (key, setup) = unsafe { (&*key, &*setup) };
-        let fast = setup[0] == 32 && setup[1] == 31 && setup[3] == 49 && key[31..49].iter().copied().eq(256..274);
-        let mut pairs = [0; 16];
-        if fast {
-            pairs[0] = key[0] << 8;
-            for (j, p) in pairs.iter_mut().enumerate().skip(1) {
-                *p = key[2 * j - 1] | (key[2 * j] << 8);
-            }
+        let fill_setup = unsafe { &*fill_setup };
+        let [len, slots, shuffle, ..] = *fill_setup;
+        let fill = FillShape { len, slots, shuffle };
+        if !(1..=252).contains(&len) || slots > len || shuffle > 3 {
+            return Err("WGSL 填充参数无效".to_owned());
         }
-        let mut config = Vec::with_capacity(64 + 253 + 4 + 49 + pairs.len());
+        let slots = if slots == 0 {
+            if len != 15 {
+                return Err("WGSL 只生成 15 字节 Base16384 填充".to_owned());
+            }
+            &[]
+        } else {
+            if fill_slots.is_null()
+                || fill_data.is_null()
+                || !(len..=len * 65537).contains(&fill_data_count)
+            {
+                return Err("WGSL 填充词表无效".to_owned());
+            }
+            unsafe { slice::from_raw_parts(fill_slots, slots as usize) }
+        };
+        let data = if slots.is_empty() {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(fill_data, fill_data_count as usize) }
+        };
+        let mut config = Vec::with_capacity(SETUP_WORDS + (slots.len() * 4 + data.len()).max(1));
         config.extend_from_slice(unsafe { &*state });
-        config.extend_from_slice(key);
-        config.extend_from_slice(setup);
+        config.extend_from_slice(unsafe { &*key });
+        config.extend_from_slice(unsafe { &*setup });
         config.extend_from_slice(unsafe { &*g3 });
-        config.extend(pairs);
-        let front = pollster::block_on(Front::new(&config, unsafe { &*gate }, capacity, block, fast))?;
+        config.extend_from_slice(&fill_setup[3..]);
+        debug_assert_eq!(config.len(), SETUP_WORDS);
+        let mut end = 0;
+        for slot in slots {
+            let FillSlot { offset, width, radix, table } = *slot;
+            if width == 0 || offset < end || offset > len || width > len - offset
+                || !(1..=65536).contains(&radix)
+                || table < len || table > fill_data_count || radix * width > fill_data_count - table
+            {
+                return Err("WGSL 填充槽无效".to_owned());
+            }
+            end = offset + width;
+            config.extend([offset, width, radix, table]);
+        }
+        config.extend_from_slice(data);
+        if data.is_empty() {
+            // 含运行时数组的存储绑定至少要包含一个数组元素。
+            config.push(0);
+        }
+        let front = pollster::block_on(Front::new(&config, unsafe { &*gate }, capacity, block, &fill))?;
         Ok(Box::into_raw(Box::new(front)).cast())
     })
     .unwrap_or(ptr::null_mut())
@@ -426,4 +460,35 @@ unsafe extern "C" fn pbb_front_run(
 unsafe extern "C" fn pbb_front_close(front: *mut Front) {
     // 对应 open 返回的唯一所有权句柄。
     drop(unsafe { Box::from_raw(front) });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::naga::{self, back::spv, valid, TypeInner};
+
+    #[test]
+    fn fill_shader_variants_validate_without_gpu() {
+        for (len, slots) in [(15, 0), (1, 1), (22, 3), (252, 252)] {
+            for shuffle in 0..=3 {
+                let fill = FillShape { len, slots, shuffle };
+                let source = shader(&[0; 45], 64, &fill);
+                let module = naga::front::wgsl::parse_str(&source)
+                    .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+                let info = valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::empty())
+                    .validate(&module)
+                    .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+                let (_, setup) = module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("Setup")).unwrap();
+                let TypeInner::Struct { members, .. } = &setup.inner else { panic!("Setup 不是结构体") };
+                assert_eq!(members.last().unwrap().offset as usize, SETUP_WORDS * size_of::<u32>());
+                for entry in ["prefilter", "secondary"] {
+                    let pipeline = spv::PipelineOptions {
+                        shader_stage: naga::ShaderStage::Compute,
+                        entry_point: entry.to_owned(),
+                    };
+                    spv::write_vec(&module, &info, &spv::Options::default(), Some(&pipeline)).unwrap();
+                }
+            }
+        }
+    }
 }
