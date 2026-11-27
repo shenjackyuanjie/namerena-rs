@@ -46,6 +46,22 @@ class Device {
             const U end = U(Id(task.n) * (worker + 1) / task.active);
             Name name_state{};
             init_candidate(name_state, *input);
+            // 顺序枚举（无填充置换）时，同一 worker 的连续 id 段共享名字前缀。把这段共同前缀
+            // 一次性预处理进 name_state，后续候选的 KSA 就能从更靠后的位置起步——省下的步数
+            // 等于少做的 KSA 步数，因为 KSA 固定做满 256 步，前置共享的那段是纯赚。
+            // 有填充置换时 id→名字不再单调，首尾相同不等于中间也相同，保持 prepare() 给的短前缀。
+            if (!input->fill_shuffle && end > begin) {
+                char head[name_limit + 1];
+                char tail[name_limit + 1];
+                make_name(*input, task.first + begin, head);
+                make_name(*input, task.first + end - 1, tail);
+                int common = 0;
+                while (common < input->name_len && head[common] == tail[common]) ++common;
+                if (common > name_state.PRELEN) {
+                    name_state.PRELEN = common;
+                    name_state.load_prefix(head, input->name_len);
+                }
+            }
             char name[name_limit + 1];
             auto evaluate = [&](U i, U level) {
                 // UINT32_MAX: 标量基线无需额外重复 KSA 去统计 Q 门。
