@@ -21,7 +21,7 @@ $fill = & $exe pbb --encode-id 4294967296 --shuffle mix --seed 0
 
 ## 保留的优化
 
-- **CPU（纯 Rust 前核，默认）**：在 `miner/src/pbb_front.rs` 实现完整的一阶 Q 门热路径（ID 置换 `mix/affine/feistel`、五字 UTF-8 槽优先键字直出、8 路独立 S-box 双轮 KSA、第二轮 96 槽裁剪、AVX2 32 字节属性窗口 + BMI2 `pdep/pext` 稳定压缩、四平面整数门控与 29 路无分支排序网络；无 AVX2/BMI2 时回退标量压缩）。收不满 31 项属性时在 Rust 内部按原版完整排列复核，过 Q 门的候选由原版 C++ 标量严格浮点完整评分。保留旧 C++ 八路交错前核（`miner/native/pbb-prefilter.hpp`）供 `TSWN_PBB_FRONT=cpp` A/B 对照。线程常驻并按 ID 顺序交付。
+- **CPU（纯 Rust 2×8 路交错前核，默认）**：在 `miner/src/pbb_front.rs` 实现完整的一阶 Q 门热路径：ID 置换 `mix/affine/feistel`、SSE2 五字 UTF-8 交错键字直出、**2×8 路并行流水交错 `[u64; 256]` 双轮 KSA**（SSE2 游标推进隐藏单路递推延迟）、第二轮 **80 槽裁剪**、AVX2 32 字节属性窗口（末段掩码截断防脏读）+ BMI2 `pdep/pext` 稳定压缩、四平面整数门控与 29 路无分支排序网络；批量 FFI（`tswn_rust_front_scan_hits`）一次扫描 4096 候选只回传非零命中。并发层（`miner/native/pbb.cpp`）采用 `alignas(64) Part` 消除伪共享、原子自旋屏障（长等退让条件变量）及 4096 块动态窃取并按 `index` 确定性归并。收不满 31 项属性时在 Rust 内复核，过 Q 门候选由原版 C++ 标量严格浮点完整评分。保留 `TSWN_PBB_FRONT=rust|cpp|scalar` 与 `TSWN_PBB_SCHED=dynamic|static` 同二进制 A/B 开关。
 - **CUDA**：五字填充的 **5–50 字节前缀**共用一个通用内核，支持有后缀和无后缀。宿主预打包固定键字节，按绝对地址对齐每两槽的完整交换；第二轮保留 88 个精确槽，随后每四槽只提交仍有影响的随机写。前核收不齐属性时由 G3 重建完整排列复核。原 34 字节专用路径保留，其他长度和自定义词表继续走原通用路径。
 
 ### 已撤回：顺序枚举的批次内前缀共享
