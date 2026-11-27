@@ -2,14 +2,43 @@
 #define __restrict__ __restrict
 #endif
 #include <condition_variable>
+#include <cstdlib>
 #include <mutex>
+#include <string_view>
 #include "pbb-run.hpp"
 #include "pbb-prefilter.hpp"
+
+// 纯 Rust 前核（miner/src/pbb_front.rs）：ID 置换 + UTF-8 键字 + 八路 KSA +
+// AVX2/BMI2 属性压缩 + 四平面整数门控（收不齐 31 项属性时也在 Rust 内闭环复核），
+// 99.99% 的候选全程不回到 C++。
+extern "C" {
+void* tswn_rust_front_create(const Launch* launch);
+void tswn_rust_front_destroy(void* front);
+void tswn_rust_front_levels(const void* front, Id id, U* out);
+unsigned tswn_rust_front_width();
+size_t tswn_rust_launch_size();
+}
 
 static_assert(!PBB_HAS_SIMD && N == 256 && M == 128 && K == 64 && skill_cnt == 40);
 static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits == 53);
 
 namespace pbb_cpu {
+// Rust 前核句柄。Launch 的 POD 字段由 Rust 侧直接读取，初始化时核对布局。
+class RustFront {
+    void* handle = nullptr;
+public:
+    explicit RustFront(const Launch& launch) {
+        if (tswn_rust_launch_size() != sizeof(Launch) || tswn_rust_front_width() != front_width)
+            throw std::runtime_error(u8"Rust \u524d\u6838\u4e0e C++ \u5e03\u5c40\u4e0d\u4e00\u81f4");
+        handle = tswn_rust_front_create(&launch);
+        if (!handle) throw std::runtime_error(u8"Rust \u524d\u6838\u521d\u59cb\u5316\u5931\u8d25");
+    }
+    RustFront(const RustFront&) = delete;
+    RustFront& operator=(const RustFront&) = delete;
+    ~RustFront() { if (handle) tswn_rust_front_destroy(handle); }
+    void levels(Id id, U (&out)[front_width]) const { tswn_rust_front_levels(handle, id, out); }
+};
+
 class Device {
     struct Part {
         Counts counts{};
@@ -26,7 +55,9 @@ class Device {
 
     const Launch* input = nullptr;
     ScorePlan plan{};
-    std::optional<Front> front;
+    // TSWN_PBB_FRONT=rust（默认）| cpp | scalar 用于同二进制 A/B。
+    std::optional<RustFront> rust_front;
+    std::optional<Front> cpp_front;
     std::vector<Part> parts;
     std::vector<std::thread> workers;
     std::mutex mutex;
@@ -70,16 +101,18 @@ class Device {
                 else if (flags.keep || flags.blue) part.rows.push_back(wire(i, flags, scored));
             };
             U i = begin;
-            if (front) {
+            const bool aggressive = rust_front.has_value() || cpp_front.has_value();
+            if (aggressive) {
                 for (; end - i >= front_width; i += front_width) {
                     U levels[front_width];
-                    front->levels(task.first + i, levels);
+                    if (rust_front) rust_front->levels(task.first + i, levels);
+                    else cpp_front->levels(task.first + i, levels);
                     for (U lane = 0; lane < front_width; ++lane) evaluate(i + lane, levels[lane]);
                 }
             }
             for (; i < end; ++i) {
                 U level = std::numeric_limits<U>::max();
-                if (front || task.capture || task.verify_indices) {
+                if (aggressive || task.capture || task.verify_indices) {
                     make_name(*input, task.first + i, name);
                     name_state.load_name(name, input->name_len);
                     int props[7];
@@ -120,7 +153,12 @@ public:
     void init(const Launch& launch, const Options& opts) {
         input = &launch;
         plan = make_plan<ScorePlan>(launch.rules);
-        if (!opts.cpu_scalar) front.emplace(launch);
+        const char* select = std::getenv("TSWN_PBB_FRONT");
+        const std::string_view mode = select ? std::string_view(select) : std::string_view("rust");
+        if (!opts.cpu_scalar && mode != "scalar") {
+            if (mode == "cpp") cpp_front.emplace(launch);
+            else rust_front.emplace(launch);
+        }
         parts.resize(opts.threads);
         workers.reserve(opts.threads - 1);
         for (U i = 1; i < opts.threads; ++i) workers.emplace_back([this, i] { worker_loop(i); });

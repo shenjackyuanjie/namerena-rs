@@ -1,0 +1,4 @@
+# RWIR：让 LLVM 直接按本机微架构（Zen 3：AVX2/BMI2/FMA/SSSE3/SSE4.2）出码。
+# tswn pbb 的一阶 Q 门前核是纯整数热路径，不需要额外运行时特性检测即可吃满这些指令集。
+[build]
+rustflags = ["-C", "target-cpu=native", "-C", "codegen-units=1"]

@@ -10,6 +10,8 @@ mod interrupt;
 mod name;
 #[cfg(feature = "native-pbb")]
 mod pbb;
+#[cfg(feature = "native-pbb")]
+mod pbb_front;
 #[cfg(test)]
 mod reference;
 
